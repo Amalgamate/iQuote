@@ -22,9 +22,11 @@ type BusinessProfile = {
   email: string | null
   phone: string | null
   country: string | null
+  businessType: string | null
   currency: string
   defaultTaxRate: number | string | null
   quotePrefix: string | null
+  subdomain?: string | null
   subscription?: { plan: string; status: string; trialEndsAt: string; simulated: boolean } | null
 }
 
@@ -80,6 +82,7 @@ function App() {
     email: '',
     phone: '',
     country: 'Kenya',
+    businessType: '',
     currency: 'KES',
     defaultTaxRate: '16',
     quotePrefix: 'QT',
@@ -118,6 +121,7 @@ function App() {
           email: nextProfile.email ?? '',
           phone: nextProfile.phone ?? '',
           country: nextProfile.country ?? 'Kenya',
+          businessType: nextProfile.businessType ?? '',
           currency: nextProfile.currency ?? 'KES',
           defaultTaxRate: nextProfile.defaultTaxRate == null ? '16' : String(nextProfile.defaultTaxRate),
           quotePrefix: nextProfile.quotePrefix ?? 'QT',
@@ -303,6 +307,7 @@ function App() {
         email: response.organisation.email ?? '',
         phone: response.organisation.phone ?? '',
         country: response.organisation.country ?? 'Kenya',
+        businessType: response.organisation.businessType ?? '',
         currency: response.organisation.currency ?? 'KES',
         defaultTaxRate: response.organisation.defaultTaxRate == null ? '16' : String(response.organisation.defaultTaxRate),
         quotePrefix: response.organisation.quotePrefix ?? 'QT',
@@ -521,6 +526,25 @@ function App() {
                         onChange={(event) => handleBusinessChange('country', event.target.value)}
                         placeholder="Kenya"
                       />
+                    </label>
+
+                    <label>
+                      Business type
+                      <select
+                        value={businessForm.businessType}
+                        onChange={(event) => handleBusinessChange('businessType', event.target.value)}
+                      >
+                        <option value="">General service business</option>
+                        <option>Handyman / home repair</option>
+                        <option>Plumbing</option>
+                        <option>Electrical</option>
+                        <option>Cleaning &amp; maintenance</option>
+                        <option>Construction &amp; contracting</option>
+                        <option>Consulting &amp; professional services</option>
+                        <option>Creative studio</option>
+                        <option>Retail &amp; product sales</option>
+                        <option>Other service business</option>
+                      </select>
                     </label>
 
                     <label>

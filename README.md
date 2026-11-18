@@ -29,7 +29,7 @@ Open http://localhost:5174. Local Node development uses port 5174 to avoid clash
 
 The web app reads `VITE_API_URL` from `web/.env`; its local default is `http://localhost:4000`.
 
-New accounts use a four-step onboarding flow with local email-code simulation, business setup, and a 14-day simulated plan trial. iQuote's platform account sends signup verification codes (OTP) and welcome/onboarding emails. Set `RESEND_API_KEY` and a Resend-verified `RESEND_FROM_EMAIL` in `api/.env`; keep both values server-side and out of the web app. `EMAIL_SETTINGS_ENCRYPTION_KEY` is a separate random 32-byte base64url secret used to encrypt tenant-owned Resend keys at rest. Generate one with `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`, place it in `api/.env`, and keep it stable because rotating it makes previously stored tenant keys unreadable. Never commit `.env` or paste secrets into chat. Without the platform Resend values, local development displays the verification code in the onboarding screen and sends no real email. Subscription selection is stored for development, but payment collection is not connected.
+New accounts use a four-step onboarding flow with local email-code simulation, business setup, and a 14-day simulated plan trial. iQuote's platform account sends signup verification codes (OTP) and welcome/onboarding emails. Set `RESEND_API_KEY` and a Resend-verified sender address in `api/.env` using `RESEND_FROM_EMAIL`, `BILLING_FROM_EMAIL`, or `EMAIL_FROM`; these are the same platform Resend settings pattern used by TrendSCORE. Keep credentials server-side and out of the web app. `EMAIL_SETTINGS_ENCRYPTION_KEY` is a separate random 32-byte base64url secret used to encrypt tenant-owned Resend keys at rest. Generate one with `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`, place it in `api/.env`, and keep it stable because rotating it makes previously stored tenant keys unreadable. Never commit `.env` or paste secrets into chat. Without the platform Resend values, local development displays the verification code in the onboarding screen and sends no real email. Subscription selection is stored for development, but payment collection is not connected.
 
 ### Email sending ownership
 
@@ -44,6 +44,10 @@ WhatsApp delivery is not implemented yet. For production OTP and onboarding mess
 ## Docker
 
 `docker-compose.yml` remains available for Docker based environments. It is separate from the local PostgreSQL workflow above.
+
+### Shared tenant hosting
+
+Production runs one shared iQuote web, API, and PostgreSQL stack. Signup creates a tenant workspace and simulated trial in that shared database; it does not provision a Docker container per business. Each workspace receives a unique business-name subdomain under `trendscore.co.ke`, backed by the existing wildcard DNS record. Tenant-owned database records are queried using the authenticated user's organisation. The wildcard Nginx route must point to this shared stack, and a valid wildcard TLS certificate must be installed before tenant URLs can be used over HTTPS.
 
 ## Product plan
 

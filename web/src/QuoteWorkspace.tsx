@@ -19,6 +19,8 @@ type Business = {
   logoUrl: string | null
   paymentInstructions: string | null
   terms: string | null
+  subdomain: string | null
+  subscription?: { plan: string; status: string; trialEndsAt: string; simulated: boolean } | null
 }
 type Customer = { id: string; name: string; phone: string | null; email: string | null }
 type ServiceItem = { id: string; name: string; category: string; kind: 'SERVICE' | 'PRODUCT'; description: string | null; unit: string; defaultPrice: number; defaultTaxRate: number | null; isStarter: boolean }
@@ -51,7 +53,7 @@ const blankCustomer: CustomerForm = { id: '', name: '', phone: '', email: '' }
 const blankService: ServiceForm = { id: '', name: '', category: '', kind: 'SERVICE', description: '', unit: 'job', defaultPrice: '0', defaultTaxRate: '' }
 const emptyBusiness: Omit<Business, 'id'> = {
   name: '', email: '', phone: '', country: 'Kenya', businessType: '', currency: 'KES', defaultTaxRate: '16',
-  quotePrefix: 'QT', logoUrl: '', paymentInstructions: '', terms: '',
+  quotePrefix: 'QT', logoUrl: '', paymentInstructions: '', terms: '', subdomain: null,
 }
 const statusNames: Record<QuoteStatus, string> = {
   DRAFT: 'Draft', SENT: 'Sent', VIEWED: 'Viewed', APPROVED: 'Approved', DECLINED: 'Declined', EXPIRED: 'Expired',
@@ -510,6 +512,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
         <header className="workspace-topbar">
           <div><p className="workspace-eyebrow">{business?.name || 'iQuote'}</p><h1>{heading}</h1></div>
           <div className="topbar-right">
+            {business?.subdomain && <a className="topbar-user" href={`https://${business.subdomain}.trendscore.co.ke`} target="_blank" rel="noreferrer">{business.subdomain}.trendscore.co.ke</a>}
             <span className="topbar-user">{user.name}</span>
             {page !== 'editor' && <button type="button" className="button button-primary" onClick={startNewQuote}>New quote</button>}
           </div>

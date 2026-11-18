@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import pkg from '@prisma/client'
+import type { Prisma as PrismaTypes } from '@prisma/client'
 const { PrismaClient, Prisma } = pkg
 import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
@@ -147,15 +148,26 @@ function createdEmailKey(email: string) {
   return createHmac('sha256', jwtSecret).update(email).digest('hex')
 }
 
-function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] ?? character)
+function platformSenderEmail() {
+  return process.env.RESEND_FROM_EMAIL || process.env.BILLING_FROM_EMAIL || process.env.EMAIL_FROM || process.env.SMTP_FROM || ''
+}
+
+function platformSenderName() {
+  return process.env.RESEND_FROM_NAME || process.env.BILLING_FROM_NAME || process.env.EMAIL_FROM_NAME || process.env.PLATFORM_NAME || 'iQuote'
+}
+
+function platformEmailReady() {
+  return Boolean(process.env.RESEND_API_KEY && platformSenderEmail())
 }
 
 async function sendEmail(to: string, subject: string, html: string, idempotencyKey: string, organisationId?: string) {
   const tenantSettings = organisationId ? await prisma.tenantEmailSettings.findUnique({ where: { organisationId } }) : null
   const tenantKey = tenantSettings?.provider === 'CUSTOM' && tenantSettings.resendApiKeyCiphertext ? decryptEmailSecret(tenantSettings.resendApiKeyCiphertext) : null
   const apiKey = tenantKey ?? process.env.RESEND_API_KEY
-  const from = tenantKey && tenantSettings?.senderEmail ? `${tenantSettings.senderName || 'iQuote'} <${tenantSettings.senderEmail}>` : process.env.RESEND_FROM_EMAIL
+  const senderEmail = platformSenderEmail()
+  const from = tenantKey && tenantSettings?.senderEmail
+    ? `${tenantSettings.senderName || 'iQuote'} <${tenantSettings.senderEmail}>`
+    : senderEmail ? `${platformSenderName()} <${senderEmail}>` : ''
   if (!apiKey || !from) return false
 
   const replyTo = process.env.SUPPORT_EMAIL ?? undefined
@@ -191,6 +203,42 @@ async function getOrganisationId(userId: string) {
   if (user?.organisationId) return user.organisationId
   const owned = await prisma.organisation.findFirst({ where: { ownerId: userId }, select: { id: true } })
   return owned?.id ?? null
+}
+
+function makeSubdomainBase(name: string) {
+  let slug = name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+    .replace(/-+$/g, '')
+  slug ||= 'business'
+  if (['admin', 'api', 'iquote', 'www'].includes(slug)) slug = `${slug}-workspace`
+  return slug
+}
+
+async function allocateSubdomain(transaction: PrismaTypes.TransactionClient, businessName: string) {
+  const base = makeSubdomainBase(businessName)
+  await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${base}))`
+  let candidate = base
+  let suffix = 2
+  while (await transaction.organisation.findUnique({ where: { subdomain: candidate }, select: { id: true } })) {
+    candidate = `${base.slice(0, 44)}-${suffix++}`
+  }
+  return candidate
+}
+
+function tenantSubdomainFromHost(host: string) {
+  const hostname = host.toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '')
+  const baseDomain = (process.env.TENANT_BASE_DOMAIN ?? 'trendscore.co.ke').toLowerCase().replace(/^\.+|\.+$/g, '')
+  const suffix = `.${baseDomain}`
+  if (!hostname.endsWith(suffix)) return null
+  const label = hostname.slice(0, -suffix.length)
+  if (!label || label.includes('.') || ['www', 'iquote', 'api'].includes(label)) return null
+  return label
 }
 
 async function ensureIndustryDefaults(organisationId: string) {
@@ -304,6 +352,20 @@ app.get('/api/ping', (_req, res) => {
   res.json({ ok: true, service: 'iQuote API' })
 })
 
+// Wildcard DNS/Nginx sends tenant hostnames to the same shared application.
+// Hostname resolution is for public workspace branding only; authentication
+// and every private data query continue to use the signed-in user's workspace.
+app.get('/api/tenant/current', async (req, res) => {
+  const subdomain = tenantSubdomainFromHost(req.get('host') ?? '')
+  if (!subdomain) return res.json({ tenant: null })
+  const organisation = await prisma.organisation.findUnique({
+    where: { subdomain },
+    select: { name: true, subdomain: true, logoUrl: true, country: true, currency: true },
+  })
+  if (!organisation) return res.status(404).json({ tenant: null })
+  res.json({ tenant: organisation })
+})
+
 // Email template preview — renders HTML in browser for design review
 app.get('/api/email-preview/:template', (req, res) => {
   const template = String(req.params.template ?? '')
@@ -376,20 +438,17 @@ app.post('/api/auth/register', async (req, res) => {
 
   const passwordHash = await bcrypt.hash(password, 10)
   const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
-  const safeBusinessName = escapeHtml(businessName)
-  const safeEmail = escapeHtml(email)
-  const safeCountry = escapeHtml(country)
-  const safeBusinessType = escapeHtml(businessType ?? 'Independent business')
-  const safePhone = escapeHtml(phone ?? 'Not provided')
   const industryPack = getIndustryPack(businessType)
   const user = await prisma.$transaction(async (transaction) => {
     const created = await transaction.user.create({
       data: { name, email, passwordHash, emailVerifiedAt: verification.verifiedAt },
       select: { id: true, name: true, email: true, role: true },
     })
+    const subdomain = await allocateSubdomain(transaction, businessName)
     const organisation = await transaction.organisation.create({
       data: {
         name: businessName,
+        subdomain,
         email,
         phone,
         country,
@@ -401,38 +460,29 @@ app.post('/api/auth/register', async (req, res) => {
         serviceItems: { create: industryPack.services.map((item) => ({ ...item, isStarter: true })) },
         quoteTemplates: { create: industryPack.templates.map((template) => ({ ...template, isStarter: true })) },
         members: { connect: { id: created.id } },
-        subscription: {
-          create: { plan, status: 'TRIALING', trialEndsAt, simulated: true },
-        },
+        subscription: { create: { plan, status: 'TRIALING', trialEndsAt, simulated: true } },
       },
     })
     await transaction.user.update({ where: { id: created.id }, data: { organisationId: organisation.id } })
-    return { ...created, organisationId: organisation.id }
+    return { ...created, organisationId: organisation.id, subdomain }
   })
 
   const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
+  const baseDomain = (process.env.TENANT_BASE_DOMAIN ?? 'trendscore.co.ke').replace(/^\.+|\.+$/g, '')
+  const workspaceUrl = process.env.NODE_ENV === 'production' ? `https://${user.subdomain}.${baseDomain}` : platformUrl
   const welcomeEmailSent = await sendEmail(
     email,
     emailSubjects.welcome(businessName),
-    welcomeEmailHtml({
-      name,
-      businessName,
-      businessType,
-      country,
-      plan,
-      trialEndsAt,
-      phone,
-      loginUrl: `${platformUrl}?login=1`,
-    }),
+    welcomeEmailHtml({ name, businessName, businessType, country, plan, trialEndsAt, phone, loginUrl: workspaceUrl }),
     `welcome/${createdEmailKey(email)}`,
-    user.organisationId ?? undefined,
+    user.organisationId,
   ).catch(() => false)
 
   const token = await issueSession(user.id)
   await prisma.signupVerification.deleteMany({ where: { email } })
   sendSessionCookie(res, token)
 
-  res.status(201).json({ user: toPublicUser(user), welcomeEmailSent })
+  res.status(201).json({ user: toPublicUser(user), welcomeEmailSent, subdomain: user.subdomain })
 })
 
 app.post('/api/auth/verification/send', async (req, res) => {
@@ -449,9 +499,9 @@ app.post('/api/auth/verification/send', async (req, res) => {
 
   const code = String(randomInt(100_000, 1_000_000))
   const apiKey = process.env.RESEND_API_KEY
-  const from = process.env.RESEND_FROM_EMAIL
+  const from = platformSenderEmail()
   if (!apiKey && process.env.NODE_ENV === 'production') return res.status(503).json({ message: 'Email verification is not configured. Add a Resend API key and verified sender address.' })
-  if (apiKey && !from) return res.status(503).json({ message: 'Set RESEND_FROM_EMAIL to a verified sender address before sending email.' })
+  if (apiKey && !from) return res.status(503).json({ message: 'Set a verified Resend sender address before sending email.' })
   let emailSent = false
   try {
     if (apiKey && from) {
@@ -488,7 +538,7 @@ app.get('/api/settings/email', requireAuth, async (req, res) => {
     domainRecords: settings?.domainRecords ?? null,
     apiKeySet: Boolean(settings?.resendApiKeyCiphertext),
     encryptionReady: Boolean(emailEncryptionKey && emailEncryptionKey.length >= 32),
-    platformSenderAvailable: Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL),
+    platformSenderAvailable: platformEmailReady(),
   })
 })
 
@@ -1138,6 +1188,7 @@ app.get('/api/business/me', requireAuth, async (req, res) => {
       logoUrl: true,
       paymentInstructions: true,
       terms: true,
+      subdomain: true,
       subscription: { select: { plan: true, status: true, trialEndsAt: true, simulated: true } },
     },
   }) : null
@@ -1182,53 +1233,88 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
   if (!/^[A-Z]{3}$/.test(currency)) {
     return res.status(400).json({ message: 'Currency must be a 3-letter code (e.g. KES, USD, GBP).' })
   }
+  const organisationId = await getOrganisationId(user.id)
+  const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
+  const select = {
+    id: true,
+    name: true,
+    email: true,
+    phone: true,
+    country: true,
+    businessType: true,
+    currency: true,
+    defaultTaxRate: true,
+    quotePrefix: true,
+    logoUrl: true,
+    paymentInstructions: true,
+    terms: true,
+    subdomain: true,
+    subscription: { select: { plan: true, status: true, trialEndsAt: true, simulated: true } },
+  } as const
 
-  const organisation = await prisma.organisation.upsert({
-    where: { ownerId: user.id },
-    update: {
-      name,
-      email,
-      phone,
-      country,
-      businessType,
-      currency,
-      defaultTaxRate,
-      quotePrefix,
-      logoUrl,
-      paymentInstructions,
-      terms,
-    },
-    create: {
-      ownerId: user.id,
-      name,
-      email,
-      phone,
-      country,
-      businessType,
-      currency,
-      defaultTaxRate: defaultTaxRate === null ? undefined : defaultTaxRate,
-      quotePrefix,
-      logoUrl,
-      paymentInstructions,
-      terms,
-    },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      phone: true,
-      country: true,
-      businessType: true,
-      currency: true,
-      defaultTaxRate: true,
-      quotePrefix: true,
-      logoUrl: true,
-      paymentInstructions: true,
-      terms: true,
-    },
-  })
+  let organisation
+  let createdWorkspace = false
+  if (organisationId) {
+    const existing = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { ownerId: true, subdomain: true } })
+    if (!existing) return res.status(404).json({ message: 'Business workspace not found.' })
+    if (existing.ownerId !== user.id) return res.status(403).json({ message: 'Only the workspace owner can change business settings.' })
+    organisation = await prisma.$transaction(async (transaction) => {
+      const subdomain = existing.subdomain ?? await allocateSubdomain(transaction, name)
+      return transaction.organisation.update({
+        where: { id: organisationId },
+        data: { subdomain, name, email, phone, country, businessType, currency, defaultTaxRate, quotePrefix, logoUrl, paymentInstructions, terms },
+        select,
+      })
+    })
+  } else {
+    const industryPack = getIndustryPack(businessType)
+    organisation = await prisma.$transaction(async (transaction) => {
+      const subdomain = await allocateSubdomain(transaction, name)
+      const created = await transaction.organisation.create({
+        data: {
+          ownerId: user.id,
+          subdomain,
+          name,
+          email: email ?? user.email,
+          phone,
+          country,
+          businessType,
+          currency,
+          defaultTaxRate: defaultTaxRate === null ? undefined : defaultTaxRate,
+          quotePrefix,
+          logoUrl,
+          paymentInstructions,
+          terms,
+          members: { connect: { id: user.id } },
+          serviceItems: { create: industryPack.services.map((item) => ({ ...item, isStarter: true })) },
+          quoteTemplates: { create: industryPack.templates.map((template) => ({ ...template, isStarter: true })) },
+          subscription: { create: { plan: 'STARTER', status: 'TRIALING', trialEndsAt, simulated: true } },
+        },
+        select,
+      })
+      await transaction.user.update({ where: { id: user.id }, data: { organisationId: created.id } })
+      return created
+    })
+    createdWorkspace = true
+  }
 
-  res.status(201).json({ organisation })
+  let welcomeEmailSent = false
+  if (createdWorkspace) {
+    const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
+    const baseDomain = (process.env.TENANT_BASE_DOMAIN ?? 'trendscore.co.ke').replace(/^\.+|\.+$/g, '')
+    const workspaceUrl = process.env.NODE_ENV === 'production'
+      ? `https://${organisation.subdomain}.${baseDomain}`
+      : platformUrl
+    welcomeEmailSent = await sendEmail(
+      user.email,
+      emailSubjects.welcome(name),
+      welcomeEmailHtml({ name: user.name, businessName: name, businessType, country: country ?? '', plan: 'STARTER', trialEndsAt, phone, loginUrl: workspaceUrl }),
+      `welcome/${createdEmailKey(user.email)}`,
+      organisation.id,
+    ).catch(() => false)
+  }
+
+  res.status(createdWorkspace ? 201 : 200).json({ organisation, welcomeEmailSent })
 })
 
 // ---- Logo file upload ----

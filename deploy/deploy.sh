@@ -95,9 +95,7 @@ done
 # ---- 4. Run database migrations ----
 echo ""
 echo "[4/6] Running database migrations..."
-docker compose -f "$COMPOSE_FILE" exec -T api npx prisma db push --accept-data-loss 2>/dev/null || \
-    docker compose -f "$COMPOSE_FILE" exec -T api npx prisma migrate deploy 2>/dev/null || \
-    echo "  NOTE: Migration may have already been applied."
+docker compose -f "$COMPOSE_FILE" exec -T api npx prisma db push
 echo "  Database schema is in sync."
 
 # ---- 5. Enable Nginx reverse proxy ----
