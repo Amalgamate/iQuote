@@ -169,6 +169,33 @@
   .admin-growth-chart { height: 145px; }
 }
 
+/* Expanded product navigation preview. Existing workspace routes remain live; planned areas stay inert. */
+.workspace-root .app-navigation { display: grid; min-height: 0; flex: 1; align-content: start; gap: 17px; overflow-y: auto; padding: 0 0 12px; }
+.workspace-root .sidebar-nav-group { display: grid; gap: 3px; }
+.workspace-root .sidebar-section-label { padding: 0 10px 5px; color: #98a49d; font-size: 9px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+.workspace-root .app-navigation > .app-nav-item { display: none; }
+.workspace-root .app-navigation .app-nav-item { min-height: 39px; border-radius: 8px; color: #68776e; }
+.workspace-root .app-navigation .app-nav-item:hover { background: #f3f7f4; color: #176b4b; }
+.workspace-root .app-navigation .app-nav-item.active { background: #eaf5ef; color: #176b4b; font-weight: 700; }
+.workspace-root .app-navigation .app-nav-item.active::before { width: 3px; height: 21px; margin-left: -10px; border-radius: 0 3px 3px 0; background: #176b4b; content: ''; }
+.workspace-root .app-navigation .nav-glyph { color: inherit; font-size: 17px; line-height: 1; }
+.workspace-root .app-navigation .nav-item-upcoming { color: #a6afa9; cursor: default; }
+.workspace-root .app-navigation .nav-item-upcoming:hover { background: transparent; color: #a6afa9; transform: none; }
+.workspace-root .app-navigation .nav-item-upcoming .nav-icon { color: #b4bdb7; }
+.workspace-root .app-navigation .nav-item-upcoming small { margin-left: auto; padding: 3px 6px; border-radius: 10px; background: #f1f3f1; color: #929b95; font-size: 8px; font-weight: 650; }
+.workspace-root .app-navigation .sidebar-nav-account { margin-top: 2px; padding-top: 12px; border-top: 1px solid #edf1ed; }
+
+@media (max-width: 780px) {
+  .workspace-root .app-sidebar { display: flex; overflow: hidden; }
+  .workspace-root .app-navigation { display: flex; overflow-x: auto; overflow-y: hidden; gap: 6px; padding: 0; scrollbar-width: none; }
+  .workspace-root .app-navigation::-webkit-scrollbar { display: none; }
+  .workspace-root .sidebar-nav-group { display: contents; }
+  .workspace-root .sidebar-section-label,.workspace-root .app-navigation .nav-item-upcoming { display: none; }
+  .workspace-root .app-navigation .app-nav-item { display: flex; min-width: 64px; min-height: 48px; flex: 0 0 auto; flex-direction: column; justify-content: center; gap: 1px; padding: 4px 6px; font-size: 9px; }
+  .workspace-root .app-navigation .app-nav-item.active::before { display: none; }
+  .workspace-root .app-navigation .app-nav-item small { display: none; }
+}
+
 .workspace-loading {
   min-height: 100vh;
   display: grid;
