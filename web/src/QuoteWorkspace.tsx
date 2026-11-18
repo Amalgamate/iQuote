@@ -46,6 +46,7 @@ type QuoteDraft = {
   lines: QuoteLine[]
 }
 type Page = 'dashboard' | 'quotes' | 'customers' | 'services' | 'settings' | 'editor'
+type ChartRange = '7D' | '30D' | '90D' | '1Y'
 type CustomerForm = { id: string; name: string; phone: string; email: string }
 type EmailSettings = { provider: 'PLATFORM' | 'CUSTOM'; senderName: string; senderEmail: string; customDomain: string; domainStatus: string; domainRecords: unknown[] | null; apiKeySet: boolean; encryptionReady: boolean; platformSenderAvailable: boolean }
 type EmailSettingsForm = { provider: 'PLATFORM' | 'CUSTOM'; senderName: string; senderEmail: string; customDomain: string; apiKey: string }
@@ -143,6 +144,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [emailSettingsForm, setEmailSettingsForm] = useState<EmailSettingsForm>({ provider: 'PLATFORM', senderName: '', senderEmail: '', customDomain: '', apiKey: '' })
   const [emailSettingsSaving, setEmailSettingsSaving] = useState(false)
   const [emailSettingsMessage, setEmailSettingsMessage] = useState('')
+  const [chartRange, setChartRange] = useState<ChartRange>('30D')
   const editorRef = useRef<QuoteDraft | null>(null)
 
   useEffect(() => { editorRef.current = editor }, [editor])
@@ -187,6 +189,54 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     const query = search.trim().toLowerCase()
     return serviceItems.filter((item) => !query || [item.name, item.category, item.description ?? '', item.kind].some((value) => value.toLowerCase().includes(query)))
   }, [serviceItems, search])
+
+  const dashboardStats = useMemo(() => {
+    const total = quotes.length
+    const approved = quotes.filter((q) => q.status === 'APPROVED').length
+    const approvedValue = quotes.filter((q) => q.status === 'APPROVED').reduce((sum, q) => sum + q.total, 0)
+    const pending = quotes.filter((q) => ['SENT', 'VIEWED'].includes(q.status)).length
+    const draftCount = quotes.filter((q) => q.status === 'DRAFT').length
+    const totalRevenue = quotes.filter((q) => ['APPROVED'].includes(q.status)).reduce((sum, q) => sum + q.total, 0)
+    const conversionRate = total > 0 ? Math.round((approved / total) * 100) : 0
+    return { total, approved, approvedValue, pending, draftCount, totalRevenue, conversionRate }
+  }, [quotes])
+
+  const chartData = useMemo(() => {
+    const now = new Date()
+    const days = chartRange === '7D' ? 7 : chartRange === '30D' ? 30 : chartRange === '90D' ? 90 : 365
+    const buckets: { label: string; value: number; count: number }[] = []
+    const bucketSize = days <= 7 ? 1 : days <= 30 ? 3 : days <= 90 ? 10 : 30
+    const bucketCount = Math.ceil(days / bucketSize)
+    for (let i = bucketCount - 1; i >= 0; i--) {
+      const end = new Date(now)
+      end.setDate(end.getDate() - i * bucketSize)
+      const start = new Date(end)
+      start.setDate(start.getDate() - (bucketSize - 1))
+      const dayQuotes = quotes.filter((q) => {
+        const qd = new Date(q.createdAt)
+        return qd >= start && qd <= end
+      })
+      const value = dayQuotes.reduce((sum, q) => sum + q.total, 0)
+      const label = bucketSize === 1
+        ? end.toLocaleDateString('en-KE', { weekday: 'short' })
+        : bucketSize >= 30
+          ? end.toLocaleDateString('en-KE', { month: 'short' })
+          : `${end.getDate()}/${end.getMonth() + 1}`
+      buckets.push({ label, value, count: dayQuotes.length })
+    }
+    const maxValue = Math.max(...buckets.map((b) => b.value), 1)
+    return { buckets, maxValue, totalQuotes: buckets.reduce((s, b) => s + b.count, 0) }
+  }, [quotes, chartRange])
+
+  const upcomingQuotes = useMemo(() => {
+    const now = new Date()
+    return quotes
+      .filter((q) => ['SENT', 'VIEWED', 'DRAFT'].includes(q.status) && q.validUntil)
+      .map((q) => ({ ...q, validUntilDate: new Date(q.validUntil!) }))
+      .filter((q) => q.validUntilDate >= now)
+      .sort((a, b) => a.validUntilDate.getTime() - b.validUntilDate.getTime())
+      .slice(0, 5)
+  }, [quotes])
 
   const updateEditor = (patch: Partial<QuoteDraft>) => {
     setEditor((current) => current ? { ...current, ...patch } : current)
@@ -494,45 +544,205 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
         <a className="brand brand-workspace" href="#dashboard" onClick={(event) => { event.preventDefault(); changePage('dashboard') }}>
           <span className="brand-mark">iQ</span><span>iQuote</span>
         </a>
-        <div className="sidebar-caption">Workspace</div>
         <nav className="app-navigation" aria-label="Workspace navigation">
-          {(['dashboard', 'quotes', 'customers', 'services', 'settings'] as const).map((item) => (
-            <button key={item} type="button" className={`app-nav-item ${page === item ? 'active' : ''}`} onClick={() => changePage(item)}>
-              <span className="nav-glyph" aria-hidden="true">{{ dashboard: '⌂', quotes: '▤', customers: '♧', services: '◈', settings: '⚙' }[item]}</span>
-              <span>{item === 'services' ? 'Services & products' : item[0].toUpperCase() + item.slice(1)}</span>
-              {item === 'quotes' && quotes.length > 0 && <small>{quotes.length}</small>}
-            </button>
-          ))}
+          <button type="button" className={`app-nav-item ${page === 'dashboard' ? 'active' : ''}`} onClick={() => changePage('dashboard')}>
+            <span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg></span>
+            <span>Dashboard</span>
+          </button>
+          <button type="button" className={`app-nav-item ${page === 'customers' ? 'active' : ''}`} onClick={() => changePage('customers')}>
+            <span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg></span>
+            <span>Customers</span>
+          </button>
+          <button type="button" className={`app-nav-item ${page === 'quotes' ? 'active' : ''}`} onClick={() => changePage('quotes')}>
+            <span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg></span>
+            <span>Quotations</span>
+            {quotes.length > 0 && <small>{quotes.length}</small>}
+          </button>
+          <button type="button" className={`app-nav-item ${page === 'services' ? 'active' : ''}`} onClick={() => changePage('services')}>
+            <span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /><line x1="7" y1="7" x2="7.01" y2="7" /></svg></span>
+            <span>Services &amp; Products</span>
+          </button>
+          <button type="button" className={`app-nav-item ${page === 'settings' ? 'active' : ''}`} onClick={() => changePage('settings')}>
+            <span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg></span>
+            <span>Settings</span>
+          </button>
         </nav>
         <div className="sidebar-spacer" />
-        <div className="sidebar-business"><span className="business-avatar">{business?.name?.slice(0, 1).toUpperCase() || 'B'}</span><span>{business?.name || 'Your business'}</span></div>
-        <button type="button" className="app-nav-item logout-item" onClick={onLogout}><span className="nav-glyph">↪</span><span>Sign out</span></button>
+        <div className="sidebar-user-card">
+          <span className="user-avatar">{user.name?.slice(0, 1).toUpperCase() || 'U'}</span>
+          <div className="sidebar-user-info">
+            <strong>{user.name}</strong>
+            <small>{business?.name || 'Your business'}</small>
+          </div>
+          <button type="button" className="sidebar-logout" onClick={onLogout} aria-label="Sign out">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+          </button>
+        </div>
       </aside>
 
       <main className="workspace-main">
         <header className="workspace-topbar">
-          <div><p className="workspace-eyebrow">{business?.name || 'iQuote'}</p><h1>{heading}</h1></div>
+          <div className="topbar-left">
+            <h1>{heading}</h1>
+          </div>
           <div className="topbar-right">
-            {business?.subdomain && <a className="topbar-user" href={`https://${business.subdomain}.trendscore.co.ke`} target="_blank" rel="noreferrer">{business.subdomain}.trendscore.co.ke</a>}
-            <span className="topbar-user">{user.name}</span>
-            {page !== 'editor' && <button type="button" className="button button-primary" onClick={startNewQuote}>New quote</button>}
+            {business?.subdomain && <a className="topbar-domain-link" href={`https://${business.subdomain}.trendscore.co.ke`} target="_blank" rel="noreferrer">{business.subdomain}.trendscore.co.ke</a>}
+            <button type="button" className="topbar-icon-btn" aria-label="Notifications">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
+              {dashboardStats.pending > 0 && <span className="topbar-badge">{dashboardStats.pending}</span>}
+            </button>
+            {page !== 'editor' && <button type="button" className="button button-primary" onClick={startNewQuote}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+              New Quote
+            </button>}
           </div>
         </header>
 
         {error && <div className="workspace-alert" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
 
         {page === 'dashboard' && business && (
-          <section className="workspace-content">
-            <div className="welcome-row"><div><p className="workspace-eyebrow">Your quoting desk</p><h2>Welcome, {user.name.split(' ')[0]}</h2><p>Keep your customer conversations and decisions moving.</p></div><button className="button button-primary" type="button" onClick={startNewQuote}>Create a quote <span aria-hidden="true">→</span></button></div>
-            <div className="metric-grid">
-              <article className="metric-card"><span>Total quotes</span><strong>{quotes.length}</strong><small>All time</small></article>
-              <article className="metric-card"><span>Awaiting response</span><strong>{quotes.filter((quote) => ['SENT', 'VIEWED'].includes(quote.status)).length}</strong><small>Sent to customers</small></article>
-              <article className="metric-card"><span>Approved value</span><strong>{formatMoney(quotes.filter((quote) => quote.status === 'APPROVED').reduce((sum, quote) => sum + quote.total, 0), business.currency)}</strong><small>{quotes.filter((quote) => quote.status === 'APPROVED').length} approved quotes</small></article>
+          <section className="workspace-content dashboard-content">
+            <div className="dashboard-welcome">
+              <div>
+                <h2>Welcome back, {user.name.split(' ')[0]}! <span aria-hidden="true">👋</span></h2>
+                <p>Here's what's happening with your business today.</p>
+              </div>
             </div>
-            <section className="workspace-panel">
-              <div className="panel-heading"><div><h2>Recent quotes</h2><p>Your latest quotation activity</p></div><button className="link-button" onClick={() => changePage('quotes')} type="button">All quotes <span aria-hidden="true">→</span></button></div>
-              <QuoteTable quotes={quotes.slice(0, 6)} currency={business.currency} onOpen={openQuote} />
-              {quotes.length === 0 && <div className="panel-empty"><h3>Your quote list is ready</h3><p>Create a quote and send a shareable link to your first customer.</p><button className="button button-primary" onClick={startNewQuote} type="button">Create your first quote</button></div>}
+
+            <div className="metric-grid metric-grid-four">
+              <article className="metric-card metric-card-v2">
+                <div className="metric-card-top">
+                  <span className="metric-icon metric-icon-blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg></span>
+                  <span className="metric-label">Total Quotations</span>
+                </div>
+                <strong>{dashboardStats.total}</strong>
+                <small>{dashboardStats.draftCount} drafts · {dashboardStats.total - dashboardStats.draftCount} sent</small>
+              </article>
+              <article className="metric-card metric-card-v2">
+                <div className="metric-card-top">
+                  <span className="metric-icon metric-icon-green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg></span>
+                  <span className="metric-label">Approved Quotes</span>
+                </div>
+                <strong>{dashboardStats.approved}</strong>
+                <small>{dashboardStats.conversionRate}% conversion rate</small>
+              </article>
+              <article className="metric-card metric-card-v2">
+                <div className="metric-card-top">
+                  <span className="metric-icon metric-icon-amber"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg></span>
+                  <span className="metric-label">Total Revenue</span>
+                </div>
+                <strong>{formatMoney(dashboardStats.totalRevenue, business.currency)}</strong>
+                <small>From approved quotes</small>
+              </article>
+              <article className="metric-card metric-card-v2">
+                <div className="metric-card-top">
+                  <span className="metric-icon metric-icon-red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg></span>
+                  <span className="metric-label">Pending Response</span>
+                </div>
+                <strong>{dashboardStats.pending}</strong>
+                <small>Awaiting customer reply</small>
+              </article>
+            </div>
+
+            <div className="dashboard-grid-two">
+              <section className="workspace-panel dashboard-chart-panel">
+                <div className="panel-heading panel-heading-flex">
+                  <div>
+                    <h2>Business Performance</h2>
+                    <p>Quotation value over time</p>
+                  </div>
+                  <div className="chart-range-toggle">
+                    {(['7D', '30D', '90D', '1Y'] as ChartRange[]).map((range) => (
+                      <button key={range} type="button" className={`chart-range-btn ${chartRange === range ? 'active' : ''}`} onClick={() => setChartRange(range)}>{range}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="chart-container">
+                  <div className="chart-y-axis">
+                    <span>{formatMoney(chartData.maxValue, business.currency).replace(/\.\d+/, '')}</span>
+                    <span>{formatMoney(chartData.maxValue * 0.75, business.currency).replace(/\.\d+/, '')}</span>
+                    <span>{formatMoney(chartData.maxValue * 0.5, business.currency).replace(/\.\d+/, '')}</span>
+                    <span>{formatMoney(chartData.maxValue * 0.25, business.currency).replace(/\.\d+/, '')}</span>
+                    <span>0</span>
+                  </div>
+                  <div className="chart-bars">
+                    {chartData.buckets.map((bucket, index) => {
+                      const heightPct = chartData.maxValue > 0 ? (bucket.value / chartData.maxValue) * 100 : 0
+                      return (
+                        <div key={index} className="chart-bar-wrapper" title={`${bucket.label}: ${formatMoney(bucket.value, business.currency)} (${bucket.count} quotes)`}>
+                          <div className="chart-bar-track">
+                            <div className="chart-bar-fill" style={{ height: `${Math.max(heightPct, bucket.value > 0 ? 4 : 0)}%` }}>
+                              {bucket.value > 0 && <span className="chart-bar-value">{formatMoney(bucket.value, business.currency).replace(/[^\d.]/g, '').length > 5 ? formatMoney(bucket.value, business.currency).replace(/000$/, 'k') : ''}</span>}
+                            </div>
+                          </div>
+                          <span className="chart-bar-label">{bucket.label}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div className="chart-summary">
+                  <div><span>Total quotes in range</span><strong>{chartData.totalQuotes}</strong></div>
+                  <div><span>Avg per period</span><strong>{chartData.totalQuotes > 0 ? (chartData.totalQuotes / chartData.buckets.length).toFixed(1) : '0'}</strong></div>
+                </div>
+              </section>
+
+              <aside className="dashboard-side-panels">
+                <div className="workspace-panel quick-actions-panel">
+                  <div className="panel-heading"><div><h2>Quick Actions</h2></div></div>
+                  <div className="quick-actions-grid">
+                    <button type="button" className="quick-action-btn" onClick={startNewQuote}>
+                      <span className="quick-action-icon qa-blue"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg></span>
+                      <span>New Quote</span>
+                    </button>
+                    <button type="button" className="quick-action-btn" onClick={() => { setCustomerForm(blankCustomer); setCustomerError(''); setCustomerModal(true) }}>
+                      <span className="quick-action-icon qa-green"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></svg></span>
+                      <span>Add Customer</span>
+                    </button>
+                    <button type="button" className="quick-action-btn" onClick={() => openServiceForm()}>
+                      <span className="quick-action-icon qa-purple"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /></svg></span>
+                      <span>Add Service</span>
+                    </button>
+                    <button type="button" className="quick-action-btn" onClick={() => changePage('settings')}>
+                      <span className="quick-action-icon qa-amber"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg></span>
+                      <span>Settings</span>
+                    </button>
+                  </div>
+                </div>
+
+                {upcomingQuotes.length > 0 && (
+                  <div className="workspace-panel upcoming-panel">
+                    <div className="panel-heading"><div><h2>Upcoming</h2><p>Quotes expiring soon</p></div></div>
+                    <div className="upcoming-list">
+                      {upcomingQuotes.map((quote) => {
+                        const daysLeft = Math.ceil((quote.validUntilDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+                        const isUrgent = daysLeft <= 3
+                        return (
+                          <div key={quote.id} className="upcoming-item" onClick={() => openQuote(quote)}>
+                            <div className="upcoming-item-info">
+                              <strong>{quote.documentNumber}</strong>
+                              <small>{quote.customer.name}</small>
+                            </div>
+                            <div className={`upcoming-days ${isUrgent ? 'urgent' : ''}`}>
+                              <span>{daysLeft}d</span>
+                              <small>{isUrgent ? 'Urgent' : 'Left'}</small>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </aside>
+            </div>
+
+            <section className="workspace-panel dashboard-recent-panel">
+              <div className="panel-heading"><div><h2>Recent Quotations</h2><p>Your latest quotation activity</p></div><button className="link-button" onClick={() => changePage('quotes')} type="button">View all →</button></div>
+              {quotes.length > 0 ? (
+                <DashboardQuoteTable quotes={quotes.slice(0, 8)} currency={business.currency} onOpen={openQuote} />
+              ) : (
+                <div className="panel-empty"><h3>Your quote list is ready</h3><p>Create a quote and send a shareable link to your first customer.</p><button className="button button-primary" onClick={startNewQuote} type="button">Create your first quote</button></div>
+              )}
             </section>
           </section>
         )}
@@ -655,4 +865,35 @@ function QuoteTable({ quotes, currency, onOpen }: { quotes: Quote[]; currency: s
 
 function EmptyRows({ hasQuotes, label }: { hasQuotes: boolean; label: string }) {
   return hasQuotes ? null : <div className="panel-empty"><h3>{label}</h3><p>Try changing the search or status filter.</p></div>
+}
+
+function DashboardQuoteTable({ quotes, currency, onOpen }: { quotes: Quote[]; currency: string; onOpen: (quote: Quote) => void }) {
+  return (
+    <div className="table-scroll">
+      <table className="data-table dashboard-table">
+        <thead>
+          <tr>
+            <th>Quote #</th>
+            <th>Customer</th>
+            <th>Date</th>
+            <th>Amount</th>
+            <th>Status</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {quotes.map((quote) => (
+            <tr key={quote.id} onClick={() => onOpen(quote)}>
+              <td><strong>{quote.documentNumber}</strong></td>
+              <td>{quote.customer.name}</td>
+              <td className="muted-cell">{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.updatedAt))}</td>
+              <td className="amount-cell">{formatMoney(quote.total, currency)}</td>
+              <td><span className={statusClass(quote.status)}>{statusNames[quote.status]}</span></td>
+              <td><button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onOpen(quote) }}>{quote.status === 'DRAFT' ? 'Edit' : 'View'}</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }

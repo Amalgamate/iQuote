@@ -50,7 +50,7 @@ const planCards: Array<{ id: Plan; name: string; detail: string; features: strin
 ]
 
 export default function MarketingSite() {
-  const [screen, setScreen] = useState<'landing' | 'signup' | 'login'>('landing')
+  const [screen, setScreen] = useState<'landing' | 'signup' | 'login' | 'market'>(() => window.location.pathname === '/market' ? 'market' : 'landing')
   const [step, setStep] = useState<Step>(1)
   const [resendWait, setResendWait] = useState(0)
   const [name, setName] = useState('')
@@ -159,11 +159,13 @@ export default function MarketingSite() {
     }
   }
 
+  if (screen === 'market') return <MarketLanding />
+
   if (screen === 'landing') {
     return <div className="site-page">
       <header className="site-header">
         <a href="#top" className="site-brand" aria-label="iQuote home"><span className="site-brand-mark">iQ</span><span>iquote<span className="site-brand-dot">.</span></span></a>
-        <nav className="site-nav"><a href="#how">How it works</a><a href="#features">Features</a><a href="#plans">Plans</a></nav>
+        <nav className="site-nav"><a href="#how">How it works</a><a href="#features">Features</a><a href="/market">Market <span className="market-nav-badge">Preview</span></a><a href="#plans">Plans</a></nav>
         <div className="site-header-actions"><button className="site-login" onClick={() => { setScreen('login'); setError('') }}>Sign in</button><button className="site-cta site-cta-small" onClick={startSignup}>Start your trial <span>↗</span></button></div>
       </header>
       <main id="top">
@@ -345,6 +347,38 @@ export default function MarketingSite() {
             </article>
           </div>
         </section>
+        <section className="site-market" id="market">
+          <div className="market-heading">
+            <div>
+              <p className="site-kicker"><span className="kicker-rule" /> A NEW WAY TO FIND WORK</p>
+              <h2>Good work should<br /><em>find its way to you.</em></h2>
+            </div>
+            <p className="market-intro-copy">iQuote Market is our next product direction: customers post what they need, and relevant businesses can be invited to send a proposal. Explore the idea behind iQuote Market, see how customers and providers could work together, and learn how vendor participation is planned.</p>
+          </div>
+          <div className="market-demo-layout">
+            <article className="market-request-window" aria-label="Illustrative marketplace request">
+              <div className="market-window-bar"><div className="market-window-dots"><i /><i /><i /></div><span>iQuote Market <b>CONCEPT PREVIEW</b></span><span className="market-window-lock">Private invitations</span></div>
+              <div className="market-request-body">
+                <div className="market-request-label"><span>NEW OPPORTUNITY</span><span className="market-sample-tag">SAMPLE REQUEST</span></div>
+                <div className="market-request-title-row"><div><span className="market-category-pill">Branding &amp; print</span><h3>Branded launch kit</h3><p>A Nairobi wellness brand is preparing for a new studio opening.</p></div><div className="market-request-amount"><small>ESTIMATED BUDGET</small><b>KSh 120k–180k</b></div></div>
+                <div className="market-request-details"><div><small>WHAT THEY NEED</small><b>1,000 branded T-shirts<br />3 roll-up banners</b></div><div><small>DELIVERY AREA</small><b>Westlands, Nairobi</b></div><div><small>RESPONSE BY</small><b>28 November</b></div></div>
+                <div className="market-matched-row"><div className="market-avatar-stack"><span>ST</span><span>MK</span><span>+6</span></div><div><b>Invited businesses</b><small>Matched by service and delivery area</small></div><span className="market-invite-count">8 invited</span></div>
+                <div className="market-request-footer"><span>Illustrative flow · not a live request</span><button type="button" disabled>Preview opportunity <span>↗</span></button></div>
+              </div>
+            </article>
+            <aside className="market-side-note">
+              <div className="market-direction-chip"><span>↗</span> PLANNED PRODUCT DIRECTION</div>
+              <h3>New work can flow into the tools you already use.</h3>
+              <p>A selected proposal could become a regular quote in your iQuote workspace, keeping the customer, pricing, and next steps connected.</p>
+              <div className="market-flow-list">
+                <div><span>01</span><div><b>Customer shares a request</b><small>Clear scope, location, timing, and budget.</small></div></div>
+                <div><span>02</span><div><b>Relevant businesses are invited</b><small>Private invitations keep each proposal confidential.</small></div></div>
+                <div><span>03</span><div><b>Chosen proposal moves forward</b><small>Continue the conversation in the provider workspace.</small></div></div>
+              </div>
+              <p className="market-status-note"><span /> Market is a concept preview. It is not available for customer or provider sign-up yet.</p><a className="market-explore-link" href="/market">Explore Market and how to join <span>↗</span></a>
+            </aside>
+          </div>
+        </section>
         <section className="site-steps"><div className="steps-intro"><p className="site-kicker">A SHORTER WAY TO GET STARTED</p><h2>Your workspace,<br /><em>your way of working.</em></h2><p>Set up the essentials first. You can refine your profile, quote defaults, and team access as your business grows.</p><button className="site-cta" onClick={startSignup}>Start with your email <span>↗</span></button></div><div className="step-list"><div><span>01</span><section><h3>Verify your email</h3><p>Keep your account yours from the beginning. We send one short code and you can request a fresh one if needed.</p></section></div><div><span>02</span><section><h3>Add your business</h3><p>Choose a name, country, and contact number. We set a sensible starting currency for your region.</p></section></div><div><span>03</span><section><h3>Explore a trial plan</h3><p>Choose a setup for your business. Billing is simulated locally; no payment details are collected in this preview.</p></section></div></div></section>
         <section className="site-plans" id="plans"><div><p className="site-kicker">A PLAN FOR YOUR NEXT CHAPTER</p><h2>Start simple.<br /><em>Grow when ready.</em></h2><p className="plan-note">Every plan begins with a 14-day local preview. Pick the workspace shape you want to explore; billing can be connected later.</p></div><div className="plan-tiles">{planCards.map((item, index) => <article key={item.id} className={index === 1 ? 'plan-tile plan-featured' : 'plan-tile'}><div className="plan-tile-top"><span>{item.name}</span>{index === 1 && <small>GOOD PLACE TO START</small>}</div><p>{item.detail}</p><ul>{item.features.map(feature => <li key={feature}><span>✓</span>{feature}</li>)}</ul><button className={index === 1 ? 'site-cta' : 'site-plan-link'} onClick={startSignup}>Explore this plan <span>↗</span></button></article>)}</div></section>
         <section className="site-final-cta"><div><p className="site-kicker">A CALMER QUOTING DESK STARTS HERE</p><h2>Make your next quote<br />your best one yet.</h2></div><button className="site-cta site-cta-light" onClick={startSignup}>Set up iQuote <span>↗</span></button></section>
@@ -365,6 +399,85 @@ export default function MarketingSite() {
       {step === 3 && <><p className="site-kicker">STEP 03 · YOUR BUSINESS</p><h1>Tell us about<br />your business.</h1><p className="onboarding-copy">Choose what you do. We’ll start your workspace with relevant service categories and quote templates. You can change everything later.</p><form onSubmit={event => { event.preventDefault(); setStep(4); setError('') }} className="onboarding-form"><label>Business name<input required autoComplete="organization" value={businessName} onChange={event => setBusinessName(event.target.value)} placeholder="e.g. North Studio" /></label><label>Business type<select required value={businessType} onChange={event => setBusinessType(event.target.value)}><option value="" disabled>Choose a business type</option><option>Handyman / home repair</option><option>Plumbing</option><option>Electrical</option><option>Cleaning &amp; maintenance</option><option>Construction &amp; contracting</option><option>Consulting &amp; professional services</option><option>Creative studio</option><option>Retail &amp; product sales</option><option>Other service business</option></select></label><div className="onboarding-two"><label>Country<select value={country} onChange={event => setCountry(event.target.value)}><option>Kenya</option><option>Uganda</option><option>Tanzania</option><option>Rwanda</option><option>United States</option><option>United Kingdom</option><option>Other</option></select></label><label>Phone number <span className="optional-label">optional</span><input type="tel" autoComplete="tel" value={phone} onChange={event => setPhone(event.target.value)} placeholder="+254 700 000 000" /></label></div>{notice && <p className="onboarding-notice">{notice}</p>}<button className="site-cta onboarding-submit">Continue to plans <span>↗</span></button></form><button className="back-link" onClick={back}>← Back</button></>}
     </div> : <div className="onboarding-form-wrap completion-wrap"><div className="completion-check">✓</div><p className="site-kicker">YOUR TRIAL WORKSPACE IS READY</p><h1>Welcome to<br />{businessName}.</h1><p className="onboarding-copy">Your <b>{planCards.find(item => item.id === plan)?.name}</b> plan is active in local preview for 14 days. No payment details were collected.</p>{notice && <p className="onboarding-notice">{notice}</p>}<div className="completion-summary"><span>Business</span><b>{businessName}</b><span>Plan</span><b>{planCards.find(item => item.id === plan)?.name} · 14-day trial</b><span>Account</span><b>{email}</b></div><button className="site-cta onboarding-submit" onClick={() => window.location.reload()}>Open your workspace <span>↗</span></button></div>}
   </section><OnboardingAside />{step === 4 && <div className="plan-picker" role="dialog" aria-label="Choose a trial plan"><div className="plan-picker-inner"><p className="site-kicker">STEP 04 · CHOOSE A TRIAL PLAN</p><h2>Choose your workspace shape.</h2><p className="plan-picker-copy">No card. No charge. This local plan selection is simulated while billing is built.</p><div className="signup-plan-list">{planCards.map(item => <button type="button" key={item.id} onClick={() => setPlan(item.id)} className={plan === item.id ? 'signup-plan selected' : 'signup-plan'}><span className="radio-dot">{plan === item.id && <i />}</span><span className="signup-plan-text"><b>{item.name}</b><small>{item.detail}</small><em>{item.features.join(' · ')}</em></span><span className="trial-pill">14-day trial</span></button>)}</div>{error && <p className="onboarding-error">{error}</p>}<div className="plan-picker-actions"><button className="back-link" onClick={back}>← Back</button><button className="site-cta" disabled={busy} onClick={event => { event.preventDefault(); void completeSignup(new Event('submit') as unknown as FormEvent<HTMLFormElement>) }}>{busy ? 'Creating workspace…' : 'Create trial workspace'} <span>↗</span></button></div></div></div>}</div></div>
+}
+
+function MarketLanding() {
+  const [selectedOpportunityType, setSelectedOpportunityType] = useState<'ALL' | 'RFQ' | 'RFS' | 'RFP'>('ALL')
+  const opportunityTypes = ['ALL', 'RFQ', 'RFS', 'RFP'] as const
+  const opportunities = [
+    { id: 'RFQ-2048', type: 'RFQ' as const, category: 'Print & promotional', title: 'Branded tote bags and aprons', scope: '500 tote bags · 120 aprons', place: 'Nairobi · Westlands', budget: 'KSh 95k–140k', closes: 'Closes in 4 days', art: 'print' },
+    { id: 'RFS-1172', type: 'RFS' as const, category: 'Security & installation', title: 'CCTV setup across two offices', scope: 'Site visit · installation · handover', place: 'Mombasa · Nyali', budget: 'KSh 180k–260k', closes: 'Closes in 6 days', art: 'install' },
+    { id: 'RFP-0831', type: 'RFP' as const, category: 'Creative services', title: 'Brand refresh and launch campaign', scope: 'Identity · launch assets · guidelines', place: 'Nairobi · Hybrid', budget: 'KSh 300k–500k', closes: 'Closes in 8 days', art: 'creative' },
+  ]
+  const visibleOpportunities = selectedOpportunityType === 'ALL' ? opportunities : opportunities.filter(item => item.type === selectedOpportunityType)
+
+  return <div className="site-page market-page">
+    <header className="site-header">
+      <a href="/" className="site-brand" aria-label="iQuote home"><span className="site-brand-mark">iQ</span><span>iquote<span className="site-brand-dot">.</span></span></a>
+      <nav className="site-nav" aria-label="Market navigation"><a href="/">Home</a><a href="#how-market">How it works</a><a href="#vendor-steps">Become a vendor</a></nav>
+      <div className="site-header-actions"><span className="market-preview-label">Concept preview</span><a className="site-cta site-cta-small" href="#vendor-steps">Vendor guide <span>↓</span></a></div>
+    </header>
+    <main id="market-top">
+      <section className="market-page-hero">
+        <div className="market-page-copy">
+          <p className="site-kicker"><span className="kicker-rule" /> IQUOTE MARKET · PRODUCT PREVIEW</p>
+          <h1>Find work that fits <em>what you do.</em></h1>
+          <p>Market is being designed to help customers describe a real need and connect with relevant businesses. Providers can learn about opportunities, send a proposal, and continue in their iQuote workspace.</p>
+          <div className="market-page-actions"><a className="site-cta" href="#how-market">See how it works <span>↓</span></a><a className="market-text-link" href="#vendor-steps">How to become a vendor <span>↗</span></a></div>
+          <div className="market-page-note"><span /> Market is not open for customer requests or vendor applications yet.</div>
+        </div>
+        <div className="market-page-card">
+          <div className="market-window-bar"><div className="market-window-dots"><i /><i /><i /></div><span>Opportunity preview</span><span className="market-sample-tag">SAMPLE</span></div>
+          <div className="market-request-body">
+            <span className="market-category-pill">Branding &amp; print</span>
+            <h2>Branded launch kit</h2>
+            <p className="market-page-card-copy">A sample customer request for a new wellness studio in Nairobi.</p>
+            <div className="market-request-details"><div><small>SCOPE</small><b>1,000 T-shirts<br />3 roll-up banners</b></div><div><small>AREA</small><b>Westlands</b></div><div><small>BUDGET GUIDE</small><b>KSh 120k–180k</b></div></div>
+            <div className="market-matched-row"><div className="market-avatar-stack"><span>ST</span><span>MK</span><span>+6</span></div><div><b>Private provider invitations</b><small>Illustrative matching by service and area</small></div></div>
+            <div className="market-page-card-foot">This is sample content for a planned marketplace flow.</div>
+          </div>
+        </div>
+      </section>
+      <section className="market-opportunity-board" id="opportunities">
+        <div className="market-board-heading"><div><p className="site-kicker">A SAMPLE MARKET FEED</p><h2>Different requests.<br /><em>Real work to explore.</em></h2><p>Illustrative RFQs, service requests, and project briefs show how opportunities could appear in Market.</p></div><div className="market-feed-status"><span /> SAMPLE DATA ONLY<br /><small>No live buyer requests</small></div></div>
+        <div className="market-type-filters" role="group" aria-label="Filter sample opportunities">{opportunityTypes.map(type => <button key={type} type="button" className={selectedOpportunityType === type ? 'active' : ''} onClick={() => setSelectedOpportunityType(type)}>{type === 'ALL' ? 'All requests' : type}</button>)}</div>
+        <div className="market-opportunity-grid">{visibleOpportunities.map(item => <article className="market-opportunity-card" key={item.id}>
+          <div className={`market-opportunity-art market-art-${item.art}`} aria-hidden="true">
+            <span className="market-art-sun" />
+            {item.art === 'print' && <><span className="market-art-tote" /><span className="market-art-apron" /><span className="market-art-print-roll" /><span className="market-art-plant" /></>}
+            {item.art === 'install' && <><span className="market-art-building"><i /><i /><i /></span><span className="market-art-ladder" /><span className="market-art-installer"><i /></span><span className="market-art-toolbox" /></>}
+            {item.art === 'creative' && <><span className="market-art-board"><i /><i /><i /><b>BRAND<br />STUDIO</b></span><span className="market-art-cup" /><span className="market-art-pencil" /></>}
+            <span className="market-art-ticket">{item.type}</span>
+          </div>
+          <div className="market-opportunity-content"><div className="market-opportunity-meta"><span className={`market-type-badge badge-${item.type.toLowerCase()}`}>{item.type} <i>{item.type === 'RFQ' ? 'Request for quotation' : item.type === 'RFS' ? 'Request for services' : 'Request for proposal'}</i></span><span className="market-sample-id">{item.id} · SAMPLE</span></div>
+            <p className="market-opportunity-category">{item.category}</p><h3>{item.title}</h3><p className="market-opportunity-scope">{item.scope}</p>
+            <div className="market-opportunity-facts"><div><small>LOCATION</small><b>{item.place}</b></div><div><small>BUDGET GUIDE</small><b>{item.budget}</b></div></div>
+            <div className="market-opportunity-footer"><span>◷ &nbsp;{item.closes}</span><span>Invite-only concept</span></div>
+          </div>
+        </article>)}</div>
+        <p className="market-feed-footnote">Request types and example details are mock data for product discussion. No application, invitation, or proposal is sent from this page.</p>
+      </section>
+      <section className="market-audience" id="how-market">
+        <div className="market-audience-heading"><p className="site-kicker">HOW IT WORKS</p><h2>One marketplace.<br /><em>Two clear paths.</em></h2><p>The pilot concept is designed to make the next step simple for both the customer asking and the business responding.</p></div>
+        <div className="market-audience-cards">
+          <article><span className="market-audience-icon">⌕</span><p className="market-audience-kicker">FOR CUSTOMERS</p><h3>Describe the work you need.</h3><p>Share the scope, location, timing, and budget guide. Review proposals from businesses invited for the request, then choose who to work with.</p><a href="#customer-steps">Customer journey <span>↓</span></a></article>
+          <article className="vendor-card"><span className="market-audience-icon">↗</span><p className="market-audience-kicker">FOR SERVICE BUSINESSES</p><h3>Get invited to work that fits.</h3><p>Show what your business does and where you work. Review private opportunities that match, then submit a clear proposal when you’re interested.</p><a href="#vendor-steps">Vendor journey <span>↓</span></a></article>
+        </div>
+      </section>
+      <section className="market-journeys" id="vendor-steps">
+        <div className="market-journey-heading"><p className="site-kicker">HOW TO BECOME A VENDOR</p><h2>Set up your profile.<br /><em>Be ready for the right invite.</em></h2><p>When the pilot opens, joining is expected to build on an iQuote business workspace. Here’s the proposed onboarding path.</p></div>
+        <div className="market-vendor-steps">
+          <article><span>01</span><h3>Create your business workspace</h3><p>Register for iQuote and add your business name and contact details.</p></article>
+          <article><span>02</span><h3>Tell us what you offer</h3><p>Select services, categories, delivery areas, and the kind of work you can take on.</p></article>
+          <article><span>03</span><h3>Review private invitations</h3><p>See the request scope and deadline before deciding whether to respond.</p></article>
+          <article><span>04</span><h3>Send a clear proposal</h3><p>Share your price, timing, and approach. If selected, continue with the customer through iQuote.</p></article>
+        </div>
+        <div className="market-vendor-callout"><div><span className="market-direction-chip"><span>iQ</span> PILOT ACCESS IS PLANNED</span><h3>Vendor applications are not open yet.</h3><p>We’re validating the first categories and invite model. No application is submitted from this preview; the steps above show the direction under consideration.</p></div><a className="market-back-link" href="/">Back to iQuote <span>↗</span></a></div>
+      </section>
+      <section className="market-customer-steps" id="customer-steps"><div><p className="site-kicker">FOR CUSTOMERS</p><h2>From a request to a confident choice.</h2></div><div className="market-customer-flow"><div><span>01</span><b>Post the essentials</b><small>Scope, location, budget guide, and deadline.</small></div><div><span>02</span><b>Compare proposals</b><small>Invited businesses respond privately.</small></div><div><span>03</span><b>Choose who to work with</b><small>Continue into a quote and delivery workflow.</small></div></div></section>
+    </main>
+    <footer className="site-footer"><a href="/" className="site-brand"><span className="site-brand-mark">iQ</span><span>iquote<span className="site-brand-dot">.</span></span></a><span>iQuote Market · Concept preview</span><a href="/">Return to iQuote</a></footer>
+  </div>
 }
 
 function OnboardingAside() {
