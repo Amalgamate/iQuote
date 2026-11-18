@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { PrismaClient } from '@prisma/client'
+import { PrismaClient, Prisma } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
@@ -352,7 +352,7 @@ app.post('/api/auth/verification/send', async (req, res) => {
   })
   const localSimulation = !apiKey && process.env.NODE_ENV !== 'production'
   res.json({ delivery: emailSent ? 'sent' : 'simulation', ...(localSimulation ? { devCode: code } : {}) })
-}
+})
 
 app.get('/api/settings/email', requireAuth, async (req, res) => {
   const user = getRequestUser(req)
@@ -448,7 +448,7 @@ app.put('/api/settings/email', requireAuth, async (req, res) => {
     update: {
       provider, senderName: senderName || null, senderEmail: senderEmail || null,
       customDomain: customDomain || null, resendApiKeyCiphertext: encryptedKey,
-      ...(domainChanged || provider !== 'CUSTOM' ? { domainStatus: provider === 'CUSTOM' && customDomain ? 'PENDING' : 'NOT_CONFIGURED', domainRecords: null, verifiedAt: null } : {}),
+      ...(domainChanged || provider !== 'CUSTOM' ? { domainStatus: provider === 'CUSTOM' && customDomain ? 'PENDING' : 'NOT_CONFIGURED', domainRecords: Prisma.DbNull, verifiedAt: null } : {}),
     },
   })
   res.json({ provider: next.provider, senderName: next.senderName ?? '', senderEmail: next.senderEmail ?? '', customDomain: next.customDomain ?? '', domainStatus: next.domainStatus, apiKeySet: Boolean(next.resendApiKeyCiphertext) })
