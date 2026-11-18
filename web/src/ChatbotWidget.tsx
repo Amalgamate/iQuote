@@ -161,7 +161,7 @@ export default function ChatbotWidget({ onStartTrial }: ChatbotWidgetProps) {
           <span className="launcher-close-icon">✕</span>
         ) : (
           <div className="launcher-icon-wrap">
-            <span className="launcher-icon">✨</span>
+            <span className="launcher-icon" aria-hidden="true">iQ</span>
             <span className="launcher-radar-ring" />
           </div>
         )}

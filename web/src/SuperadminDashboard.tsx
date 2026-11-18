@@ -204,87 +204,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
           </div>
         )}
 
-        {page === 'overview' && stats && (
-          <section className="workspace-content">
-            <div className="admin-overview-intro">
-              <div><p className="workspace-eyebrow">Platform health</p><h2>Everything at a glance</h2><p>Live activity across the businesses using iQuote.</p></div>
-              <span className="admin-live-indicator"><i /> Data refreshed from platform</span>
-            </div>
-            <div className="metric-grid">
-              <article className="metric-card">
-                <span>Total businesses</span>
-                <strong>{stats.totalOrganisations}</strong>
-                <small>Registered workspaces</small>
-              </article>
-              <article className="metric-card">
-                <span>Total signups</span>
-                <strong>{stats.totalUsers}</strong>
-                <small>All registered users</small>
-              </article>
-              <article className="metric-card">
-                <span>Total quotes</span>
-                <strong>{stats.totalQuotes}</strong>
-                <small>{stats.approvedQuotes} approved</small>
-              </article>
-              <article className="metric-card">
-                <span>Total value quoted</span>
-                <strong>{formatMoney(stats.totalQuotedValue, 'USD')}</strong>
-                <small>Across all workspaces</small>
-              </article>
-              <article className="metric-card">
-                <span>Active trials</span>
-                <strong>{stats.activeTrials}</strong>
-                <small>On 14-day trial</small>
-              </article>
-              <article className="metric-card">
-                <span>Approved value</span>
-                <strong>{formatMoney(recentQuotes.filter((q) => q.status === 'APPROVED').reduce((s, q) => s + q.total, 0), 'USD')}</strong>
-                <small>From recent approved quotes</small>
-              </article>
-            </div>
-
-            <section className="workspace-panel">
-              <div className="panel-heading"><div><h2>Recent signups</h2><p>Latest users to join the platform</p></div></div>
-              <div className="table-scroll">
-                <table className="data-table">
-                  <thead><tr><th>Name</th><th>Email</th><th>Workspace</th><th>Role</th><th>Joined</th></tr></thead>
-                  <tbody>
-                    {stats.recentSignups.map((u) => (
-                      <tr key={u.id}>
-                        <td><strong>{u.name}</strong></td>
-                        <td>{u.email}</td>
-                        <td>{u.organisationName ?? '—'}</td>
-                        <td>{u.role === 'SUPERADMIN' ? <span className="plan-badge plan-active">Superadmin</span> : 'User'}</td>
-                        <td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(u.createdAt))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            <section className="workspace-panel">
-              <div className="panel-heading"><div><h2>Recent quotes</h2><p>Latest quoting activity across all workspaces</p></div></div>
-              <div className="table-scroll">
-                <table className="data-table">
-                  <thead><tr><th>Quote</th><th>Workspace</th><th>Customer</th><th>Total</th><th>Status</th><th>Created</th></tr></thead>
-                  <tbody>
-                    {recentQuotes.slice(0, 15).map((q) => (
-                      <tr key={q.id}>
-                        <td><strong>{q.documentNumber}</strong></td>
-                        <td>{q.organisation.name}</td>
-                        <td>{q.customer.name}</td>
-                        <td>{formatMoney(q.total, q.currency)}</td>
-                        <td><span className={`quote-status status-${q.status.toLowerCase()}`}>{q.status.charAt(0) + q.status.slice(1).toLowerCase()}</span></td>
-                        <td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(q.createdAt))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </section>
-        )}
+        {page === 'overview' && stats && <AdminOverview user={user} stats={stats} workspaces={workspaces} quotes={recentQuotes} onWorkspaces={() => setPage('workspaces')} onQuotes={() => setPage('quotes')} onSignups={() => setPage('signups')} />}
 
         {page === 'workspaces' && (
           <section className="workspace-content">
@@ -383,5 +303,82 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
         )}
       </main>
     </div>
+  )
+}
+
+function AdminOverview({ user, stats, workspaces, quotes, onWorkspaces, onQuotes, onSignups }: {
+  user: User
+  stats: SuperadminStats
+  workspaces: WorkspaceRow[]
+  quotes: RecentQuote[]
+  onWorkspaces: () => void
+  onQuotes: () => void
+  onSignups: () => void
+}) {
+  const monthNames = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date()
+    date.setDate(1)
+    date.setMonth(date.getMonth() - (5 - index))
+    return { key: `${date.getFullYear()}-${date.getMonth()}`, label: date.toLocaleDateString('en', { month: 'short' }), year: date.getFullYear(), month: date.getMonth() }
+  })
+  const growthValues = monthNames.map((month) => ({
+    ...month,
+    businesses: workspaces.filter((item) => { const date = new Date(item.createdAt); return date.getFullYear() === month.year && date.getMonth() === month.month }).length,
+    users: stats.recentSignups.filter((item) => { const date = new Date(item.createdAt); return date.getFullYear() === month.year && date.getMonth() === month.month }).length,
+  }))
+  const maxGrowth = Math.max(1, ...growthValues.flatMap((item) => [item.businesses, item.users]))
+  const counts = {
+    approved: quotes.filter((item) => item.status === 'APPROVED').length,
+    awaiting: quotes.filter((item) => ['SENT', 'VIEWED'].includes(item.status)).length,
+    draft: quotes.filter((item) => item.status === 'DRAFT').length,
+    other: quotes.filter((item) => ['DECLINED', 'EXPIRED'].includes(item.status)).length,
+  }
+  const totalStatus = Math.max(1, quotes.length)
+  const recentBusinesses = [...workspaces].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 5)
+  const activity = [
+    ...quotes.slice(0, 5).map((item) => ({ id: `quote-${item.id}`, date: item.createdAt, title: item.documentNumber, detail: `${item.organisation.name} · ${item.status.toLowerCase()} · ${formatMoney(item.total, item.currency)}`, kind: 'Quote activity' })),
+    ...stats.recentSignups.slice(0, 5).map((item) => ({ id: `user-${item.id}`, date: item.createdAt, title: item.name, detail: item.organisationName ?? item.email, kind: 'New signup' })),
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 5)
+  const donutStyle = { background: `conic-gradient(#237b56 0 ${counts.approved / totalStatus * 100}%, #e2b75d ${counts.approved / totalStatus * 100}% ${(counts.approved + counts.awaiting) / totalStatus * 100}%, #7897ba ${(counts.approved + counts.awaiting) / totalStatus * 100}% ${(counts.approved + counts.awaiting + counts.draft) / totalStatus * 100}%, #e7ece8 ${(counts.approved + counts.awaiting + counts.draft) / totalStatus * 100}% 100%)` }
+
+  return (
+    <section className="workspace-content admin-dashboard-page">
+      <div className="admin-dashboard-heading"><div><p className="dashboard-date-label">PLATFORM ADMINISTRATION</p><h2>Good morning, <em>{user.name.split(/\s+/)[0] || 'Admin'}</em>.</h2><p>Here’s what’s happening across the iQuote platform.</p></div><span className="admin-live-indicator"><i/>Platform data is live</span></div>
+
+      <div className="admin-dashboard-metrics">
+        <article><small>Businesses</small><strong>{stats.totalOrganisations.toLocaleString()}</strong><span>Registered workspaces</span></article>
+        <article><small>Users</small><strong>{stats.totalUsers.toLocaleString()}</strong><span>Across all workspaces</span></article>
+        <article><small>Quotes created</small><strong>{stats.totalQuotes.toLocaleString()}</strong><span>{stats.approvedQuotes.toLocaleString()} approved</span></article>
+        <article><small>Value quoted</small><strong>{formatMoney(stats.totalQuotedValue, 'USD')}</strong><span>Platform total</span></article>
+        <article><small>Active trials</small><strong>{stats.activeTrials.toLocaleString()}</strong><span>On a 14-day trial</span></article>
+      </div>
+
+      <div className="admin-dashboard-grid">
+        <section className="admin-dashboard-panel admin-growth-panel">
+          <div className="admin-panel-heading"><div><h3>Workspace growth</h3><p>Businesses and user accounts in recent records</p></div><button className="dashboard-text-link" type="button" onClick={onSignups}>View signups →</button></div>
+          <div className="admin-growth-legend"><span><i className="admin-growth-business"/>Businesses</span><span><i className="admin-growth-user"/>Users</span></div>
+          <div className="admin-growth-chart">{growthValues.map((item) => <div className="admin-growth-month" key={item.key}><div className="admin-growth-bars"><i title={`${item.businesses} businesses`} style={{ height: `${Math.max(5, item.businesses / maxGrowth * 100)}%` }}/><i title={`${item.users} users`} style={{ height: `${Math.max(5, item.users / maxGrowth * 100)}%` }}/></div><small>{item.label}</small></div>)}</div>
+          <div className="admin-growth-caption">Based on the workspace page and latest signup records currently loaded.</div>
+        </section>
+
+        <section className="admin-dashboard-panel admin-status-panel">
+          <div className="admin-panel-heading"><div><h3>Quote activity</h3><p>Current lifecycle in recent quotes</p></div><button className="dashboard-text-link" type="button" onClick={onQuotes}>View quotes →</button></div>
+          <div className="admin-status-layout"><div className="dashboard-donut" style={donutStyle}><div><strong>{stats.totalQuotes.toLocaleString()}</strong><small>all quotes</small></div></div><div className="dashboard-pipeline-legend"><span><i className="pipeline-approved"/>Approved<b>{counts.approved}</b></span><span><i className="pipeline-awaiting"/>Awaiting reply<b>{counts.awaiting}</b></span><span><i className="pipeline-draft"/>Draft<b>{counts.draft}</b></span><span><i className="pipeline-other"/>Other<b>{counts.other}</b></span></div></div>
+          <small className="admin-growth-caption">Lifecycle counts reflect the latest {quotes.length} loaded quotes.</small>
+        </section>
+      </div>
+
+      <div className="admin-dashboard-lower">
+        <section className="admin-dashboard-panel admin-business-panel">
+          <div className="admin-panel-heading"><div><h3>Recently active businesses</h3><p>Workspace onboarding and trial state</p></div><button className="dashboard-text-link" type="button" onClick={onWorkspaces}>All businesses →</button></div>
+          <div className="table-scroll"><table className="data-table admin-dashboard-table"><thead><tr><th>Business</th><th>Owner</th><th>Plan</th><th>Quotes</th><th>Trial status</th></tr></thead><tbody>{recentBusinesses.map((item) => <tr key={item.id}><td><strong>{item.name}</strong><small>{item.country ?? 'Location not set'}</small></td><td>{item.owner.name}<small>{item.owner.email}</small></td><td>{item.subscription?.plan ?? '—'}</td><td>{item.quoteCount}</td><td><span className={planBadgeClass(item.subscription?.status ?? '')}>{trialStatus(item)}</span></td></tr>)}</tbody></table></div>
+          {!recentBusinesses.length && <div className="customer-dashboard-empty compact">New workspaces will appear here.</div>}
+        </section>
+        <section className="admin-dashboard-panel admin-platform-activity">
+          <div className="admin-panel-heading"><div><h3>Platform activity</h3><p>Recent account and quote events</p></div></div>
+          {activity.length ? <div className="dashboard-activity-list">{activity.map((item) => <div className="dashboard-activity-item admin-activity-row" key={item.id}><span className="dashboard-activity-icon">{item.kind === 'New signup' ? '＋' : '↗'}</span><span><strong>{item.title}</strong><small>{item.kind} · {item.detail}</small></span></div>)}</div> : <div className="customer-dashboard-empty compact">Platform events will appear here.</div>}
+        </section>
+      </div>
+    </section>
   )
 }

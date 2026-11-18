@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   iQuote AI Chatbot Assistant Widget — Solid Blue Theme (NO GRADIENTS)
+   iQuote AI Chatbot Assistant Widget — Market Green Theme
    ═══════════════════════════════════════════════════════════════════════ */
 
 .iq-chatbot-root {
@@ -20,9 +20,9 @@
   gap: 10px;
   padding: 10px 16px;
   background: #ffffff;
-  border: 1px solid #d8e4f2;
+  border: 1px solid #e7ece8;
   border-radius: 9999px;
-  box-shadow: 0 10px 30px rgba(8, 17, 32, 0.12);
+  box-shadow: 0 10px 30px rgb(20 61 44 / 12%);
   cursor: pointer;
   white-space: nowrap;
   animation: teaserBounce 0.4s cubic-bezier(0.16, 1, 0.3, 1);
@@ -31,15 +31,15 @@
 
 .iq-chat-teaser:hover {
   transform: translateY(-2px);
-  box-shadow: 0 14px 36px rgba(0, 82, 255, 0.16);
-  border-color: #0052ff;
+  box-shadow: 0 14px 36px rgb(23 107 75 / 16%);
+  border-color: #176b4b;
 }
 
 .teaser-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #0052ff;
+  background: #176b4b;
   display: inline-block;
   flex-shrink: 0;
 }
@@ -47,12 +47,12 @@
 .iq-chat-teaser p {
   margin: 0;
   font-size: 11px;
-  color: #0a1128;
+  color: #14241f;
   font-family: 'Montserrat', sans-serif;
 }
 
 .iq-chat-teaser p b {
-  color: #0052ff;
+  color: #176b4b;
   font-weight: 700;
 }
 
@@ -69,7 +69,7 @@
 }
 
 .teaser-close:hover {
-  color: #0a1128;
+  color: #14241f;
 }
 
 @keyframes teaserBounce {
@@ -82,12 +82,12 @@
   width: 60px;
   height: 60px;
   border-radius: 50%;
-  border: 1px solid #d8e4f2;
-  background: #0052ff;
+  border: 1px solid #e7ece8;
+  background: #176b4b;
   color: #ffffff;
   display: grid;
   place-items: center;
-  box-shadow: 0 10px 28px rgba(0, 82, 255, 0.35);
+  box-shadow: 0 10px 28px rgb(23 107 75 / 30%);
   cursor: pointer;
   position: relative;
   transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease, box-shadow 0.2s ease;
@@ -95,14 +95,14 @@
 
 .iq-chat-launcher:hover {
   transform: scale(1.06);
-  background: #003ecc;
-  box-shadow: 0 14px 34px rgba(0, 82, 255, 0.45);
+  background: #0d5038;
+  box-shadow: 0 14px 34px rgb(23 107 75 / 38%);
 }
 
 .iq-chat-launcher.active {
-  background: #081120;
-  border-color: #081120;
-  box-shadow: 0 10px 28px rgba(8, 17, 32, 0.35);
+  background: #143d2c;
+  border-color: #143d2c;
+  box-shadow: 0 10px 28px rgb(20 61 44 / 30%);
 }
 
 .launcher-icon-wrap {
@@ -112,7 +112,10 @@
 }
 
 .launcher-icon {
-  font-size: 24px;
+  font-family: 'Manrope', 'Segoe UI', sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.06em;
   line-height: 1;
 }
 
@@ -148,9 +151,9 @@
   height: 540px;
   max-height: calc(100vh - 120px);
   background: #ffffff;
-  border: 1px solid #d8e4f2;
+  border: 1px solid #e7ece8;
   border-radius: 18px;
-  box-shadow: 0 24px 70px rgba(8, 17, 32, 0.2);
+  box-shadow: 0 24px 70px rgb(20 61 44 / 20%);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -166,13 +169,13 @@
 .iq-chat-header {
   height: 66px;
   padding: 0 18px;
-  background: #081120;
+  background: #143d2c;
   color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
-  border-bottom: 1px solid #132238;
+  border-bottom: 1px solid #174832;
 }
 
 .iq-chat-bot-info {
@@ -185,7 +188,7 @@
   position: relative;
   width: 36px;
   height: 36px;
-  background: #0052ff;
+  background: #176b4b;
   color: #ffffff;
   border-radius: 10px;
   display: grid;
@@ -203,7 +206,7 @@
   height: 10px;
   border-radius: 50%;
   background: #10b981;
-  border: 2px solid #081120;
+  border: 2px solid #143d2c;
 }
 
 .iq-chat-bot-info b {
@@ -236,7 +239,7 @@
   height: 30px;
   border-radius: 50%;
   border: 0;
-  background: #132238;
+  background: #174832;
   color: #cbd5e1;
   font-size: 13px;
   cursor: pointer;
@@ -246,7 +249,7 @@
 }
 
 .iq-chat-close-btn:hover {
-  background: #1e3a5f;
+  background: #237b56;
   color: #ffffff;
 }
 
@@ -258,7 +261,7 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  background: #f4f8fd;
+  background: #fbfcfa;
 }
 
 .iq-chat-row {
@@ -275,7 +278,7 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #0052ff;
+  background: #176b4b;
   color: #ffffff;
   font-size: 13px;
   display: grid;
@@ -290,7 +293,7 @@
   font-size: 12px;
   line-height: 1.6;
   font-family: 'Montserrat', sans-serif;
-  box-shadow: 0 2px 8px rgba(8, 17, 32, 0.05);
+  box-shadow: 0 2px 8px rgb(20 61 44 / 5%);
 }
 
 .iq-chat-bubble p {
@@ -299,13 +302,13 @@
 
 .iq-chat-row.ai .iq-chat-bubble {
   background: #ffffff;
-  color: #0a1128;
-  border: 1px solid #d8e4f2;
+  color: #14241f;
+  border: 1px solid #e7ece8;
   border-bottom-left-radius: 3px;
 }
 
 .iq-chat-row.user .iq-chat-bubble {
-  background: #0052ff;
+  background: #176b4b;
   color: #ffffff;
   border-bottom-right-radius: 3px;
 }
@@ -316,9 +319,9 @@
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  background: #ebf3ff;
-  color: #0052ff;
-  border: 1px solid #cfe2ff;
+  background: #eaf5ef;
+  color: #176b4b;
+  border: 1px solid #d4e8d8;
   border-radius: 6px;
   font-size: 11px;
   font-weight: 700;
@@ -328,9 +331,9 @@
 }
 
 .iq-bubble-action-btn:hover {
-  background: #0052ff;
+  background: #176b4b;
   color: #ffffff;
-  border-color: #0052ff;
+  border-color: #176b4b;
 }
 
 /* Typing Indicator */
@@ -345,7 +348,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #0052ff;
+  background: #176b4b;
   animation: typingPulse 1.2s infinite ease-in-out;
 }
 
@@ -365,7 +368,7 @@
   overflow-x: auto;
   white-space: nowrap;
   background: #ffffff;
-  border-top: 1px solid #d8e4f2;
+  border-top: 1px solid #e7ece8;
   scrollbar-width: none;
 }
 
@@ -374,9 +377,9 @@
 }
 
 .iq-prompt-chip {
-  border: 1px solid #d8e4f2;
-  background: #ebf3ff;
-  color: #0052ff;
+  border: 1px solid #e7ece8;
+  background: #eaf5ef;
+  color: #176b4b;
   padding: 5px 11px;
   border-radius: 9999px;
   font-size: 10px;
@@ -388,9 +391,9 @@
 }
 
 .iq-prompt-chip:hover {
-  background: #0052ff;
+  background: #176b4b;
   color: #ffffff;
-  border-color: #0052ff;
+  border-color: #176b4b;
 }
 
 /* ─── Input Bar ─────────────────────────────────────────────────── */
@@ -400,25 +403,25 @@
   gap: 8px;
   padding: 10px 14px;
   background: #ffffff;
-  border-top: 1px solid #d8e4f2;
+  border-top: 1px solid #e7ece8;
 }
 
 .iq-chat-input-bar input {
   flex: 1;
   height: 40px;
   padding: 0 12px;
-  border: 1px solid #d8e4f2;
+  border: 1px solid #e7ece8;
   border-radius: 8px;
   font-size: 12px;
   font-family: 'Montserrat', sans-serif;
   outline: none;
-  background: #f4f8fd;
-  color: #0a1128;
+  background: #fbfcfa;
+  color: #14241f;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .iq-chat-input-bar input:focus {
-  border-color: #0052ff;
+  border-color: #176b4b;
   background: #ffffff;
 }
 
@@ -427,7 +430,7 @@
   height: 38px;
   border-radius: 8px;
   border: 0;
-  background: #0052ff;
+  background: #176b4b;
   color: #ffffff;
   display: grid;
   place-items: center;
@@ -438,7 +441,7 @@
 }
 
 .iq-chat-send-btn:hover:not(:disabled) {
-  background: #003ecc;
+  background: #0d5038;
   transform: translateY(-1px);
 }
 

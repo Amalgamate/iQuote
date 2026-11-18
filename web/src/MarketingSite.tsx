@@ -77,6 +77,28 @@ export default function MarketingSite() {
     return () => window.clearTimeout(timer)
   }, [resendWait])
 
+  useEffect(() => {
+    const selector = '.site-page .site-hero, .site-page .site-intro, .site-page .site-testimonials, .site-page .site-features, .site-page .site-market, .site-page .site-steps, .site-page .site-plans, .site-page .site-final-cta, .site-page .site-footer, .site-page .market-page-hero, .site-page .market-opportunity-board'
+    const reset = () => document.querySelectorAll<HTMLElement>(selector).forEach((section) => {
+      section.style.removeProperty('--pointer-x')
+      section.style.removeProperty('--pointer-y')
+    })
+    const trackPointer = (event: PointerEvent) => {
+      const section = (event.target as Element | null)?.closest<HTMLElement>(selector)
+      if (!section) return
+      const bounds = section.getBoundingClientRect()
+      section.style.setProperty('--pointer-x', String((event.clientX - bounds.left) / bounds.width - 0.5))
+      section.style.setProperty('--pointer-y', String((event.clientY - bounds.top) / bounds.height - 0.5))
+    }
+    document.addEventListener('pointermove', trackPointer, { passive: true })
+    document.addEventListener('pointerleave', reset)
+    return () => {
+      document.removeEventListener('pointermove', trackPointer)
+      document.removeEventListener('pointerleave', reset)
+      reset()
+    }
+  }, [])
+
   const startSignup = () => {
     setError('')
     setNotice('')

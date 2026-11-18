@@ -228,16 +228,6 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     return { buckets, maxValue, totalQuotes: buckets.reduce((s, b) => s + b.count, 0) }
   }, [quotes, chartRange])
 
-  const upcomingQuotes = useMemo(() => {
-    const now = new Date()
-    return quotes
-      .filter((q) => ['SENT', 'VIEWED', 'DRAFT'].includes(q.status) && q.validUntil)
-      .map((q) => ({ ...q, validUntilDate: new Date(q.validUntil!) }))
-      .filter((q) => q.validUntilDate >= now)
-      .sort((a, b) => a.validUntilDate.getTime() - b.validUntilDate.getTime())
-      .slice(0, 5)
-  }, [quotes])
-
   const updateEditor = (patch: Partial<QuoteDraft>) => {
     setEditor((current) => current ? { ...current, ...patch } : current)
     setEditorDirty(true)
@@ -600,152 +590,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
 
         {error && <div className="workspace-alert" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
 
-        {page === 'dashboard' && business && (
-          <section className="workspace-content dashboard-content">
-            <div className="dashboard-welcome">
-              <div>
-                <h2>Welcome back, {user.name.split(' ')[0]}! <span aria-hidden="true">👋</span></h2>
-                <p>Here's what's happening with your business today.</p>
-              </div>
-            </div>
-
-            <div className="metric-grid metric-grid-four">
-              <article className="metric-card metric-card-v2">
-                <div className="metric-card-top">
-                  <span className="metric-icon metric-icon-blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg></span>
-                  <span className="metric-label">Total Quotations</span>
-                </div>
-                <strong>{dashboardStats.total}</strong>
-                <small>{dashboardStats.draftCount} drafts · {dashboardStats.total - dashboardStats.draftCount} sent</small>
-              </article>
-              <article className="metric-card metric-card-v2">
-                <div className="metric-card-top">
-                  <span className="metric-icon metric-icon-green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg></span>
-                  <span className="metric-label">Approved Quotes</span>
-                </div>
-                <strong>{dashboardStats.approved}</strong>
-                <small>{dashboardStats.conversionRate}% conversion rate</small>
-              </article>
-              <article className="metric-card metric-card-v2">
-                <div className="metric-card-top">
-                  <span className="metric-icon metric-icon-amber"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg></span>
-                  <span className="metric-label">Total Revenue</span>
-                </div>
-                <strong>{formatMoney(dashboardStats.totalRevenue, business.currency)}</strong>
-                <small>From approved quotes</small>
-              </article>
-              <article className="metric-card metric-card-v2">
-                <div className="metric-card-top">
-                  <span className="metric-icon metric-icon-red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg></span>
-                  <span className="metric-label">Pending Response</span>
-                </div>
-                <strong>{dashboardStats.pending}</strong>
-                <small>Awaiting customer reply</small>
-              </article>
-            </div>
-
-            <div className="dashboard-grid-two">
-              <section className="workspace-panel dashboard-chart-panel">
-                <div className="panel-heading panel-heading-flex">
-                  <div>
-                    <h2>Business Performance</h2>
-                    <p>Quotation value over time</p>
-                  </div>
-                  <div className="chart-range-toggle">
-                    {(['7D', '30D', '90D', '1Y'] as ChartRange[]).map((range) => (
-                      <button key={range} type="button" className={`chart-range-btn ${chartRange === range ? 'active' : ''}`} onClick={() => setChartRange(range)}>{range}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="chart-container">
-                  <div className="chart-y-axis">
-                    <span>{formatMoney(chartData.maxValue, business.currency).replace(/\.\d+/, '')}</span>
-                    <span>{formatMoney(chartData.maxValue * 0.75, business.currency).replace(/\.\d+/, '')}</span>
-                    <span>{formatMoney(chartData.maxValue * 0.5, business.currency).replace(/\.\d+/, '')}</span>
-                    <span>{formatMoney(chartData.maxValue * 0.25, business.currency).replace(/\.\d+/, '')}</span>
-                    <span>0</span>
-                  </div>
-                  <div className="chart-bars">
-                    {chartData.buckets.map((bucket, index) => {
-                      const heightPct = chartData.maxValue > 0 ? (bucket.value / chartData.maxValue) * 100 : 0
-                      return (
-                        <div key={index} className="chart-bar-wrapper" title={`${bucket.label}: ${formatMoney(bucket.value, business.currency)} (${bucket.count} quotes)`}>
-                          <div className="chart-bar-track">
-                            <div className="chart-bar-fill" style={{ height: `${Math.max(heightPct, bucket.value > 0 ? 4 : 0)}%` }}>
-                              {bucket.value > 0 && <span className="chart-bar-value">{formatMoney(bucket.value, business.currency).replace(/[^\d.]/g, '').length > 5 ? formatMoney(bucket.value, business.currency).replace(/000$/, 'k') : ''}</span>}
-                            </div>
-                          </div>
-                          <span className="chart-bar-label">{bucket.label}</span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-                <div className="chart-summary">
-                  <div><span>Total quotes in range</span><strong>{chartData.totalQuotes}</strong></div>
-                  <div><span>Avg per period</span><strong>{chartData.totalQuotes > 0 ? (chartData.totalQuotes / chartData.buckets.length).toFixed(1) : '0'}</strong></div>
-                </div>
-              </section>
-
-              <aside className="dashboard-side-panels">
-                <div className="workspace-panel quick-actions-panel">
-                  <div className="panel-heading"><div><h2>Quick Actions</h2></div></div>
-                  <div className="quick-actions-grid">
-                    <button type="button" className="quick-action-btn" onClick={startNewQuote}>
-                      <span className="quick-action-icon qa-blue"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg></span>
-                      <span>New Quote</span>
-                    </button>
-                    <button type="button" className="quick-action-btn" onClick={() => { setCustomerForm(blankCustomer); setCustomerError(''); setCustomerModal(true) }}>
-                      <span className="quick-action-icon qa-green"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></svg></span>
-                      <span>Add Customer</span>
-                    </button>
-                    <button type="button" className="quick-action-btn" onClick={() => openServiceForm()}>
-                      <span className="quick-action-icon qa-purple"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /></svg></span>
-                      <span>Add Service</span>
-                    </button>
-                    <button type="button" className="quick-action-btn" onClick={() => changePage('settings')}>
-                      <span className="quick-action-icon qa-amber"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg></span>
-                      <span>Settings</span>
-                    </button>
-                  </div>
-                </div>
-
-                {upcomingQuotes.length > 0 && (
-                  <div className="workspace-panel upcoming-panel">
-                    <div className="panel-heading"><div><h2>Upcoming</h2><p>Quotes expiring soon</p></div></div>
-                    <div className="upcoming-list">
-                      {upcomingQuotes.map((quote) => {
-                        const daysLeft = Math.ceil((quote.validUntilDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-                        const isUrgent = daysLeft <= 3
-                        return (
-                          <div key={quote.id} className="upcoming-item" onClick={() => openQuote(quote)}>
-                            <div className="upcoming-item-info">
-                              <strong>{quote.documentNumber}</strong>
-                              <small>{quote.customer.name}</small>
-                            </div>
-                            <div className={`upcoming-days ${isUrgent ? 'urgent' : ''}`}>
-                              <span>{daysLeft}d</span>
-                              <small>{isUrgent ? 'Urgent' : 'Left'}</small>
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-              </aside>
-            </div>
-
-            <section className="workspace-panel dashboard-recent-panel">
-              <div className="panel-heading"><div><h2>Recent Quotations</h2><p>Your latest quotation activity</p></div><button className="link-button" onClick={() => changePage('quotes')} type="button">View all →</button></div>
-              {quotes.length > 0 ? (
-                <DashboardQuoteTable quotes={quotes.slice(0, 8)} currency={business.currency} onOpen={openQuote} />
-              ) : (
-                <div className="panel-empty"><h3>Your quote list is ready</h3><p>Create a quote and send a shareable link to your first customer.</p><button className="button button-primary" onClick={startNewQuote} type="button">Create your first quote</button></div>
-              )}
-            </section>
-          </section>
-        )}
+        {page === 'dashboard' && business && <CustomerDashboard user={user} business={business} quotes={quotes} customers={customers} chartRange={chartRange} chartData={chartData} onRangeChange={setChartRange} onNewQuote={startNewQuote} onViewQuotes={() => changePage('quotes')} onViewCustomers={() => changePage('customers')} onOpenQuote={openQuote} />}
 
         {page === 'quotes' && business && (
           <section className="workspace-content">
@@ -895,5 +740,107 @@ function DashboardQuoteTable({ quotes, currency, onOpen }: { quotes: Quote[]; cu
         </tbody>
       </table>
     </div>
+  )
+}
+
+function CustomerDashboard({ user, business, quotes, customers, chartRange, chartData, onRangeChange, onNewQuote, onViewQuotes, onViewCustomers, onOpenQuote }: {
+  user: User
+  business: Business
+  quotes: Quote[]
+  customers: Customer[]
+  chartRange: ChartRange
+  chartData: { buckets: Array<{ label: string; value: number; count: number }>; maxValue: number; totalQuotes: number }
+  onRangeChange: (range: ChartRange) => void
+  onNewQuote: () => void
+  onViewQuotes: () => void
+  onViewCustomers: () => void
+  onOpenQuote: (quote: Quote) => void
+}) {
+  const now = new Date()
+  const monthQuotes = quotes.filter((quote) => {
+    const created = new Date(quote.createdAt)
+    return created.getMonth() === now.getMonth() && created.getFullYear() === now.getFullYear()
+  })
+  const monthQuoted = monthQuotes.reduce((sum, quote) => sum + quote.total, 0)
+  const awaitingQuotes = quotes.filter((quote) => ['SENT', 'VIEWED'].includes(quote.status))
+  const awaitingValue = awaitingQuotes.reduce((sum, quote) => sum + quote.total, 0)
+  const approvedQuotes = quotes.filter((quote) => quote.status === 'APPROVED')
+  const approvedValue = approvedQuotes.reduce((sum, quote) => sum + quote.total, 0)
+  const statusCounts = {
+    approved: approvedQuotes.length,
+    awaiting: awaitingQuotes.length,
+    drafts: quotes.filter((quote) => quote.status === 'DRAFT').length,
+    other: quotes.filter((quote) => ['DECLINED', 'EXPIRED'].includes(quote.status)).length,
+  }
+  const pipelineTotal = Math.max(quotes.length, 1)
+  const approvedStop = statusCounts.approved / pipelineTotal * 100
+  const awaitingStop = approvedStop + statusCounts.awaiting / pipelineTotal * 100
+  const draftStop = awaitingStop + statusCounts.drafts / pipelineTotal * 100
+  const pipelineStyle = { background: `conic-gradient(#237b56 0 ${approvedStop}%, #e2b75d ${approvedStop}% ${awaitingStop}%, #7897ba ${awaitingStop}% ${draftStop}%, #e7ece8 ${draftStop}% 100%)` }
+  const customerTotals = new Map<string, { customer: Customer; value: number; count: number }>()
+  for (const quote of approvedQuotes) {
+    const customer = customers.find((item) => item.id === quote.customer.id)
+    if (!customer) continue
+    const current = customerTotals.get(customer.id) ?? { customer, value: 0, count: 0 }
+    current.value += quote.total
+    current.count += 1
+    customerTotals.set(customer.id, current)
+  }
+  const topCustomers = [...customerTotals.values()].sort((a, b) => b.value - a.value).slice(0, 4)
+  const recentActivity = [...quotes].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()).slice(0, 4)
+  const chartPoints = chartData.buckets.map((bucket, index) => {
+    const x = chartData.buckets.length > 1 ? index / (chartData.buckets.length - 1) * 720 : 360
+    const y = 190 - bucket.value / chartData.maxValue * 160
+    return `${x},${y}`
+  }).join(' ')
+  const chartArea = chartPoints ? `0,200 ${chartPoints} 720,200` : ''
+  const firstName = user.name.trim().split(/\s+/)[0] || 'there'
+  const money = (value: number) => formatMoney(value, business.currency).replace(/\.00$/, '')
+
+  return (
+    <section className="workspace-content customer-dashboard-page">
+      <div className="customer-dashboard-heading">
+        <div><p className="dashboard-date-label">{now.toLocaleDateString('en-KE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p><h2>Good morning, <em>{firstName}</em>.</h2><p>Here’s how {business.name || 'your business'} is moving this month.</p></div>
+        <button className="button button-primary dashboard-create-button" type="button" onClick={onNewQuote}><span>＋</span>Create a quote</button>
+      </div>
+
+      <div className="customer-dashboard-metrics">
+        <article className="customer-dashboard-metric"><div>Quoted this month <span className="dashboard-metric-icon">↗</span></div><strong>{money(monthQuoted)}</strong><small>Across {monthQuotes.length} {monthQuotes.length === 1 ? 'quote' : 'quotes'} created this month</small></article>
+        <article className="customer-dashboard-metric"><div>Awaiting a response <span className="dashboard-metric-icon dashboard-metric-gold">◷</span></div><strong>{money(awaitingValue)}</strong><small>Across {awaitingQuotes.length} open {awaitingQuotes.length === 1 ? 'quote' : 'quotes'}</small></article>
+        <article className="customer-dashboard-metric"><div>Approved work <span className="dashboard-metric-icon">✓</span></div><strong>{money(approvedValue)}</strong><small>{approvedQuotes.length} approved {approvedQuotes.length === 1 ? 'quote' : 'quotes'}</small></article>
+        <article className="customer-dashboard-metric"><div>Active customers <span className="dashboard-metric-icon dashboard-metric-blue">♙</span></div><strong>{customers.length}</strong><small>In your customer list</small></article>
+      </div>
+
+      <div className="customer-dashboard-grid">
+        <div className="customer-dashboard-main-column">
+          <section className="customer-dashboard-panel customer-activity-chart">
+            <div className="customer-panel-heading"><div><h3>Quote activity</h3><p>A quick look at the value you’re putting out there</p></div><div className="dashboard-range-picker">{(['7D', '30D', '90D', '1Y'] as ChartRange[]).map((range) => <button key={range} type="button" className={chartRange === range ? 'selected' : ''} onClick={() => onRangeChange(range)}>{range}</button>)}</div></div>
+            <div className="dashboard-line-chart"><div className="dashboard-chart-total"><strong>{money(chartData.buckets.reduce((sum, bucket) => sum + bucket.value, 0))}</strong><span>{chartData.totalQuotes} quotes in this period</span></div><svg viewBox="0 0 720 220" role="img" aria-label="Quote value activity over time" preserveAspectRatio="none"><defs><linearGradient id="quoteActivityFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#6bb789" stopOpacity=".28"/><stop offset="100%" stopColor="#6bb789" stopOpacity="0"/></linearGradient></defs><path className="dashboard-chart-gridline" d="M0 40H720 M0 90H720 M0 140H720 M0 190H720"/><polygon points={chartArea} fill="url(#quoteActivityFill)"/><polyline points={chartPoints} fill="none" stroke="#237b56" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round"/>{chartData.buckets.map((bucket, index) => { const x = chartData.buckets.length > 1 ? index / (chartData.buckets.length - 1) * 720 : 360; const y = 190 - bucket.value / chartData.maxValue * 160; return bucket.value > 0 ? <circle key={`${bucket.label}-${index}`} cx={x} cy={y} r="4" fill="#fff" stroke="#237b56" strokeWidth="2"/> : null })}</svg><div className="dashboard-chart-labels">{chartData.buckets.filter((_, index) => index === 0 || index === chartData.buckets.length - 1 || index % Math.max(1, Math.floor(chartData.buckets.length / 6)) === 0).map((bucket, index) => <span key={`${bucket.label}-${index}`}>{bucket.label}</span>)}</div></div>
+          </section>
+
+          <section className="customer-dashboard-panel customer-recent-quotes">
+            <div className="customer-panel-heading"><div><h3>Recent quotes</h3><p>Keep the important conversations moving</p></div><button type="button" className="dashboard-text-link" onClick={onViewQuotes}>View all quotes →</button></div>
+            {quotes.length ? <DashboardQuoteTable quotes={[...quotes].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()).slice(0, 5)} currency={business.currency} onOpen={onOpenQuote}/> : <div className="customer-dashboard-empty"><strong>Your first quote is one step away.</strong><p>Create a quote and share a clear link with your customer.</p><button type="button" className="button button-primary" onClick={onNewQuote}>Create a quote</button></div>}
+          </section>
+        </div>
+
+        <aside className="customer-dashboard-side-column">
+          <section className="customer-dashboard-panel">
+            <div className="customer-panel-heading"><div><h3>Quote pipeline</h3><p>Where your quotes stand</p></div></div>
+            <div className="dashboard-pipeline"><div className="dashboard-donut" style={pipelineStyle}><div><strong>{quotes.length}</strong><small>total quotes</small></div></div><div className="dashboard-pipeline-legend"><span><i className="pipeline-approved"/>Approved<b>{statusCounts.approved}</b></span><span><i className="pipeline-awaiting"/>Awaiting reply<b>{statusCounts.awaiting}</b></span><span><i className="pipeline-draft"/>Draft<b>{statusCounts.drafts}</b></span><span><i className="pipeline-other"/>Other<b>{statusCounts.other}</b></span></div></div>
+          </section>
+
+          <section className="customer-dashboard-panel">
+            <div className="customer-panel-heading"><div><h3>Latest activity</h3><p>A little movement in your workspace</p></div></div>
+            {recentActivity.length ? <div className="dashboard-activity-list">{recentActivity.map((quote) => { const verb = quote.status === 'APPROVED' ? 'approved a quote' : quote.status === 'VIEWED' ? 'viewed a quote' : quote.status === 'SENT' ? 'received a quote' : quote.status === 'DECLINED' ? 'declined a quote' : quote.status === 'EXPIRED' ? 'quote expired' : 'draft was updated'; return <button type="button" key={quote.id} className="dashboard-activity-item" onClick={() => onOpenQuote(quote)}><span className={`dashboard-activity-icon activity-${quote.status.toLowerCase()}`}>{quote.status === 'APPROVED' ? '✓' : quote.status === 'VIEWED' ? '◉' : '↗'}</span><span><strong>{quote.customer.name}</strong> {verb}<small>{quote.documentNumber} · {money(quote.total)} · {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.updatedAt))}</small></span></button> })}</div> : <div className="customer-dashboard-empty compact">Quote activity will appear here.</div>}
+          </section>
+
+          <section className="customer-dashboard-panel customer-top-customers">
+            <div className="customer-panel-heading"><div><h3>Top customers</h3><p>By approved quote value</p></div><button type="button" className="dashboard-text-link" onClick={onViewCustomers}>View all →</button></div>
+            {topCustomers.length ? <div className="dashboard-customer-list">{topCustomers.map(({ customer, value, count }) => <div className="dashboard-customer-row" key={customer.id}><span className="dashboard-customer-avatar">{customer.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()}</span><span className="dashboard-customer-copy"><strong>{customer.name}</strong><small>{count} approved {count === 1 ? 'quote' : 'quotes'}</small></span><b>{money(value)}</b></div>)}</div> : <div className="customer-dashboard-empty compact">Approved customer totals will appear here.</div>}
+          </section>
+        </aside>
+      </div>
+    </section>
   )
 }

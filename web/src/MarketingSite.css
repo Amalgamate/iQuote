@@ -1,31 +1,29 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   iQuote Marketing Site — Geometric Sans & Blue Theme System (NO GRADIENTS)
-   Fonts: Poppins (Headings/Brand), Montserrat (UI/Metrics), Raleway (Accents)
-   Theme: High-contrast Dark Navy (#081120) & Bright Electric Blue (#0052FF)
+   iQuote Marketing Site — Warm Paper & Market Green Theme
    ═══════════════════════════════════════════════════════════════════════ */
 
 :root, .site-page {
-  --font-display: 'Poppins', 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-body: 'Poppins', 'Montserrat', 'Raleway', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-ui: 'Montserrat', 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Manrope', 'Segoe UI', sans-serif;
+  --font-body: 'DM Sans', Inter, 'Segoe UI', sans-serif;
+  --font-ui: 'DM Sans', Inter, 'Segoe UI', sans-serif;
 
-  /* Blue Theme Colors (NO GRADIENTS) */
-  --blue-navy-dark: #081120;
-  --blue-navy-surface: #0e1a2f;
-  --blue-navy-card: #132238;
-  --blue-ink: #0a1128;
-  --blue-muted: #53647a;
-  --blue-line: #d8e4f2;
-  --blue-canvas: #f4f8fd;
-  --blue-canvas-alt: #ebf3fc;
+  /* Brand token names are retained for existing component styles. */
+  --blue-navy-dark: #143d2c;
+  --blue-navy-surface: #174832;
+  --blue-navy-card: #1d533c;
+  --blue-ink: #14241f;
+  --blue-muted: #64736e;
+  --blue-line: #e7ece8;
+  --blue-canvas: #fbfcfa;
+  --blue-canvas-alt: #f1f6f1;
   --blue-surface: #ffffff;
 
-  --blue-primary: #0052ff;
-  --blue-primary-hover: #003ecc;
-  --blue-accent: #0284c7;
-  --blue-accent-light: #38bdf8;
-  --blue-pill: #ebf3ff;
-  --blue-pill-border: #cfe2ff;
+  --blue-primary: #176b4b;
+  --blue-primary-hover: #0d5038;
+  --blue-accent: #237b56;
+  --blue-accent-light: #9bc9a8;
+  --blue-pill: #eaf5ef;
+  --blue-pill-border: #d4e8d8;
 
   --color-danger: #dc2626;
   --color-warning: #f59e0b;
@@ -167,7 +165,7 @@
   background: var(--blue-primary-hover);
   border-color: var(--blue-primary-hover);
   transform: translateY(-1px);
-  box-shadow: 0 4px 14px rgba(0, 82, 255, 0.25);
+  box-shadow: 0 4px 14px rgb(23 107 75 / 18%);
 }
 
 .site-cta:disabled {
@@ -351,7 +349,7 @@
   padding: 4px;
   border-radius: 9999px;
   border: 1px solid var(--blue-line);
-  box-shadow: 0 4px 14px rgba(0, 82, 255, 0.08);
+  box-shadow: 0 4px 14px rgb(23 107 75 / 8%);
 }
 
 .stage-toggle {
@@ -638,7 +636,7 @@
 
 .floating-badge:hover {
   transform: translateY(-3px) scale(1.03) !important;
-  box-shadow: 0 16px 36px rgba(0, 82, 255, 0.18);
+  box-shadow: 0 16px 36px rgb(23 107 75 / 14%);
 }
 
 .badge-top {
@@ -976,7 +974,7 @@
 
 .testimonial-card:hover {
   transform: translateY(-6px);
-  box-shadow: 0 20px 45px rgba(0, 82, 255, 0.1);
+  box-shadow: 0 20px 45px rgb(23 107 75 / 9%);
   border-color: var(--blue-primary);
 }
 
@@ -1277,13 +1275,13 @@
 
 .plan-tile:hover {
   transform: translateY(-3px);
-  box-shadow: 0 12px 30px rgba(0, 82, 255, 0.08);
+  box-shadow: 0 12px 30px rgb(23 107 75 / 8%);
 }
 
 .plan-featured {
   background: var(--blue-surface);
   border: 2px solid var(--blue-primary);
-  box-shadow: 0 14px 34px rgba(0, 82, 255, 0.12);
+  box-shadow: 0 14px 34px rgb(23 107 75 / 12%);
 }
 
 .plan-tile-top {
@@ -1414,9 +1412,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #050b15;
-  color: #94a3b8;
-  border-top: 1px solid #17253d;
+  background: #143d2c;
+  color: #dce9df;
+  border-top: 1px solid #20513a;
   font-family: var(--font-ui);
   font-size: 11px;
 }
@@ -1430,8 +1428,9 @@
   background: var(--blue-primary);
   color: #ffffff;
 }
+.site-footer .site-brand-dot { color: #c6ecce; }
 
-/* ─── Onboarding & Login (Blue Theme) ───────────────────────────── */
+/* ─── Onboarding & Login ────────────────────────────────────────── */
 .onboarding-page {
   min-height: 100vh;
   background: #fff;
@@ -1604,7 +1603,7 @@
 
 .onboarding-form input:focus, .onboarding-form select:focus {
   border-color: var(--blue-primary);
-  box-shadow: 0 0 0 2px rgba(0, 82, 255, 0.15);
+  box-shadow: 0 0 0 2px rgb(23 107 75 / 15%);
 }
 
 .onboarding-form input::placeholder {
@@ -2113,3 +2112,102 @@
 .market-opportunity-content { padding: 15px 16px 13px; }.market-opportunity-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.market-type-badge { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border-radius: 4px; color: #3266a2; background: #edf4ff; font-size: 8px; font-weight: 800; letter-spacing: .04em; }.market-type-badge i { font-style: normal; font-weight: 600; letter-spacing: 0; }.badge-rfs { color: #a15c25; background: #fff2e5; }.badge-rfp { color: #66549c; background: #f2effc; }.market-sample-id { color: #a0aab5; font-size: 7px; letter-spacing: .04em; white-space: nowrap; }.market-opportunity-category { margin: 13px 0 4px; color: #8392a1; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }.market-opportunity-content h3 { min-height: 41px; margin: 0; color: #263b52; font: 700 15px/1.3 var(--font-display); letter-spacing: -.025em; }.market-opportunity-scope { min-height: 30px; margin: 7px 0 13px; color: #738397; font-size: 9px; line-height: 1.5; }.market-opportunity-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 11px 0; border-block: 1px solid #edf1f5; }.market-opportunity-facts small,.market-opportunity-facts b { display: block; }.market-opportunity-facts small { margin-bottom: 5px; color: #9aa5af; font-size: 7px; font-weight: 750; letter-spacing: .08em; }.market-opportunity-facts b { color: #52677c; font-size: 9px; font-weight: 650; }.market-opportunity-footer { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; color: #8594a2; font-size: 8px; }.market-opportunity-footer span:last-child { color: #7088a2; }.market-feed-footnote { max-width: 1160px; margin: 15px auto 0; color: #8997a5; font-size: 9px; line-height: 1.5; }
 @media(max-width: 980px) { .market-opportunity-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.market-board-heading { align-items: start; } }
 @media(max-width: 760px) { .market-opportunity-board { padding: 64px 20px 58px; }.market-board-heading { display: block; }.market-feed-status { display: inline-block; margin: 12px 0 0; }.market-type-filters { overflow-x: auto; padding-bottom: 3px; }.market-type-filters button { flex: 0 0 auto; }.market-opportunity-grid { grid-template-columns: 1fr; }.market-opportunity-art { height: 160px; }.market-opportunity-content h3,.market-opportunity-scope { min-height: 0; } }
+
+/* Keep the authentication flow and public market on the same global brand palette. */
+.site-cta:hover { box-shadow: 0 4px 14px rgb(23 107 75 / 18%); }
+.site-cta:focus-visible,.site-login:focus-visible,.inline-action:focus-visible,
+.onboarding-form input:focus-visible,.onboarding-form select:focus-visible { outline: 3px solid rgb(23 107 75 / 20%); outline-offset: 2px; }
+.onboarding-form input:focus,.onboarding-form select:focus { border-color: #176b4b; box-shadow: 0 0 0 3px rgb(23 107 75 / 13%); }
+.onboarding-aside { background: #143d2c; }
+.aside-caption,.aside-bottom small,.site-final-cta .site-kicker { color: #c6ecce; }
+.site-final-cta .kicker-rule { background: #c6ecce; }
+.market-nav-badge { background: #eaf5ef; }
+.site-market,.market-opportunity-board { background: #f1f6f1; border-color: #e3ece4; }
+.market-page-hero { background: #f1f6f1; }
+.market-audience-cards article.vendor-card { background: #f1f6f1; border-color: #dce9df; }
+.market-type-filters button.active { border-color: #176b4b; background: #176b4b; }
+.market-request-window,.market-opportunity-card { border-color: #e3ebe5; box-shadow: 0 12px 32px rgb(22 54 38 / 6%); }
+.market-board-heading h2,.market-window-bar > span:nth-child(2),.market-request-title-row h3,
+.market-opportunity-content h3 { color: #20382b; }
+.market-intro-copy,.market-page-copy > p:not(.site-kicker),.market-audience-heading > p:last-child,
+.market-journey-heading > p:last-child,.market-board-heading > div:first-child > p:last-child { color: #64736e; }
+
+/* One consistent heading voice across public, Market, login, and signup screens. */
+.site-page :is(h1,h2,h3,h4,h5,h6),
+.onboarding-page :is(h1,h2,h3,h4,h5,h6) {
+  font-family: var(--font-heading);
+  font-weight: 800;
+  letter-spacing: -.045em;
+  line-height: 1.1;
+}
+.site-page :is(h1,h2,h3,h4,h5,h6) em,
+.onboarding-page :is(h1,h2,h3,h4,h5,h6) em { color: var(--blue-primary); font-style: normal; }
+
+/* Cropped, pointer-responsive brand doodles echo the onboarding orbit shapes. */
+.site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board) {
+  position: relative;
+  isolation: isolate;
+  overflow: clip;
+}
+
+.site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::before,
+.site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::after {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  transition: transform 220ms cubic-bezier(.2,.7,.2,1);
+}
+
+.site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board) > * {
+  position: relative;
+  z-index: 1;
+}
+
+.site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::before {
+  content: '';
+  width: clamp(240px, 32vw, 470px);
+  aspect-ratio: 1;
+  border: 1px solid rgb(23 107 75 / 12%);
+  border-radius: 50%;
+  background: rgb(35 123 86 / 3%);
+  box-shadow: 0 0 0 28px rgb(35 123 86 / 2%), 0 0 0 64px rgb(35 123 86 / 2%), 0 0 0 112px rgb(35 123 86 / 1.5%);
+  transform: translate3d(var(--shape-x, 0px), var(--shape-y, 0px), 0);
+}
+
+.site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::after {
+  content: '＋';
+  top: 16%;
+  right: 8%;
+  color: rgb(23 107 75 / 28%);
+  font: 600 31px/1 var(--font-display);
+  transform: translate3d(calc(var(--pointer-x, 0) * -19px), calc(var(--pointer-y, 0) * -15px), 0) rotate(-8deg);
+}
+
+.site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::before {
+  right: -190px;
+  top: -230px;
+}
+.site-page :is(.site-intro,.site-testimonials,.site-market,.site-steps,.site-plans,.market-opportunity-board)::before { right: auto; left: -230px; top: auto; bottom: -285px; }
+.site-page :is(.site-intro,.site-steps,.market-page-hero)::after { right: auto; left: 8%; top: 20%; }
+.site-page :is(.site-testimonials,.site-features,.market-opportunity-board)::after { content: '✦'; top: auto; bottom: 18%; right: 10%; font-size: 24px; color: rgb(180 137 55 / 34%); }
+.site-page :is(.site-market,.market-page-hero)::after { content: '✈'; top: 18%; right: 7%; font-size: 27px; color: rgb(23 107 75 / 34%); }
+.site-page .site-plans::after { content: '$'; top: auto; right: 8%; bottom: 19%; color: rgb(180 137 55 / 33%); }
+.site-page .site-final-cta::after { content: '·  +  ·'; top: 22%; right: 8%; font-size: 22px; letter-spacing: 8px; color: rgb(255 255 255 / 40%); }
+.site-page .site-footer::before { right: -90px; top: -275px; width: clamp(260px, 30vw, 420px); border-color: rgb(198 236 206 / 17%); background: rgb(198 236 206 / 5%); box-shadow: 0 0 0 30px rgb(198 236 206 / 3%), 0 0 0 72px rgb(198 236 206 / 2%); }
+.site-page .site-footer::after { top: 28%; right: 20%; color: rgb(198 236 206 / 42%); }
+
+.site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board):hover::before {
+  --shape-x: calc(var(--pointer-x, 0) * -24px);
+  --shape-y: calc(var(--pointer-y, 0) * -18px);
+}
+
+@media (max-width: 760px) {
+  .site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::before { width: 240px; }
+  .site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::after { font-size: 23px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::before,
+  .site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::after { transition: none; }
+}
