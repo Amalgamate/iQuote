@@ -56,6 +56,36 @@ Reforecast after Stage 7 and again after Stage 9 using actual throughput, defect
 
 The audits report a React/Vite/TypeScript web app, Express API, Prisma/PostgreSQL schema, self-registration and OTP foundations, business workspaces, customer and service catalogues, quote creation and public decisions, PDF generation, Resend integration points, super-admin dashboard, and simulated 14-day trials. Automated test coverage and live production behavior were not established by the audits. Review `progress.json` and the feature matrix before changing completion claims.
 
+The workspace sidebar shows five navigation groups: Workspace, Find work, Deliver work, Money & insights, and Account. Only the Workspace and Account items (Overview, Quotes, Customers, Catalogue, Settings) are implemented today. The remaining items (Market, Proposals, Jobs, Finance, Reports) are muted previews that must not be treated as functional modules.
+
+## Dashboard screen acceptance criteria
+
+Screen-level specs for each sidebar module. Active screens are implemented and need verification; upcoming screens need implementation per their stage gate. Add or revise these criteria before building each new screen.
+
+### Active screens (Stages 7–11: verify and strengthen)
+
+| Screen | Role | Acceptance criteria | Stage |
+|---|---|---|---|
+| **Overview** | Business owner | Shows stat cards (total quotes, approved value, pending, draft count, conversion rate); chart with range selector (7D/30D/90D/1Y) aggregating quote value by time bucket; upcoming quotes list sorted by valid-until; empty state when no quotes exist; all data scoped to current tenant only | 7, 10 |
+| **Quotes** | Business owner | List view with status badges and totals; create/edit quote with line items, quantities, rates, tax, discount; draft persistence and autosave; quote numbering sequential per tenant; PDF download via @react-pdf/renderer; public share link generation; send-quote action distinct from share-link; status transitions (DRAFT→SENT→VIEWED→APPROVED/DECLINED) with timestamps | 7, 10, 11 |
+| **Customers** | Business owner | Directory with search; add/edit customer (name, phone, email); customer quote history visible; archive without breaking quote references; duplicate detection; tenant-scoped — cannot see or mutate another tenant's customers | 7, 10 |
+| **Catalogue** | Business owner | Service/product items with name, category, description, kind, rate; search and filter; items reusable across quotes; edit/delete preserves historical quote line snapshots; tenant-scoped | 7, 10 |
+| **Settings** | Business owner | Business profile (name, logo, currency, tax rate); email sender config (platform vs custom domain, API key, domain verification records); user account details; trial status display; logo upload with safe MIME handling | 7, 8, 11 |
+| **Public Quote** | Customer (logged-out) | Token-authenticated view; shows quote lines, totals, business branding; records view timestamp; approve/decline with optional comment; expiry enforcement; repeat-decision prevention or explicit re-open; mobile-responsive; PDF download | 7, 11 |
+| **Superadmin Overview** | Platform admin | Platform-wide stats (total businesses, users, quotes, revenue); live data indicator; tenant list with drill-down; moderation queue stub; MFA-gated access; scoped admin routes | 7, 8, 13, 15 |
+
+### Upcoming screens (gated by stage)
+
+| Screen | Role | Acceptance criteria (draft — refine before building) | Gate |
+|---|---|---|---|
+| **Market** | Customer / Provider | Customer creates RFQ with scope, location, timing, budget; provider sees invited opportunities only; private invitations — no competing-bid visibility; matched by service category and coverage area; moderation and abuse reporting; converts selected proposal to ordinary quote workflow | Stage 12 GO/NARROW → Stage 13 |
+| **Proposals** | Provider | Inbox of invited RFQs; submit proposal with line items, terms, timeline; withdraw or revise before deadline; buyer sees only proposals they received; selection converts to auditable quote; no view of competing proposals | Stage 13 |
+| **Jobs** | Business owner | Convert accepted quote to job; preserve accepted quote snapshot; track status, milestones, due dates; attach materials/labor/supplier costs; customer-visible progress; role-based access within tenant | Stage 14 |
+| **Finance** | Business owner / Admin | Invoices, deposits, partial payments, refunds as explicit financial events; reconciliation with payment provider; idempotent payment processing; currency-aware; immutable audit trail; cannot silently edit or double-count | Stages 14–15 |
+| **Reports** | Business owner | Quote funnel (sent→viewed→approved); repeat customer analysis; revenue/receivables by currency; job profitability (estimated vs actual); tenant-scoped; export capability; no cross-currency aggregation without explicit conversion policy | Stages 14–15 |
+
+Each active screen must pass its acceptance criteria before its stage is marked complete. Upcoming screen criteria are drafts — revise them at the start of their stage to reflect product decisions made by then.
+
 ## Stage 7 — Verify the delivered quotation workflow
 
 - [ ] Run the documented local setup from a clean checkout and confirm web, API, database connection, and health endpoint.
