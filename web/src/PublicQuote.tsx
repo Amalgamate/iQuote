@@ -56,14 +56,14 @@ export default function PublicQuote({ token }: { token: string }) {
   }
 
   if (loading) return <main className="public-quote-page"><p className="loading-state">Loading quotation…</p></main>
-  if (!quote) return <main className="public-quote-page"><section className="public-message"><div className="brand"><span className="brand-mark">iQ</span><span>iQuote</span></div><h1>Quote unavailable</h1><p>{error || 'This quote link may have expired or been removed.'}</p></section></main>
+  if (!quote) return <main className="public-quote-page"><section className="public-message"><div className="brand"><span className="brand-mark">iQ</span><span>iQuote<span className="brand-period">.</span></span></div><h1>Quote unavailable</h1><p>{error || 'This quote link may have expired or been removed.'}</p></section></main>
 
   const canDecide = ['SENT', 'VIEWED'].includes(quote.status)
 
   return (
     <main className="public-quote-page">
       <div className="public-quote-topbar no-print">
-        <div className="brand"><span className="brand-mark">iQ</span><span>iQuote</span></div>
+        <div className="brand"><span className="brand-mark">iQ</span><span>iQuote<span className="brand-period">.</span></span></div>
         <div className="public-quote-actions">
           <span className={`quote-status status-${quote.status.toLowerCase()}`}>{decisionLabel[quote.status] ?? quote.status}</span>
           <QuotePdfDownloadLink className="secondary-button" quote={quote} />

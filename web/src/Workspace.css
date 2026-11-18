@@ -11,6 +11,7 @@
 .workspace-root { color: #14231f; background: #f6f8f6; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
 .workspace-root .app-sidebar { border-color: #e8ece9; }
 .workspace-root .brand-mark { border-radius: 10px; background: #13795b; }
+.brand-period { color: #13795b; font-weight: 900; }
 .workspace-root .app-nav-item { border-radius: 9px; }
 .workspace-root .app-nav-item.active { background: #eaf5ef; color: #0e6248; }
 .workspace-root .workspace-main { min-width: 0; }

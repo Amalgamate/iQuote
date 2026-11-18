@@ -167,7 +167,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     <div className="workspace-root superadmin-root">
       <aside className="app-sidebar">
         <a className="brand brand-workspace" href="#overview" onClick={(e) => { e.preventDefault(); setPage('overview') }}>
-          <span className="brand-mark">iQ</span><span>iQuote Admin</span>
+          <span className="brand-mark">iQ</span><span>iQuote<span className="brand-period">.</span> Admin</span>
         </a>
         <div className="sidebar-caption">Superadmin</div>
         <nav className="app-navigation" aria-label="Superadmin navigation">

@@ -5,7 +5,6 @@ import MarketingSite from './MarketingSite'
 import QuoteWorkspace from './QuoteWorkspace'
 import SuperadminDashboard from './SuperadminDashboard'
 import PublicQuote from './PublicQuote'
-import UiPreviewPage from './UiPreviewPage'
 
 type Mode = 'login' | 'register'
 type Section = 'dashboard' | 'customers'
@@ -335,8 +334,6 @@ function App() {
     return <PublicQuote token={decodeURIComponent(publicMatch[1])} />
   }
 
-  if (import.meta.env.DEV && window.location.pathname === '/ui-preview') return <UiPreviewPage />
-
   if (loading) {
     return (
       <div className="page-shell">
@@ -358,7 +355,7 @@ function App() {
           <header className="public-header">
             <div className="brand" aria-label="iQuote home">
               <span className="brand-mark">iQ</span>
-              <span>iQuote</span>
+              <span>iQuote<span className="brand-period">.</span></span>
             </div>
 
             <nav className="public-nav" aria-label="Main navigation">
@@ -460,7 +457,7 @@ function App() {
           <aside className="sidebar">
             <div className="brand brand-inline" aria-label="iQuote workspace">
               <span className="brand-mark">iQ</span>
-              <span>iQuote</span>
+              <span>iQuote<span className="brand-period">.</span></span>
             </div>
 
             <nav className="sidebar-nav" aria-label="Sidebar navigation">
@@ -607,7 +604,7 @@ function App() {
         <aside className="sidebar">
           <div className="brand brand-inline" aria-label="iQuote workspace">
             <span className="brand-mark">iQ</span>
-            <span>iQuote</span>
+            <span>iQuote<span className="brand-period">.</span></span>
           </div>
 
           <nav className="sidebar-nav" aria-label="Sidebar navigation">

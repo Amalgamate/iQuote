@@ -542,7 +542,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     <div className="workspace-root">
       <aside className="app-sidebar">
         <a className="brand brand-workspace" href="#dashboard" onClick={(event) => { event.preventDefault(); changePage('dashboard') }}>
-          <span className="brand-mark">iQ</span><span>iQuote</span>
+          <span className="brand-mark">iQ</span><span>iQuote<span className="brand-period">.</span></span>
         </a>
         <nav className="app-navigation" aria-label="Workspace navigation">
           <button type="button" className={`app-nav-item ${page === 'dashboard' ? 'active' : ''}`} onClick={() => changePage('dashboard')}>
