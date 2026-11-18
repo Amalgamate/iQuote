@@ -36,6 +36,34 @@
   font-family: var(--font-body);
 }
 
+/* Approved public-site direction: warm paper and market green. */
+.site-page {
+  --blue-ink: #14241f;
+  --blue-muted: #64736e;
+  --blue-line: #e7ece8;
+  --blue-canvas: #fbfcfa;
+  --blue-canvas-alt: #f1f6f1;
+  --blue-primary: #176b4b;
+  --blue-primary-hover: #0d5038;
+  --blue-accent: #176b4b;
+  --blue-accent-light: #9bc9a8;
+  --blue-pill: #eaf5ef;
+  --blue-pill-border: #d4e8d8;
+  --font-display: 'Manrope', 'Segoe UI', sans-serif;
+  --font-body: 'DM Sans', Inter, 'Segoe UI', sans-serif;
+  --font-ui: 'DM Sans', Inter, 'Segoe UI', sans-serif;
+}
+.site-page .site-header { padding-inline: clamp(20px, 5vw, 84px); }
+.site-page .site-brand-mark { border-radius: 10px; background: #176b4b; }
+.site-page .site-cta { border-radius: 8px; background: #176b4b; box-shadow: 0 5px 13px rgb(23 107 75 / 17%); }
+.site-page .site-cta:hover { background: #0d5038; }
+.site-page .site-hero { background: #fbfcfa; }
+.site-page .site-intro, .site-page .site-features { background: #fff; }
+.site-page .site-kicker, .site-page .hero-copy h1 em, .site-page .site-intro h2 em,
+.site-page .steps-intro h2 em, .site-page .site-plans h2 em { color: #176b4b; }
+.site-page .market-nav-badge { background: #eaf5ef; color: #176b4b; }
+.site-page .site-market { background: #f1f6f1; }
+
 /* ─── Global Reset & Header ─────────────────────────────────────── */
 .site-page {
   min-height: 100vh;

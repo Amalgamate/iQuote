@@ -5,6 +5,7 @@ import MarketingSite from './MarketingSite'
 import QuoteWorkspace from './QuoteWorkspace'
 import SuperadminDashboard from './SuperadminDashboard'
 import PublicQuote from './PublicQuote'
+import UiPreviewPage from './UiPreviewPage'
 
 type Mode = 'login' | 'register'
 type Section = 'dashboard' | 'customers'
@@ -333,6 +334,8 @@ function App() {
   if (publicMatch) {
     return <PublicQuote token={decodeURIComponent(publicMatch[1])} />
   }
+
+  if (import.meta.env.DEV && window.location.pathname === '/ui-preview') return <UiPreviewPage />
 
   if (loading) {
     return (

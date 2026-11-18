@@ -7,6 +7,35 @@
   font-size: 14px;
 }
 
+/* Approved product direction: calm green palette, softer surfaces, clearer spacing. */
+.workspace-root { color: #14231f; background: #f6f8f6; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+.workspace-root .app-sidebar { border-color: #e8ece9; }
+.workspace-root .brand-mark { border-radius: 10px; background: #13795b; }
+.workspace-root .app-nav-item { border-radius: 9px; }
+.workspace-root .app-nav-item.active { background: #eaf5ef; color: #0e6248; }
+.workspace-root .workspace-main { min-width: 0; }
+.workspace-root .workspace-topbar { min-height: 68px; padding-inline: clamp(20px, 4vw, 52px); border-color: #e8ece9; }
+.workspace-root .workspace-content { max-width: 1440px; padding: 30px clamp(20px, 4vw, 52px) 48px; }
+.workspace-root .workspace-panel, .workspace-root .metric-card { border-color: #e8ece9; border-radius: 13px; box-shadow: 0 8px 28px rgb(23 44 34 / 5%); }
+.workspace-root .panel-heading { border-color: #e8ece9; }
+.workspace-root .data-table th { background: #f7f9f7; }
+.workspace-root .data-table td { border-color: #eff2ef; }
+.workspace-root .button-primary { border-color: #13795b; background: #13795b; box-shadow: 0 4px 10px rgb(19 121 91 / 12%); }
+.workspace-root .button-primary:hover { border-color: #0e6248; background: #0e6248; }
+.workspace-root .input-control:focus { border-color: #13795b; box-shadow: 0 0 0 3px rgb(19 121 91 / 12%); }
+.workspace-root .dashboard-welcome { margin-bottom: 8px; }
+.workspace-root .dashboard-welcome h2 { color: #172b23; font-family: Georgia, "Times New Roman", serif; font-size: clamp(26px, 3vw, 36px); font-weight: 500; letter-spacing: -.04em; }
+.workspace-root .metric-grid-four { gap: 14px; }
+.workspace-root .metric-card-v2 { min-height: 132px; }
+.superadmin-root .workspace-topbar { background: #fff; }
+.superadmin-root .metric-card { min-height: 130px; }
+.superadmin-root .quote-status { border-radius: 20px; }
+.admin-overview-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 4px; }
+.admin-overview-intro h2 { margin: 0 0 6px; color: #172b23; font-family: Georgia, "Times New Roman", serif; font-size: clamp(25px, 2.6vw, 34px); font-weight: 500; letter-spacing: -.04em; }
+.admin-overview-intro p:not(.workspace-eyebrow) { margin: 0; color: #849089; font-size: 12px; }
+.admin-live-indicator { display: inline-flex; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid #e2ebe3; border-radius: 22px; background: #fff; color: #62756a; font-size: 11px; white-space: nowrap; }
+.admin-live-indicator i { width: 7px; height: 7px; border-radius: 50%; background: #38a36d; box-shadow: 0 0 0 3px #e7f5eb; }
+
 .workspace-loading {
   min-height: 100vh;
   display: grid;
@@ -516,6 +545,12 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
   .public-quote-layout { grid-template-columns: 1fr; gap: 12px; padding-top: 13px; }
   .public-quote-layout > .quote-paper { grid-row: 2; padding: 26px 18px 20px; }
   .decision-panel { position: static; grid-row: 1; }
+}
+
+@media (max-width: 780px) {
+  .workspace-root .workspace-content { padding: 20px 14px 28px; }
+  .workspace-root .workspace-topbar { padding-inline: 16px; }
+  .admin-overview-intro { align-items: flex-start; flex-direction: column; }
 }
 
 @media (max-width: 400px) {

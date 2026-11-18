@@ -206,6 +206,10 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
 
         {page === 'overview' && stats && (
           <section className="workspace-content">
+            <div className="admin-overview-intro">
+              <div><p className="workspace-eyebrow">Platform health</p><h2>Everything at a glance</h2><p>Live activity across the businesses using iQuote.</p></div>
+              <span className="admin-live-indicator"><i /> Data refreshed from platform</span>
+            </div>
             <div className="metric-grid">
               <article className="metric-card">
                 <span>Total businesses</span>
