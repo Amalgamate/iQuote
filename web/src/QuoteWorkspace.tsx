@@ -538,23 +538,23 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           <div className="sidebar-nav-group">
             <span className="sidebar-section-label">Workspace</span>
             <button type="button" className={'app-nav-item ' + (page === 'dashboard' ? 'active' : '')} onClick={() => changePage('dashboard')}><span className="nav-icon nav-glyph" aria-hidden="true">▦</span><span>Overview</span></button>
-            <button type="button" className={'app-nav-item ' + (page === 'quotes' ? 'active' : '')} onClick={() => changePage('quotes')}><span className="nav-icon nav-glyph" aria-hidden="true">▤</span><span>Quotations</span>{quotes.length > 0 && <small>{quotes.length}</small>}</button>
+            <button type="button" className={'app-nav-item ' + (page === 'quotes' ? 'active' : '')} onClick={() => changePage('quotes')}><span className="nav-icon nav-glyph" aria-hidden="true">▤</span><span>Quotes</span>{quotes.length > 0 && <small>{quotes.length}</small>}</button>
             <button type="button" className={'app-nav-item ' + (page === 'customers' ? 'active' : '')} onClick={() => changePage('customers')}><span className="nav-icon nav-glyph" aria-hidden="true">♙</span><span>Customers</span></button>
-            <button type="button" className={'app-nav-item ' + (page === 'services' ? 'active' : '')} onClick={() => changePage('services')}><span className="nav-icon nav-glyph" aria-hidden="true">◇</span><span>Products &amp; services</span></button>
+            <button type="button" className={'app-nav-item ' + (page === 'services' ? 'active' : '')} onClick={() => changePage('services')}><span className="nav-icon nav-glyph" aria-hidden="true">◇</span><span>Catalogue</span></button>
           </div>
           <div className="sidebar-nav-group">
             <span className="sidebar-section-label">Find work</span>
-            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">◎</span><span>Opportunities</span><small>Planned</small></button>
-            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">↗</span><span>My proposals</span><small>Planned</small></button>
+            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">◎</span><span>Market</span></button>
+            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">↗</span><span>Proposals</span></button>
           </div>
           <div className="sidebar-nav-group">
             <span className="sidebar-section-label">Deliver work</span>
-            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">▣</span><span>Jobs &amp; schedule</span><small>Planned</small></button>
+            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">▣</span><span>Jobs</span></button>
           </div>
           <div className="sidebar-nav-group">
             <span className="sidebar-section-label">Money &amp; insights</span>
-            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">＄</span><span>Invoices &amp; costs</span><small>Planned</small></button>
-            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">▥</span><span>Reports</span><small>Planned</small></button>
+            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">＄</span><span>Finance</span></button>
+            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">▥</span><span>Reports</span></button>
           </div>
           <div className="sidebar-nav-group sidebar-nav-account">
             <span className="sidebar-section-label">Account</span>
