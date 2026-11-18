@@ -222,7 +222,8 @@ function makeSubdomainBase(name: string) {
 
 async function allocateSubdomain(transaction: PrismaTypes.TransactionClient, businessName: string) {
   const base = makeSubdomainBase(businessName)
-  await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${base}))`
+  // pg_advisory_xact_lock returns void; cast to text so Prisma can deserialize it.
+  await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${base}))::text`
   let candidate = base
   let suffix = 2
   while (await transaction.organisation.findUnique({ where: { subdomain: candidate }, select: { id: true } })) {
