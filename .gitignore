@@ -74,3 +74,13 @@ coverage/
 ehthumbs.db
 Thumbs.db
 [Dd]esktop.ini
+
+# User-uploaded files (logos, etc.)
+api/uploads/
+uploads/
+
+# WorkBuddy AI workspace data (local only)
+.workbuddy-ai/
+
+# Prisma generated client (regenerated on install)
+api/node_modules/.prisma/

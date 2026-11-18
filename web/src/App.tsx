@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import './App.css'
+import { apiRequest, setSessionExpiredHandler } from './api'
 import MarketingSite from './MarketingSite'
 import QuoteWorkspace from './QuoteWorkspace'
+import SuperadminDashboard from './SuperadminDashboard'
 import PublicQuote from './PublicQuote'
 
 type Mode = 'login' | 'register'
@@ -11,6 +13,7 @@ type User = {
   id: string
   name: string
   email: string
+  role?: string
 }
 
 type BusinessProfile = {
@@ -30,26 +33,6 @@ type Customer = {
   name: string
   phone: string
   email: string
-}
-
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
-async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers ?? {}),
-    },
-    credentials: 'include',
-  })
-
-  const data = await response.json().catch(() => ({}))
-
-  if (!response.ok) {
-    throw new Error(data?.message ?? 'Something went wrong.')
-  }
-
-  return data as T
 }
 
 const stats = [
@@ -101,6 +84,16 @@ function App() {
     defaultTaxRate: '16',
     quotePrefix: 'QT',
   })
+
+  // Global session expiry handler — clears user state when the API returns 401
+  useEffect(() => {
+    setSessionExpiredHandler(() => {
+      setUser(null)
+      setBusinessProfile(null)
+      setError('Your session has expired. Please sign in again.')
+    })
+    return () => setSessionExpiredHandler(null)
+  }, [])
 
   const loadCustomers = async () => {
     try {
@@ -346,7 +339,11 @@ function App() {
 
   if (!user) return <MarketingSite />
 
-  if (!user) {
+  if (user.role === 'SUPERADMIN') {
+    return <SuperadminDashboard user={user} onLogout={handleLogout} />
+  }
+
+  if (!businessProfile) {
     return (
       <div className="page-shell">
         <section className="marketing-shell">

@@ -1,15 +1,54 @@
 import 'dotenv/config'
-import { PrismaClient, Prisma } from '@prisma/client'
+import pkg from '@prisma/client'
+const { PrismaClient, Prisma } = pkg
 import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import jwt from 'jsonwebtoken'
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomInt } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join, extname } from 'node:path'
 import { getIndustryPack } from './industry-packs.js'
+import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, emailSubjects } from './email-templates.js'
 
 const prisma = new PrismaClient()
 const app = express()
+
+// ---- Login rate limiting (in-memory, per email + IP) ----
+const loginAttempts = new Map<string, { count: number; lockedUntil: number }>()
+const MAX_LOGIN_ATTEMPTS = 5
+const LOGIN_LOCK_MS = 15 * 60 * 1000 // 15 minutes
+
+function checkLoginRateLimit(key: string): { allowed: boolean; retryAfterMs: number } {
+  const entry = loginAttempts.get(key)
+  if (entry && entry.lockedUntil > Date.now()) {
+    return { allowed: false, retryAfterMs: entry.lockedUntil - Date.now() }
+  }
+  return { allowed: true, retryAfterMs: 0 }
+}
+
+function recordFailedLogin(key: string) {
+  const entry = loginAttempts.get(key) ?? { count: 0, lockedUntil: 0 }
+  entry.count += 1
+  if (entry.count >= MAX_LOGIN_ATTEMPTS) {
+    entry.lockedUntil = Date.now() + LOGIN_LOCK_MS
+    entry.count = 0
+  }
+  loginAttempts.set(key, entry)
+}
+
+function clearLoginAttempts(key: string) {
+  loginAttempts.delete(key)
+}
+
+// Periodic cleanup of expired entries (every 10 minutes)
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, entry] of loginAttempts.entries()) {
+    if (entry.lockedUntil < now && entry.count === 0) loginAttempts.delete(key)
+  }
+}, 10 * 60 * 1000)
 const port = Number(process.env.PORT ?? 4000)
 const jwtSecret = process.env.JWT_SECRET ?? 'dev-secret-change-me'
 const sessionCookieName = 'iquote_session'
@@ -40,6 +79,10 @@ app.use(
 )
 app.use(express.json())
 app.use(cookieParser())
+
+// ---- Logo uploads: static serving ----
+const uploadsDir = join(process.cwd(), 'uploads')
+app.use('/uploads', express.static(uploadsDir, { maxAge: '7d', immutable: true }))
 
 function readTokenFromRequest(req: Request) {
   const cookieToken = req.cookies?.[sessionCookieName]
@@ -83,11 +126,12 @@ async function issueSession(userId: string) {
   return token
 }
 
-function toPublicUser(user: { id: string; name: string; email: string }) {
+function toPublicUser(user: { id: string; name: string; email: string; role?: string }) {
   return {
     id: user.id,
     name: user.name,
     email: user.email,
+    role: user.role ?? 'USER',
   }
 }
 
@@ -114,6 +158,8 @@ async function sendEmail(to: string, subject: string, html: string, idempotencyK
   const from = tenantKey && tenantSettings?.senderEmail ? `${tenantSettings.senderName || 'iQuote'} <${tenantSettings.senderEmail}>` : process.env.RESEND_FROM_EMAIL
   if (!apiKey || !from) return false
 
+  const replyTo = process.env.SUPPORT_EMAIL ?? undefined
+
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -121,7 +167,7 @@ async function sendEmail(to: string, subject: string, html: string, idempotencyK
       'Content-Type': 'application/json',
       'Idempotency-Key': idempotencyKey,
     },
-    body: JSON.stringify({ from, to: [to], subject, html }),
+    body: JSON.stringify({ from, to: [to], subject, html, ...(replyTo ? { reply_to: replyTo } : {}) }),
   })
   if (!response.ok) {
     console.error(`Resend email failed (${response.status}).`)
@@ -207,7 +253,7 @@ async function loadUserFromToken(token: string) {
     if (!session) return null
     const user = await prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, name: true, email: true },
+      select: { id: true, name: true, email: true, role: true },
     })
 
     return user ? toPublicUser(user) : null
@@ -231,12 +277,76 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   next()
 }
 
+const requireSuperadmin = async (req: Request, res: Response, next: NextFunction) => {
+  const token = readTokenFromRequest(req)
+  if (!token) {
+    return res.status(401).json({ message: 'Unauthorized' })
+  }
+
+  const user = await loadUserFromToken(token)
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized' })
+  }
+
+  if (user.role !== 'SUPERADMIN') {
+    return res.status(403).json({ message: 'Superadmin access required.' })
+  }
+
+  ;(req as Request & { user?: typeof user }).user = user
+  next()
+}
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
 app.get('/api/ping', (_req, res) => {
   res.json({ ok: true, service: 'iQuote API' })
+})
+
+// Email template preview — renders HTML in browser for design review
+app.get('/api/email-preview/:template', (req, res) => {
+  const template = String(req.params.template ?? '')
+  if (template === 'verification') {
+    return res.set('Content-Type', 'text/html').send(verificationEmailHtml({ email: 'user@example.com', code: '483920' }))
+  }
+  if (template === 'welcome') {
+    return res.set('Content-Type', 'text/html').send(welcomeEmailHtml({
+      name: 'Jane Wanjiru',
+      businessName: 'Wanjiru & Sons Plumbing',
+      businessType: 'Plumbing',
+      country: 'Kenya',
+      plan: 'STARTER',
+      trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+      phone: '+254 712 345 678',
+      loginUrl: 'http://localhost:5174',
+    }))
+  }
+  if (template === 'quote-approved') {
+    return res.set('Content-Type', 'text/html').send(quoteDecisionEmailHtml({
+      ownerName: 'Jane Wanjiru',
+      documentNumber: 'QT-2026-0042',
+      customerName: 'Acme Construction Ltd',
+      total: 185000,
+      currency: 'KES',
+      decision: 'APPROVED',
+      comment: 'Looks good, please proceed.',
+      quoteUrl: 'http://localhost:5174/quote/abc123',
+    }))
+  }
+  if (template === 'quote-declined') {
+    return res.set('Content-Type', 'text/html').send(quoteDecisionEmailHtml({
+      ownerName: 'Jane Wanjiru',
+      documentNumber: 'QT-2026-0042',
+      customerName: 'Acme Construction Ltd',
+      total: 185000,
+      currency: 'KES',
+      decision: 'DECLINED',
+      comment: 'The total is above our budget. Can you offer a discount?',
+      quoteUrl: 'http://localhost:5174/quote/abc123',
+    }))
+  }
+  res.status(404).json({ message: 'Unknown template. Use: verification, welcome, quote-approved, quote-declined' })
 })
 
 app.post('/api/auth/register', async (req, res) => {
@@ -275,7 +385,7 @@ app.post('/api/auth/register', async (req, res) => {
   const user = await prisma.$transaction(async (transaction) => {
     const created = await transaction.user.create({
       data: { name, email, passwordHash, emailVerifiedAt: verification.verifiedAt },
-      select: { id: true, name: true, email: true },
+      select: { id: true, name: true, email: true, role: true },
     })
     const organisation = await transaction.organisation.create({
       data: {
@@ -300,10 +410,20 @@ app.post('/api/auth/register', async (req, res) => {
     return { ...created, organisationId: organisation.id }
   })
 
+  const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
   const welcomeEmailSent = await sendEmail(
     email,
-    `Your ${businessName.replace(/[\r\n]/g, ' ').slice(0, 100)} iQuote workspace is ready`,
-    `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#1c1917"><p style="color:#0f766e;font-weight:700">iQuote · ${safeBusinessName}</p><h1>Your quoting workspace is ready.</h1><p>Your ${plan.toLowerCase()} plan is in a simulated 14-day trial through ${trialEndsAt.toLocaleDateString('en-GB')}.</p><h2>Your setup</h2><p>Business: ${safeBusinessName}<br>Business type: ${safeBusinessType}<br>Country: ${safeCountry}<br>Phone: ${safePhone}<br>Account email: ${safeEmail}</p><h2>Start in three steps</h2><ol><li>Add a customer and their contact details.</li><li>Create a quote with line items and terms.</li><li>Share its secure review link and track the decision.</li></ol><p>This local development trial does not collect payment details or charge you.</p></div>`,
+    emailSubjects.welcome(businessName),
+    welcomeEmailHtml({
+      name,
+      businessName,
+      businessType,
+      country,
+      plan,
+      trialEndsAt,
+      phone,
+      loginUrl: `${platformUrl}?login=1`,
+    }),
     `welcome/${createdEmailKey(email)}`,
     user.organisationId ?? undefined,
   ).catch(() => false)
@@ -337,8 +457,8 @@ app.post('/api/auth/verification/send', async (req, res) => {
     if (apiKey && from) {
       emailSent = await sendEmail(
         email,
-        'Your iQuote verification code',
-        `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#1c1917"><p style="color:#0f766e;font-weight:700">iQuote</p><h1>Verify your email</h1><p>Enter this code to continue setting up your quoting workspace:</p><div style="padding:22px;text-align:center;background:#f1f8f6;color:#0f766e;font-size:32px;font-weight:700;letter-spacing:8px">${code}</div><p>This code expires in 10 minutes. If you did not request it, you can ignore this email.</p></div>`,
+        emailSubjects.verification,
+        verificationEmailHtml({ email, code }),
         `verification/${email}/${code}`,
       )
     }
@@ -475,15 +595,26 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(400).json({ message: 'Email and password are required.' })
   }
 
+  // Rate limit by email and IP — prevents brute-force attacks
+  const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown'
+  const rateLimitKey = `${email}:${ip}`
+  const rateCheck = checkLoginRateLimit(rateLimitKey)
+  if (!rateCheck.allowed) {
+    const minutes = Math.ceil(rateCheck.retryAfterMs / 60000)
+    return res.status(429).json({ message: `Too many failed attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.` })
+  }
+
   const user = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, name: true, email: true, passwordHash: true },
+    select: { id: true, name: true, email: true, role: true, passwordHash: true },
   })
 
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedLogin(rateLimitKey)
     return res.status(401).json({ message: 'Invalid email or password.' })
   }
 
+  clearLoginAttempts(rateLimitKey)
   const token = await issueSession(user.id)
   sendSessionCookie(res, token)
 
@@ -945,6 +1076,42 @@ app.post('/api/public/quotes/:token/decision', async (req, res) => {
     data: { status: nextStatus, decisionComment: String(req.body?.comment ?? '').trim() || null, decidedAt },
   })
   if (!result.count) return res.status(409).json({ message: 'This quote can no longer be changed.' })
+
+  // Send decision notification email to the business owner
+  const fullQuote = await prisma.quote.findUnique({
+    where: { id: quote.id },
+    select: {
+      documentNumber: true,
+      total: true,
+      currency: true,
+      customer: { select: { name: true } },
+      decisionComment: true,
+      publicToken: true,
+      owner: { select: { id: true, name: true, email: true } },
+      organisationId: true,
+    },
+  })
+  if (fullQuote) {
+    const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
+    const quoteUrl = `${platformUrl}/quote/${encodeURIComponent(fullQuote.publicToken ?? '')}`
+    sendEmail(
+      fullQuote.owner.email,
+      decision === 'APPROVED' ? emailSubjects.quoteApproved(fullQuote.documentNumber) : emailSubjects.quoteDeclined(fullQuote.documentNumber),
+      quoteDecisionEmailHtml({
+        ownerName: fullQuote.owner.name,
+        documentNumber: fullQuote.documentNumber,
+        customerName: fullQuote.customer.name,
+        total: Number(fullQuote.total),
+        currency: fullQuote.currency,
+        decision: decision as 'APPROVED' | 'DECLINED',
+        comment: fullQuote.decisionComment,
+        quoteUrl,
+      }),
+      `decision/${fullQuote.owner.id}/${quote.id}/${decision}`,
+      fullQuote.organisationId ?? undefined,
+    ).catch(() => false) // non-blocking — the decision is already recorded
+  }
+
   const updated = { status: nextStatus, decidedAt }
   res.json({ quote: updated })
 })
@@ -984,16 +1151,19 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
     return res.status(401).json({ message: 'Unauthorized' })
   }
 
-  const name = String(req.body?.name ?? '').trim()
-  const email = String(req.body?.email ?? '').trim().toLowerCase() || null
-  const phone = String(req.body?.phone ?? '').trim() || null
-  const country = String(req.body?.country ?? '').trim() || null
-  const businessType = String(req.body?.businessType ?? '').trim() || null
-  const currency = String(req.body?.currency ?? 'KES').trim().toUpperCase() || 'KES'
-  const quotePrefix = String(req.body?.quotePrefix ?? 'QT').trim().toUpperCase() || 'QT'
-  const logoUrl = String(req.body?.logoUrl ?? '').trim() || null
-  const paymentInstructions = String(req.body?.paymentInstructions ?? '').trim() || null
-  const terms = String(req.body?.terms ?? '').trim() || null
+  const name = String(req.body?.name ?? '').trim().slice(0, 200)
+  const email = String(req.body?.email ?? '').trim().toLowerCase().slice(0, 254) || null
+  const phone = String(req.body?.phone ?? '').trim().slice(0, 50) || null
+  const country = String(req.body?.country ?? '').trim().slice(0, 100) || null
+  const businessType = String(req.body?.businessType ?? '').trim().slice(0, 100) || null
+  const currency = String(req.body?.currency ?? 'KES').trim().toUpperCase().slice(0, 3) || 'KES'
+  const quotePrefix = String(req.body?.quotePrefix ?? 'QT').trim().toUpperCase().slice(0, 8).replace(/[^A-Z0-9]/g, '') || 'QT'
+  const paymentInstructions = String(req.body?.paymentInstructions ?? '').trim().slice(0, 5000) || null
+  const terms = String(req.body?.terms ?? '').trim().slice(0, 10000) || null
+
+  // logoUrl is now only set via the file upload endpoint — reject arbitrary URLs from the form
+  const rawLogoUrl = String(req.body?.logoUrl ?? '').trim()
+  const logoUrl = rawLogoUrl.startsWith('/uploads/') ? rawLogoUrl.slice(0, 200) : null
 
   const rawTaxRate = req.body?.defaultTaxRate
   let defaultTaxRate: number | null = null
@@ -1004,8 +1174,13 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
     }
   }
 
-  if (!name || !currency) {
-    return res.status(400).json({ message: 'Business name and currency are required.' })
+  if (!name) {
+    return res.status(400).json({ message: 'Business name is required.' })
+  }
+
+  // Validate currency is a plausible ISO 4217 code (3 letters)
+  if (!/^[A-Z]{3}$/.test(currency)) {
+    return res.status(400).json({ message: 'Currency must be a 3-letter code (e.g. KES, USD, GBP).' })
   }
 
   const organisation = await prisma.organisation.upsert({
@@ -1054,6 +1229,260 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
   })
 
   res.status(201).json({ organisation })
+})
+
+// ---- Logo file upload ----
+const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml', 'image/gif']
+const MAX_LOGO_SIZE = 5 * 1024 * 1024 // 5 MB
+
+// Magic bytes signatures for real image validation (not just Content-Type)
+const IMAGE_SIGNATURES: Array<{ bytes: number[]; ext: string; mime: string }> = [
+  { bytes: [0x89, 0x50, 0x4E, 0x47], ext: '.png', mime: 'image/png' },       // PNG
+  { bytes: [0xFF, 0xD8, 0xFF], ext: '.jpg', mime: 'image/jpeg' },              // JPEG
+  { bytes: [0x47, 0x49, 0x46, 0x38], ext: '.gif', mime: 'image/gif' },         // GIF (GIF8)
+  { bytes: [0x52, 0x49, 0x46, 0x46], ext: '.webp', mime: 'image/webp' },       // WebP (RIFF....WEBP)
+]
+
+function detectImageType(buffer: Buffer): { ext: string; mime: string } | null {
+  // SVG is text-based, check for XML/SVG markers
+  const head = buffer.subarray(0, 256).toString('utf8').trimStart().toLowerCase()
+  if (head.startsWith('<?xml') || head.startsWith('<svg') || head.includes('<svg')) {
+    // Basic sanity: must contain <svg somewhere in the first 1KB
+    if (buffer.subarray(0, 1024).toString('utf8').toLowerCase().includes('<svg')) {
+      return { ext: '.svg', mime: 'image/svg+xml' }
+    }
+  }
+  // Binary formats: match by magic bytes
+  for (const sig of IMAGE_SIGNATURES) {
+    if (sig.bytes.every((byte, i) => buffer[i] === byte)) {
+      // WebP needs extra check: bytes 8-11 should be 'WEBP'
+      if (sig.ext === '.webp') {
+        const vp8 = buffer.subarray(8, 12).toString('ascii')
+        if (vp8 !== 'WEBP') continue
+      }
+      return sig
+    }
+  }
+  return null
+}
+
+app.post('/api/settings/logo', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace before uploading a logo.' })
+
+  const contentType = req.headers['content-type'] ?? ''
+  if (!ALLOWED_IMAGE_TYPES.some((type) => contentType.includes(type))) {
+    return res.status(400).json({ message: 'Logo must be a PNG, JPEG, WebP, SVG, or GIF image.' })
+  }
+
+  const chunks: Buffer[] = []
+  let totalSize = 0
+  req.on('data', (chunk: Buffer) => {
+    totalSize += chunk.length
+    if (totalSize > MAX_LOGO_SIZE) {
+      req.destroy()
+      return
+    }
+    chunks.push(chunk)
+  })
+
+  req.on('end', async () => {
+    if (totalSize === 0) return res.status(400).json({ message: 'No file received.' })
+    if (totalSize > MAX_LOGO_SIZE) return res.status(413).json({ message: 'Logo file is too large. Maximum 5 MB.' })
+
+    const buffer = Buffer.concat(chunks)
+
+    // Validate actual file content via magic bytes — prevents spoofed Content-Type attacks
+    const detected = detectImageType(buffer)
+    if (!detected) {
+      return res.status(400).json({ message: 'The file does not appear to be a valid image. The content could not be verified.' })
+    }
+
+    const filename = `logo-${organisationId}-${Date.now()}${detected.ext}`
+
+    try {
+      await mkdir(uploadsDir, { recursive: true })
+      await writeFile(join(uploadsDir, filename), buffer)
+
+      const logoUrl = `/uploads/${filename}`
+      await prisma.organisation.update({ where: { id: organisationId }, data: { logoUrl } })
+
+      res.json({ logoUrl })
+    } catch {
+      res.status(500).json({ message: 'Could not save the logo file.' })
+    }
+  })
+
+  req.on('error', () => {
+    if (!res.headersSent) res.status(500).json({ message: 'Logo upload failed.' })
+  })
+})
+
+app.delete('/api/settings/logo', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'No workspace found.' })
+
+  await prisma.organisation.update({ where: { id: organisationId }, data: { logoUrl: null } })
+  res.json({ success: true })
+})
+
+// ---- Superadmin routes ----
+app.get('/api/superadmin/stats', requireSuperadmin, async (_req, res) => {
+  const [totalUsers, totalOrganisations, totalQuotes, approvedQuotes, quoteAgg, trialCount] = await Promise.all([
+    prisma.user.count(),
+    prisma.organisation.count(),
+    prisma.quote.count(),
+    prisma.quote.count({ where: { status: 'APPROVED' } }),
+    prisma.quote.aggregate({ _sum: { total: true }, _count: true }),
+    prisma.subscription.count({ where: { status: 'TRIALING' } }),
+  ])
+
+  const recentSignups = await prisma.user.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+    select: { id: true, name: true, email: true, role: true, createdAt: true, organisationId: true, organisation: { select: { name: true } } },
+  })
+
+  res.json({
+    totalUsers,
+    totalOrganisations,
+    totalQuotes,
+    approvedQuotes,
+    totalQuotedValue: Number(quoteAgg._sum.total ?? 0),
+    approvedQuoteCount: quoteAgg._count,
+    activeTrials: trialCount,
+    recentSignups: recentSignups.map((u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, createdAt: u.createdAt, organisationName: u.organisation?.name ?? null })),
+  })
+})
+
+app.get('/api/superadmin/workspaces', requireSuperadmin, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 200)
+  const offset = Math.max(Number(req.query?.offset ?? 0), 0)
+
+  const [organisations, totalCount] = await Promise.all([
+    prisma.organisation.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        country: true,
+        businessType: true,
+        currency: true,
+        createdAt: true,
+        owner: { select: { id: true, name: true, email: true, createdAt: true } },
+        subscription: { select: { plan: true, status: true, trialEndsAt: true, simulated: true } },
+        _count: { select: { quotes: true, customers: true } },
+      },
+    }),
+    prisma.organisation.count(),
+  ])
+
+  const orgIds = organisations.map((o) => o.id)
+  const quoteStats = orgIds.length > 0
+    ? await prisma.quote.groupBy({ by: ['organisationId'], where: { organisationId: { in: orgIds } }, _count: true, _sum: { total: true } })
+    : []
+
+  const statsMap = new Map(quoteStats.map((s) => [s.organisationId, { count: s._count, total: Number(s._sum.total ?? 0) }]))
+
+  res.json({
+    workspaces: organisations.map((org) => ({
+      id: org.id,
+      name: org.name,
+      email: org.email,
+      country: org.country,
+      businessType: org.businessType,
+      currency: org.currency,
+      createdAt: org.createdAt,
+      owner: org.owner,
+      subscription: org.subscription,
+      quoteCount: statsMap.get(org.id)?.count ?? 0,
+      totalQuotedValue: statsMap.get(org.id)?.total ?? 0,
+      customerCount: org._count.customers,
+    })),
+    totalCount,
+    hasMore: offset + limit < totalCount,
+  })
+})
+
+app.get('/api/superadmin/quotes', requireSuperadmin, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 200)
+  const offset = Math.max(Number(req.query?.offset ?? 0), 0)
+
+  const [quotes, totalCount] = await Promise.all([
+    prisma.quote.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
+      select: {
+        id: true,
+        documentNumber: true,
+        status: true,
+        currency: true,
+        total: true,
+        createdAt: true,
+        organisation: { select: { id: true, name: true } },
+        customer: { select: { name: true } },
+      },
+    }),
+    prisma.quote.count(),
+  ])
+
+  res.json({
+    quotes: quotes.map((q) => ({
+      id: q.id,
+      documentNumber: q.documentNumber,
+      status: q.status,
+      currency: q.currency,
+      total: Number(q.total),
+      createdAt: q.createdAt,
+      organisation: q.organisation,
+      customer: q.customer,
+    })),
+    totalCount,
+    hasMore: offset + limit < totalCount,
+  })
+})
+
+// Promote a user to SUPERADMIN (only a superadmin can do this)
+app.post('/api/superadmin/promote', requireSuperadmin, async (req, res) => {
+  const email = String(req.body?.email ?? '').trim().toLowerCase()
+  if (!email) return res.status(400).json({ message: 'Email is required.' })
+
+  const user = await prisma.user.findUnique({ where: { email } })
+  if (!user) return res.status(404).json({ message: 'User not found.' })
+
+  const updated = await prisma.user.update({ where: { id: user.id }, data: { role: 'SUPERADMIN' }, select: { id: true, name: true, email: true, role: true } })
+  res.json({ user: updated })
+})
+
+// ---- 404 handler (catches all unmatched routes) ----
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({ message: 'This endpoint does not exist.' })
+})
+
+// ---- Global error handler ----
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  // Don't leak internal error details in production
+  const isDev = process.env.NODE_ENV !== 'production'
+  console.error(`[error] ${err.message}`)
+  if (isDev) console.error(err.stack)
+
+  // Prisma known errors
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (err.code === 'P2002') return res.status(409).json({ message: 'A record with that value already exists.' })
+    if (err.code === 'P2025') return res.status(404).json({ message: 'Record not found.' })
+  }
+
+  res.status(500).json({
+    message: isDev ? err.message : 'Something went wrong on our end. Please try again.',
+  })
 })
 
 app.listen(port, () => {

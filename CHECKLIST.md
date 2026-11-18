@@ -133,9 +133,11 @@ Living plan. Checkboxes are marked when each stage is actually done (code exists
 ## Stage 9 — Polish v1
 
 - [x] Settings: logo, payment instructions, terms
+- [x] Direct logo file upload (drag-and-drop in Settings)
 - [ ] Send verification and welcome email through Resend when configured (local development simulation otherwise)
 - [x] Empty states and validation
 - [x] Basic mobile layout
+- [x] Superadmin role, login, and platform dashboard
 
 **Exit:** v1 loop is usable on a phone for viewing; creating quotes is good on desktop.
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { apiRequest, formatMoney } from './api'
+import { apiRequest, formatMoney, assetUrl } from './api'
+import LogoUpload from './LogoUpload'
 import PublicQuote from './PublicQuote'
 import QuoteDocument, { type QuoteDocumentData, type QuoteLine } from './QuoteDocument'
 import './Workspace.css'
@@ -91,7 +92,7 @@ function documentFromDraft(draft: QuoteDraft, quoteNumber: string, business: Bus
       email: business.email,
       phone: business.phone,
       country: business.country,
-      logoUrl: business.logoUrl,
+      logoUrl: assetUrl(business.logoUrl),
       paymentInstructions: business.paymentInstructions,
     },
   }
@@ -576,8 +577,24 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
                 <label>Currency<input className="input-control" maxLength={3} required value={businessForm.currency} onChange={(event) => setBusinessForm((current) => ({ ...current, currency: event.target.value.toUpperCase() }))} /></label>
                 <label>Default tax rate (%)<input className="input-control" type="number" min="0" max="100" step="0.01" value={businessForm.defaultTaxRate ?? ''} onChange={(event) => setBusinessForm((current) => ({ ...current, defaultTaxRate: event.target.value }))} /></label>
                 <label>Quote prefix<input className="input-control" maxLength={8} value={businessForm.quotePrefix ?? 'QT'} onChange={(event) => setBusinessForm((current) => ({ ...current, quotePrefix: event.target.value.toUpperCase() }))} /></label>
-                <label className="span-two">Logo image URL<input className="input-control" type="url" placeholder="https://example.com/logo.png" value={businessForm.logoUrl ?? ''} onChange={(event) => setBusinessForm((current) => ({ ...current, logoUrl: event.target.value }))} /></label>
               </div></div>
+              <div className="settings-section">
+                <h3>Logo</h3>
+                <p>Upload your business logo — it appears on every quote document.</p>
+                <LogoUpload
+                  logoUrl={businessForm.logoUrl ?? null}
+                  onUploaded={(url) => {
+                    setBusinessForm((current) => ({ ...current, logoUrl: url }))
+                    setBusiness((current) => current ? { ...current, logoUrl: url } : current)
+                    setSaveState('Logo uploaded')
+                  }}
+                  onRemoved={() => {
+                    setBusinessForm((current) => ({ ...current, logoUrl: '' }))
+                    setBusiness((current) => current ? { ...current, logoUrl: null } : current)
+                    setSaveState('Logo removed')
+                  }}
+                />
+              </div>
               <div className="settings-section"><h3>Quote details</h3><p>Shown on customer facing documents</p><div className="settings-grid"><label className="span-two">Payment instructions<textarea className="input-control" rows={3} value={businessForm.paymentInstructions ?? ''} onChange={(event) => setBusinessForm((current) => ({ ...current, paymentInstructions: event.target.value }))} placeholder="Bank, account, or payment details" /></label><label className="span-two">Default terms<textarea className="input-control" rows={4} value={businessForm.terms ?? ''} onChange={(event) => setBusinessForm((current) => ({ ...current, terms: event.target.value }))} placeholder="Payment timing, quote validity, delivery conditions" /></label></div></div>
               <div className="settings-footer"><span className="save-feedback">{saveState}</span><button className="button button-primary" type="submit" disabled={businessSaving}>{businessSaving ? 'Saving…' : 'Save settings'}</button></div>
             </form>

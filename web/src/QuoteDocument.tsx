@@ -1,4 +1,4 @@
-import { formatMoney } from './api'
+import { assetUrl, formatMoney } from './api'
 
 export type QuoteLine = {
   id?: string
@@ -44,7 +44,7 @@ export default function QuoteDocument({ quote }: { quote: QuoteDocumentData }) {
       <header className="document-header">
         <div className="document-business">
           {quote.organisation.logoUrl ? (
-            <img src={quote.organisation.logoUrl} alt={`${quote.organisation.name} logo`} />
+            <img src={assetUrl(quote.organisation.logoUrl) ?? undefined} alt={`${quote.organisation.name} logo`} />
           ) : (
             <div className="document-logo-placeholder" aria-hidden="true">{quote.organisation.name.slice(0, 1).toUpperCase()}</div>
           )}
