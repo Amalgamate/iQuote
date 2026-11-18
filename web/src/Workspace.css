@@ -26,7 +26,7 @@
 .workspace-root .input-control:focus { border-color: #13795b; box-shadow: 0 0 0 3px rgb(19 121 91 / 12%); }
 .workspace-root .dashboard-welcome { margin-bottom: 8px; }
 .workspace-root .dashboard-welcome h2 { color: #172b23; font-family: Georgia, "Times New Roman", serif; font-size: clamp(26px, 3vw, 36px); font-weight: 500; letter-spacing: -.04em; }
-.workspace-root .metric-grid-four { gap: 14px; }
+.workspace-root .metric-grid-four { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: stretch; gap: 14px; }
 .workspace-root .metric-card-v2 { min-height: 132px; }
 .superadmin-root .workspace-topbar { background: #fff; }
 .superadmin-root .metric-card { min-height: 130px; }
@@ -79,9 +79,10 @@
 .dashboard-date-label { margin: 0 0 9px; color: #398267; font-size: 10px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
 .dashboard-create-button { min-height: 42px; padding-inline: 17px; border-radius: 9px; white-space: nowrap; }
 .dashboard-create-button span { margin-right: 6px; font-size: 18px; font-weight: 400; vertical-align: -1px; }
-.customer-dashboard-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 13px; }
+.customer-dashboard-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); align-items: stretch; gap: 13px; }
 .customer-dashboard-metric,.customer-dashboard-panel { min-width: 0; border: 1px solid #e5ebe6; border-radius: 13px; background: #fff; box-shadow: 0 8px 28px rgb(23 44 34 / 5%); }
 .customer-dashboard-metric { display: grid; min-height: 133px; align-content: space-between; gap: 12px; padding: 17px 18px; }
+.customer-dashboard-metric > div { min-height: 26px; }
 .customer-dashboard-metric > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #738078; font-size: 11px; }
 .customer-dashboard-metric > strong { overflow: hidden; color: #172b23; font-size: clamp(22px,2vw,29px); font-weight: 650; letter-spacing: -.045em; text-overflow: ellipsis; white-space: nowrap; }
 .customer-dashboard-metric > small { overflow: hidden; color: #87938c; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -103,7 +104,7 @@
 .dashboard-chart-total span { color: #8a958e; font-size: 10px; }
 .dashboard-line-chart svg { display: block; width: 100%; height: 175px; overflow: visible; }
 .dashboard-chart-gridline { fill: none; stroke: #edf1ed; stroke-width: 1; vector-effect: non-scaling-stroke; }
-.dashboard-chart-labels { display: flex; justify-content: space-between; gap: 8px; color: #9aa49e; font-size: 9px; }
+.dashboard-chart-labels { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #9aa49e; font-size: 9px; white-space: nowrap; }
 .dashboard-text-link { padding: 4px 0; border: 0; background: transparent; color: #237b56; cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
 .customer-recent-quotes .dashboard-table { min-width: 550px; font-size: 11px; }
 .customer-recent-quotes .dashboard-table th { height: 34px; background: #fafbfa; font-size: 9px; }

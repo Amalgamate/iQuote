@@ -162,7 +162,6 @@ export default function ChatbotWidget({ onStartTrial }: ChatbotWidgetProps) {
         ) : (
           <div className="launcher-icon-wrap">
             <span className="launcher-icon" aria-hidden="true">iQ</span>
-            <span className="launcher-radar-ring" />
           </div>
         )}
       </button>
