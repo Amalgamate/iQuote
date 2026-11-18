@@ -1,0 +1,84 @@
+# =============================================================
+# iQuote — Production Docker Compose
+# =============================================================
+# Usage:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# Required .env.prod variables (see .env.prod.example):
+#   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+#   JWT_SECRET, DATABASE_URL
+#   PLATFORM_NAME, PLATFORM_URL, SUPPORT_EMAIL
+#   Optional: RESEND_API_KEY, RESEND_FROM_EMAIL, PLATFORM_LOGO_URL, etc.
+# =============================================================
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: iquote-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-iquote}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ${POSTGRES_DB:-iquote}
+    volumes:
+      - iquote_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iquote} -d ${POSTGRES_DB:-iquote}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - iquote-net
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: iquote-api
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.prod}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.prod}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
+      EMAIL_SETTINGS_ENCRYPTION_KEY: ${EMAIL_SETTINGS_ENCRYPTION_KEY:-}
+      PLATFORM_NAME: ${PLATFORM_NAME:-iQuote}
+      PLATFORM_URL: ${PLATFORM_URL:?Set PLATFORM_URL in .env.prod}
+      PLATFORM_LOGO_URL: ${PLATFORM_LOGO_URL:-}
+      PLATFORM_HEADER_IMAGE: ${PLATFORM_HEADER_IMAGE:-}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-hello@iquote.app}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      # Trust the Nginx reverse proxy (1 hop)
+      TRUST_PROXY_HOPS: "1"
+    volumes:
+      - iquote_uploads:/app/uploads
+    networks:
+      - iquote-net
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: iquote-web
+    restart: always
+    depends_on:
+      - api
+    ports:
+      - "5180:80"
+    networks:
+      - iquote-net
+
+volumes:
+  iquote_pgdata:
+  iquote_uploads:
+
+networks:
+  iquote-net:
+    driver: bridge

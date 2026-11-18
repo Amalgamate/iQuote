@@ -19,9 +19,11 @@ out/
 .env
 .env.*
 !.env.example
+!.env.prod.example
 **/.env
 **/.env.*
 !**/.env.example
+!**/.env.prod.example
 *.local
 
 # Database files

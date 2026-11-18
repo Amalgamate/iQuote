@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { apiRequest, assetUrl, formatMoney } from './api'
+import { apiRequest, formatMoney } from './api'
 import './Workspace.css'
 
 type SuperadminStats = {

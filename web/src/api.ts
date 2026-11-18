@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
+// In production, the frontend is served by Nginx which proxies /api to the backend.
+// VITE_API_URL is set at build time; when empty or unset, requests go to same-origin.
+const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
 // Session expiry handler — allows the app to react to 401s globally
 let onSessionExpired: (() => void) | null = null
