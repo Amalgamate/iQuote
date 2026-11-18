@@ -1,0 +1,7 @@
+{
+  "product": "iQuote",
+  "currentStage": 7,
+  "completedStages": [0, 1, 2, 3, 4, 5, 6],
+  "updatedAt": "2026-11-18T08:53:11.000Z",
+  "notes": "Stages 1–6 are complete. Quote editor, document preview/print-to-PDF, public decisions, settings, and mobile layout are implemented. SaaS onboarding preview is implemented: multi-step landing/signup pages, hashed email-code verification, organisation-scoped customer and quote APIs, and a persisted 14-day simulated subscription. Prisma schema sync and web/API production builds pass; API health is ok. Stage 7's one-page print-to-PDF visual check is still pending. Resend support is implemented but api/.env has no Resend key or sender configured, so local onboarding uses a development-only code and sends no email. Payment checkout and team invitations are not implemented."
+}
