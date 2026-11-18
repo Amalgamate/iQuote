@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiRequest } from './api'
 import QuoteDocument, { type QuoteDocumentData } from './QuoteDocument'
+import { QuotePdfDownloadLink } from './QuotePdf'
 
 type PublicQuoteRecord = QuoteDocumentData & {
   status: string
@@ -65,7 +66,8 @@ export default function PublicQuote({ token }: { token: string }) {
         <div className="brand"><span className="brand-mark">iQ</span><span>iQuote</span></div>
         <div className="public-quote-actions">
           <span className={`quote-status status-${quote.status.toLowerCase()}`}>{decisionLabel[quote.status] ?? quote.status}</span>
-          <button type="button" className="secondary-button" onClick={() => window.print()}>Print / Save PDF</button>
+          <QuotePdfDownloadLink className="secondary-button" quote={quote} />
+          <button type="button" className="secondary-button" onClick={() => window.print()}>Print</button>
         </div>
       </div>
       <div className="public-quote-layout">
