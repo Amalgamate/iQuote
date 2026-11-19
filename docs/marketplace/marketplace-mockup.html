@@ -1,0 +1,1115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iQuote Market — UI Mockups</title>
+<style>
+  :root {
+    --navy-dark: #081120;
+    --navy-surface: #0E1A2F;
+    --ink: #0A1128;
+    --muted: #53647A;
+    --line: #D8E4F2;
+    --canvas: #F4F8FD;
+    --canvas-alt: #EBF3FC;
+    --surface: #FFFFFF;
+    --blue-primary: #0052FF;
+    --blue-hover: #003ECC;
+    --blue-accent: #0284C7;
+    --blue-pill: #EBF3FF;
+    --danger: #DC2626;
+    --warning: #F59E0B;
+    --success: #059669;
+    --font: 'Poppins', 'Montserrat', 'Raleway', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font);
+    background: var(--canvas);
+    color: var(--ink);
+    line-height: 1.6;
+    padding: 0;
+  }
+
+  /* ─── Mockup navigation ─── */
+  .mockup-nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--navy-dark);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .mockup-nav h1 {
+    color: #fff;
+    font-size: 16px;
+    font-weight: 800;
+    margin-right: auto;
+    letter-spacing: -0.3px;
+  }
+  .mockup-nav a {
+    color: rgba(255,255,255,0.6);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 6px;
+    transition: all 0.15s;
+  }
+  .mockup-nav a:hover, .mockup-nav a.active {
+    color: #fff;
+    background: rgba(255,255,255,0.1);
+  }
+
+  /* ─── Section wrapper ─── */
+  .mockup-section {
+    padding: 40px 24px;
+    max-width: 1100px;
+    margin: 0 auto;
+    display: none;
+  }
+  .mockup-section.active { display: block; }
+
+  .mockup-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--blue-primary);
+    margin-bottom: 8px;
+  }
+  .mockup-title {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--ink);
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+  .mockup-desc {
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 32px;
+    max-width: 600px;
+  }
+
+  /* ─── Card ─── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 28px;
+    box-shadow: 0 1px 3px rgba(8,17,32,0.04);
+  }
+  .card + .card { margin-top: 20px; }
+
+  /* ─── Form ─── */
+  .form-group { margin-bottom: 20px; }
+  .form-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .form-row .form-group { flex: 1; margin-bottom: 0; }
+  .form-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .form-input, .form-select, .form-textarea {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+    background: var(--surface);
+    transition: border-color 0.15s;
+  }
+  .form-input:focus, .form-select:focus, .form-textarea:focus {
+    outline: none;
+    border-color: var(--blue-primary);
+    box-shadow: 0 0 0 3px rgba(0,82,255,0.08);
+  }
+  .form-textarea { min-height: 80px; resize: vertical; }
+  .form-hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* ─── Button ─── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 22px;
+    border: none;
+    border-radius: 8px;
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    text-decoration: none;
+  }
+  .btn-primary {
+    background: var(--blue-primary);
+    color: #fff;
+  }
+  .btn-primary:hover { background: var(--blue-hover); }
+  .btn-secondary {
+    background: var(--blue-pill);
+    color: var(--blue-primary);
+  }
+  .btn-danger {
+    background: #FEE2E2;
+    color: var(--danger);
+  }
+  .btn-success {
+    background: #D1FAE5;
+    color: var(--success);
+  }
+  .btn-sm { padding: 6px 14px; font-size: 12px; }
+  .btn-row {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+  }
+
+  /* ─── Badge / Pill ─── */
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-open { background: #D1FAE5; color: var(--success); }
+  .badge-closed { background: #FEF3C7; color: var(--warning); }
+  .badge-awarded { background: var(--blue-pill); color: var(--blue-primary); }
+  .badge-expired { background: #F3F4F6; color: var(--muted); }
+  .badge-pending { background: #FEF3C7; color: var(--warning); }
+  .badge-accepted { background: #D1FAE5; color: var(--success); }
+  .badge-declined { background: #FEE2E2; color: var(--danger); }
+  .badge-submitted { background: var(--blue-pill); color: var(--blue-primary); }
+  .badge-selected { background: #D1FAE5; color: var(--success); }
+  .badge-withdrawn { background: #F3F4F6; color: var(--muted); }
+  .badge-verified { background: #D1FAE5; color: var(--success); }
+  .badge-unverified { background: #F3F4F6; color: var(--muted); }
+  .badge-flagged { background: #FEE2E2; color: var(--danger); }
+
+  /* ─── Table ─── */
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th {
+    text-align: left;
+    padding: 12px 16px;
+    background: var(--canvas);
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  td {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--canvas); }
+
+  /* ─── Comparison cards ─── */
+  .comparison-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+  }
+  .comparison-card {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px;
+    background: var(--surface);
+    position: relative;
+  }
+  .comparison-card.selected {
+    border-color: var(--success);
+    border-width: 2px;
+    box-shadow: 0 0 0 3px rgba(5,150,105,0.08);
+  }
+  .comparison-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    margin-bottom: 14px;
+  }
+  .comparison-card h4 {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .comparison-card .provider-name {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+  .comparison-card .price {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--blue-primary);
+    margin-bottom: 4px;
+  }
+  .comparison-card .price-currency {
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .comparison-card .meta-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+  }
+  .comparison-card .meta-label {
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .comparison-card .meta-value {
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .comparison-card .terms {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+
+  /* ─── Inbox item ─── */
+  .inbox-item {
+    display: flex;
+    gap: 16px;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    background: var(--surface);
+    transition: box-shadow 0.15s;
+    align-items: start;
+  }
+  .inbox-item:hover { box-shadow: 0 2px 8px rgba(8,17,32,0.06); }
+  .inbox-item-icon {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: var(--blue-pill);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--blue-primary);
+  }
+  .inbox-item-body { flex: 1; min-width: 0; }
+  .inbox-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .inbox-item-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .inbox-item-meta {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .inbox-item-scope {
+    font-size: 13px;
+    color: var(--ink);
+    line-height: 1.5;
+  }
+  .inbox-item-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  /* ─── Privacy note ─── */
+  .privacy-note {
+    display: flex;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--canvas-alt);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 20px;
+    align-items: start;
+  }
+  .privacy-note-icon { flex-shrink: 0; font-size: 16px; }
+
+  /* ─── Stats row ─── */
+  .stats-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+  .stat-card {
+    flex: 1;
+    min-width: 140px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .stat-card .stat-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .stat-card .stat-value {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--ink);
+  }
+
+  /* ─── Tabs ─── */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid var(--line);
+  }
+  .tab {
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.15s;
+  }
+  .tab.active {
+    color: var(--blue-primary);
+    border-bottom-color: var(--blue-primary);
+  }
+
+  /* ─── Modal hint ─── */
+  .modal-hint {
+    background: #FEF3C7;
+    border: 1px solid var(--warning);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 13px;
+    color: #92400E;
+    margin-bottom: 20px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ─── Navigation ─── -->
+<nav class="mockup-nav">
+  <h1>iQuote Market — UI Mockups</h1>
+  <a href="#" class="active" data-view="rfq-create">1. RFQ Creation</a>
+  <a href="#" data-view="provider-inbox">2. Provider Inbox</a>
+  <a href="#" data-view="proposal-submit">3. Proposal Submit</a>
+  <a href="#" data-view="buyer-compare">4. Buyer Compare</a>
+  <a href="#" data-view="moderation">5. Moderation</a>
+</nav>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- 1. RFQ CREATION FORM (Customer / Buyer view)                     -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section class="mockup-section active" id="rfq-create">
+  <div class="mockup-label">Mockup 1</div>
+  <div class="mockup-title">Create a Request for Quote</div>
+  <div class="mockup-desc">A buyer posts what they need. The system matches them to vetted providers in their area. Providers see only this RFQ — not each other.</div>
+
+  <div class="card">
+    <div class="form-group">
+      <label class="form-label">What do you need?</label>
+      <textarea class="form-textarea" placeholder="Describe the service you need. Be specific: quantities, materials, dimensions, finish quality.">500 A4 brochures, full colour, 170gsm glossy art paper, folded to A5, delivered to Westlands office</textarea>
+      <div class="form-hint">More detail = better proposals. Include quantities, materials, and any specs.</div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Service Category</label>
+        <select class="form-select">
+          <option>Printing</option>
+          <option>Branding</option>
+          <option>Signage</option>
+          <option>Fabrication</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Location</label>
+        <select class="form-select">
+          <option>Nairobi</option>
+          <option>Kiambu</option>
+          <option>Machakos</option>
+          <option>Mombasa</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">When do you need it?</label>
+        <input class="form-input" type="text" value="By 10 December 2026">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Timing flexibility</label>
+        <select class="form-select">
+          <option>Flexible (within 2 weeks)</option>
+          <option>Exact date required</option>
+          <option>Urgent (within 1 week)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Budget Range (KES)</label>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input class="form-input" type="text" value="15,000" placeholder="Min">
+          <span style="color:var(--muted); font-weight:600;">to</span>
+          <input class="form-input" type="text" value="30,000" placeholder="Max">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Show budget to providers?</label>
+        <select class="form-select">
+          <option>Yes — show my budget range</option>
+          <option>No — do not disclose budget</option>
+        </select>
+        <div class="form-hint">Disclosing budget helps providers tailor proposals.</div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Deadline for proposals</label>
+      <input class="form-input" type="text" value="25 November 2026, 5:00 PM">
+      <div class="form-hint">Providers must submit proposals by this date/time. Suggested: 48–72 hours from now.</div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Eligibility requirements (optional)</label>
+      <textarea class="form-textarea" placeholder="Any specific requirements providers must meet.">Must have offset printing capability. Sample of previous brochure work required.</textarea>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Attachments</label>
+      <div style="border:2px dashed var(--line); border-radius:8px; padding:20px; text-align:center; color:var(--muted); font-size:13px;">
+        Click to upload or drag files here (specs, photos, samples — max 10MB each)
+      </div>
+    </div>
+
+    <div class="privacy-note">
+      <span class="privacy-note-icon">&#128274;</span>
+      <span><strong>Privacy:</strong> Your RFQ will be sent privately to 2–3 matched providers. They cannot see each other. You will see all proposals they submit — they will see only their own.</span>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary">Save as Draft</button>
+      <button class="btn btn-primary">Publish &amp; Match to Providers</button>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- 2. PROVIDER INVITATION INBOX                                      -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section class="mockup-section" id="provider-inbox">
+  <div class="mockup-label">Mockup 2</div>
+  <div class="mockup-title">Provider Invitation Inbox</div>
+  <div class="mockup-desc">A provider sees RFQs they've been invited to. They can accept, decline, and submit a proposal. They cannot see other invitees or other proposals.</div>
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Pending Invitations</div>
+      <div class="stat-value">3</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active Proposals</div>
+      <div class="stat-value">2</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Selected This Month</div>
+      <div class="stat-value">1</div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active">Pending (3)</div>
+    <div class="tab">Accepted (2)</div>
+    <div class="tab">Declined (1)</div>
+    <div class="tab">Expired (0)</div>
+  </div>
+
+  <div class="privacy-note">
+    <span class="privacy-note-icon">&#128274;</span>
+    <span><strong>Private invitations:</strong> You are seeing this because the buyer specifically invited you. You cannot see who else was invited or what they proposed.</span>
+  </div>
+
+  <!-- Invitation 1 -->
+  <div class="inbox-item">
+    <div class="inbox-item-icon">P</div>
+    <div class="inbox-item-body">
+      <div class="inbox-item-header">
+        <div class="inbox-item-title">500 A4 Brochures — Full Colour, Folded</div>
+        <span class="badge badge-pending">Pending</span>
+      </div>
+      <div class="inbox-item-meta">Printing &middot; Nairobi &middot; Budget: 15,000–30,000 KES &middot; Deadline: 25 Nov 2026, 5:00 PM</div>
+      <div class="inbox-item-scope">500 A4 brochures, full colour, 170gsm glossy art paper, folded to A5, delivered to Westlands office. Must have offset printing capability.</div>
+      <div class="inbox-item-actions">
+        <button class="btn btn-primary btn-sm">Accept &amp; Submit Proposal</button>
+        <button class="btn btn-danger btn-sm">Decline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Invitation 2 -->
+  <div class="inbox-item">
+    <div class="inbox-item-icon">B</div>
+    <div class="inbox-item-body">
+      <div class="inbox-item-header">
+        <div class="inbox-item-title">Company Branding Package — Logo, Cards, Letterhead</div>
+        <span class="badge badge-pending">Pending</span>
+      </div>
+      <div class="inbox-item-meta">Branding &middot; Nairobi &middot; Budget: 50,000–80,000 KES &middot; Deadline: 28 Nov 2026, 12:00 PM</div>
+      <div class="inbox-item-scope">Complete branding package: logo design (3 concepts), business cards (500), letterhead (1000), email signature. Delivery within 3 weeks.</div>
+      <div class="inbox-item-actions">
+        <button class="btn btn-primary btn-sm">Accept &amp; Submit Proposal</button>
+        <button class="btn btn-danger btn-sm">Decline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Invitation 3 -->
+  <div class="inbox-item">
+    <div class="inbox-item-icon">S</div>
+    <div class="inbox-item-body">
+      <div class="inbox-item-header">
+        <div class="inbox-item-title">Roll-up Banners x3 — 85x200cm</div>
+        <span class="badge badge-pending">Pending</span>
+      </div>
+      <div class="inbox-item-meta">Signage &middot; Nairobi &middot; Budget not disclosed &middot; Deadline: 24 Nov 2026, 5:00 PM</div>
+      <div class="inbox-item-scope">3 roll-up banners, 85x200cm, full colour, with carry bags and retractable stands. Artwork provided. Needed by 1 December.</div>
+      <div class="inbox-item-actions">
+        <button class="btn btn-primary btn-sm">Accept &amp; Submit Proposal</button>
+        <button class="btn btn-danger btn-sm">Decline</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- 3. PROPOSAL SUBMISSION FORM                                      -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section class="mockup-section" id="proposal-submit">
+  <div class="mockup-label">Mockup 3</div>
+  <div class="mockup-title">Submit Your Proposal</div>
+  <div class="mockup-desc">A provider submits their response to an RFQ they accepted. Line items, timeline, and terms. The buyer sees this — other providers do not.</div>
+
+  <div class="card" style="margin-bottom:20px; background:var(--canvas-alt);">
+    <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--muted); margin-bottom:6px;">RFQ Details</div>
+    <div style="font-size:16px; font-weight:700; color:var(--ink); margin-bottom:6px;">500 A4 Brochures — Full Colour, Folded</div>
+    <div style="font-size:13px; color:var(--muted); margin-bottom:8px;">Printing &middot; Nairobi &middot; Budget: 15,000–30,000 KES &middot; Deadline: 25 Nov 2026</div>
+    <div style="font-size:13px; color:var(--ink);">500 A4 brochures, full colour, 170gsm glossy art paper, folded to A5, delivered to Westlands office.</div>
+  </div>
+
+  <div class="card">
+    <div class="privacy-note">
+      <span class="privacy-note-icon">&#128274;</span>
+      <span><strong>Private proposal:</strong> Only the buyer sees your proposal. Other invited providers cannot see it. You cannot see theirs.</span>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Line Items</label>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:16px;">
+      <table>
+        <thead>
+          <tr>
+            <th>Description</th>
+            <th>Qty</th>
+            <th>Unit</th>
+            <th>Unit Price (KES)</th>
+            <th>Tax %</th>
+            <th>Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Offset printing, A4 full colour, 170gsm glossy art paper</td>
+            <td>500</td>
+            <td>pcs</td>
+            <td>32.00</td>
+            <td>16</td>
+            <td>16,000</td>
+          </tr>
+          <tr>
+            <td>Folding to A5 (machine fold)</td>
+            <td>500</td>
+            <td>pcs</td>
+            <td>3.00</td>
+            <td>16</td>
+            <td>1,500</td>
+          </tr>
+          <tr>
+            <td>Delivery to Westlands</td>
+            <td>1</td>
+            <td>job</td>
+            <td>500.00</td>
+            <td>0</td>
+            <td>500</td>
+          </tr>
+          <tr style="font-weight:700; background:var(--canvas);">
+            <td colspan="5" style="text-align:right;">Subtotal</td>
+            <td>18,000</td>
+          </tr>
+          <tr style="font-weight:700; background:var(--canvas);">
+            <td colspan="5" style="text-align:right;">Tax (16%)</td>
+            <td>2,800</td>
+          </tr>
+          <tr style="font-weight:800; background:var(--canvas); font-size:15px;">
+            <td colspan="5" style="text-align:right;">Total</td>
+            <td style="color:var(--blue-primary);">20,800</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <button class="btn btn-secondary btn-sm">+ Add Line Item</button>
+
+    <div class="form-row" style="margin-top:24px;">
+      <div class="form-group">
+        <label class="form-label">Timeline</label>
+        <input class="form-input" type="text" value="5 working days from confirmation">
+        <div class="form-hint">When you can start and how long the work will take.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Currency</label>
+        <select class="form-select">
+          <option>KES — Kenyan Shilling</option>
+          <option>USD — US Dollar</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Terms &amp; Conditions</label>
+      <textarea class="form-textarea">50% deposit before production, 50% on delivery. Artwork must be provided in print-ready PDF. Price valid for 14 days.</textarea>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Notes for the buyer (optional)</label>
+      <textarea class="form-textarea" placeholder="Any questions, clarifications, or alternatives you'd like to offer.">Can also do 1000 pcs at KES 30,000 total if you need more copies — better unit price.</textarea>
+    </div>
+
+    <div class="modal-hint">
+      <strong>Before submitting:</strong> You can withdraw this proposal anytime before the deadline (25 Nov, 5:00 PM). After the deadline, it is locked. If the buyer selects your proposal, it converts to a formal quote in their workspace.
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary">Save Draft</button>
+      <button class="btn btn-primary">Submit Proposal</button>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- 4. BUYER'S PROPOSAL COMPARISON VIEW                               -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section class="mockup-section" id="buyer-compare">
+  <div class="mockup-label">Mockup 4</div>
+  <div class="mockup-title">Compare Proposals</div>
+  <div class="mockup-desc">The buyer sees all proposals for their RFQ side by side. They can select one, which converts it to an ordinary quote. Or they can close the RFQ without selecting.</div>
+
+  <div class="card" style="margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+      <div>
+        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--muted); margin-bottom:4px;">RFQ</div>
+        <div style="font-size:18px; font-weight:800; color:var(--ink);">500 A4 Brochures — Full Colour, Folded</div>
+        <div style="font-size:13px; color:var(--muted);">3 proposals received &middot; Deadline passed &middot; <span class="badge badge-open">Open</span></div>
+      </div>
+      <div>
+        <button class="btn btn-danger btn-sm">Close Without Selecting</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="privacy-note">
+    <span class="privacy-note-icon">&#128274;</span>
+    <span><strong>Privacy:</strong> Only you can see these proposals. Providers cannot see each other's proposals or know who else submitted. Selecting one converts it to a formal quote in your workspace — others are automatically declined.</span>
+  </div>
+
+  <div class="comparison-grid">
+    <!-- Proposal 1 (selected) -->
+    <div class="comparison-card selected">
+      <div class="comparison-card-header">
+        <div>
+          <h4>Proposal 1</h4>
+          <div class="provider-name">QuickPrint Solutions</div>
+        </div>
+        <span class="badge badge-selected">Selected</span>
+      </div>
+      <div class="price">20,800 <span class="price-currency">KES</span></div>
+      <div class="meta-item">
+        <span class="meta-label">Timeline</span>
+        <span class="meta-value">5 days</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Tax (16%)</span>
+        <span class="meta-value">2,800 KES</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Subtotal</span>
+        <span class="meta-value">18,000 KES</span>
+      </div>
+      <div class="terms">50% deposit, 50% on delivery. Print-ready PDF required.</div>
+      <div style="margin-top:14px;">
+        <button class="btn btn-success btn-sm" disabled>Selected</button>
+      </div>
+    </div>
+
+    <!-- Proposal 2 -->
+    <div class="comparison-card">
+      <div class="comparison-card-header">
+        <div>
+          <h4>Proposal 2</h4>
+          <div class="provider-name">Nairobi Print Hub</div>
+        </div>
+        <span class="badge badge-submitted">Submitted</span>
+      </div>
+      <div class="price">24,500 <span class="price-currency">KES</span></div>
+      <div class="meta-item">
+        <span class="meta-label">Timeline</span>
+        <span class="meta-value">3 days</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Tax (16%)</span>
+        <span class="meta-value">3,379 KES</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Subtotal</span>
+        <span class="meta-value">21,121 KES</span>
+      </div>
+      <div class="terms">Full payment on delivery. Free reprints if colour mismatch.</div>
+      <div style="margin-top:14px;">
+        <button class="btn btn-primary btn-sm">Select This Proposal</button>
+      </div>
+    </div>
+
+    <!-- Proposal 3 -->
+    <div class="comparison-card">
+      <div class="comparison-card-header">
+        <div>
+          <h4>Proposal 3</h4>
+          <div class="provider-name">Elite Graphics Ltd</div>
+        </div>
+        <span class="badge badge-submitted">Submitted</span>
+      </div>
+      <div class="price">17,400 <span class="price-currency">KES</span></div>
+      <div class="meta-item">
+        <span class="meta-label">Timeline</span>
+        <span class="meta-value">7 days</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Tax (16%)</span>
+        <span class="meta-value">2,400 KES</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Subtotal</span>
+        <span class="meta-value">15,000 KES</span>
+      </div>
+      <div class="terms">70% deposit, 30% on delivery. Digital print only (not offset).</div>
+      <div style="margin-top:14px;">
+        <button class="btn btn-primary btn-sm">Select This Proposal</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:24px;">
+    <div style="font-size:14px; font-weight:700; color:var(--ink); margin-bottom:8px;">After Selection</div>
+    <div style="font-size:13px; color:var(--muted);">
+      Selecting a proposal creates a formal <strong>Quote</strong> in your workspace (status: DRAFT). You can review, edit, and send it to your customer using the existing quote workflow. The selected provider is notified. Other providers are told their proposal was not selected — they do not see which proposal was selected.
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- 5. MODERATION QUEUE (Superadmin)                                  -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section class="mockup-section" id="moderation">
+  <div class="mockup-label">Mockup 5</div>
+  <div class="mockup-title">Marketplace Moderation Queue</div>
+  <div class="mockup-desc">Superadmin view for monitoring marketplace activity: provider verification, flagged content, audit trail. All actions here are themselves audited.</div>
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Pending Verifications</div>
+      <div class="stat-value">4</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Flagged Items</div>
+      <div class="stat-value">2</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active RFQs</div>
+      <div class="stat-value">12</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Proposals</div>
+      <div class="stat-value">28</div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active">Pending Verifications (4)</div>
+    <div class="tab">Flagged Content (2)</div>
+    <div class="tab">All RFQs (12)</div>
+    <div class="tab">Audit Trail</div>
+  </div>
+
+  <!-- Pending verifications -->
+  <div class="card">
+    <div style="font-size:15px; font-weight:700; margin-bottom:16px;">Provider Verification Requests</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Organisation</th>
+            <th>Categories</th>
+            <th>Coverage</th>
+            <th>Submitted</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>QuickPrint Solutions</td>
+            <td>Printing</td>
+            <td>Nairobi, Kiambu</td>
+            <td>20 Nov 2026</td>
+            <td><span class="badge badge-unverified">Unverified</span></td>
+            <td>
+              <button class="btn btn-success btn-sm">Verify</button>
+              <button class="btn btn-danger btn-sm">Reject</button>
+            </td>
+          </tr>
+          <tr>
+            <td>Nairobi Print Hub</td>
+            <td>Printing, Branding</td>
+            <td>Nairobi</td>
+            <td>19 Nov 2026</td>
+            <td><span class="badge badge-pending">Pending</span></td>
+            <td>
+              <button class="btn btn-success btn-sm">Verify</button>
+              <button class="btn btn-danger btn-sm">Reject</button>
+            </td>
+          </tr>
+          <tr>
+            <td>Elite Graphics Ltd</td>
+            <td>Signage, Fabrication</td>
+            <td>Nairobi, Machakos</td>
+            <td>18 Nov 2026</td>
+            <td><span class="badge badge-pending">Pending</span></td>
+            <td>
+              <button class="btn btn-success btn-sm">Verify</button>
+              <button class="btn btn-danger btn-sm">Reject</button>
+            </td>
+          </tr>
+          <tr>
+            <td>Coastal Signs Co.</td>
+            <td>Signage</td>
+            <td>Mombasa</td>
+            <td>17 Nov 2026</td>
+            <td><span class="badge badge-pending">Pending</span></td>
+            <td>
+              <button class="btn btn-success btn-sm">Verify</button>
+              <button class="btn btn-danger btn-sm">Reject</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Flagged content -->
+  <div class="card">
+    <div style="font-size:15px; font-weight:700; margin-bottom:16px;">Flagged Content</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Details</th>
+            <th>Flagged By</th>
+            <th>Date</th>
+            <th>Reason</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>RFQ</td>
+            <td>RFQ-007 — "Need cheap printing ASAP"</td>
+            <td>System (auto)</td>
+            <td>22 Nov 2026</td>
+            <td>Vague scope, no budget, potential spam</td>
+            <td>
+              <button class="btn btn-secondary btn-sm">Review</button>
+              <button class="btn btn-danger btn-sm">Remove</button>
+            </td>
+          </tr>
+          <tr>
+            <td>Proposal</td>
+            <td>P-014 — Proposal on RFQ-005</td>
+            <td>Buyer</td>
+            <td>21 Nov 2026</td>
+            <td>Price drastically below market — suspicious</td>
+            <td>
+              <button class="btn btn-secondary btn-sm">Review</button>
+              <button class="btn btn-danger btn-sm">Remove</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Audit trail preview -->
+  <div class="card">
+    <div style="font-size:15px; font-weight:700; margin-bottom:16px;">Recent Audit Trail</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Action</th>
+            <th>Actor</th>
+            <th>Organisation</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>22 Nov 2026, 14:32</td>
+            <td><span class="badge badge-selected">PROPOSAL_SELECTED</span></td>
+            <td>buyer_user</td>
+            <td>Acme Ltd</td>
+            <td>Proposal P-012 selected for RFQ-003</td>
+          </tr>
+          <tr>
+            <td>22 Nov 2026, 14:30</td>
+            <td><span class="badge badge-submitted">PROPOSAL_CONVERTED_TO_QUOTE</span></td>
+            <td>system</td>
+            <td>Acme Ltd</td>
+            <td>Proposal P-012 → Quote QT-2026-0047</td>
+          </tr>
+          <tr>
+            <td>22 Nov 2026, 11:15</td>
+            <td><span class="badge badge-submitted">PROPOSAL_SUBMITTED</span></td>
+            <td>provider_user</td>
+            <td>QuickPrint Solutions</td>
+            <td>Proposal P-012 on RFQ-003, total: 20,800 KES</td>
+          </tr>
+          <tr>
+            <td>21 Nov 2026, 16:00</td>
+            <td><span class="badge badge-open">INVITATION_SENT</span></td>
+            <td>buyer_user</td>
+            <td>Acme Ltd</td>
+            <td>Invitation to QuickPrint Solutions for RFQ-003</td>
+          </tr>
+          <tr>
+            <td>21 Nov 2026, 15:55</td>
+            <td><span class="badge badge-open">RFQ_PUBLISHED</span></td>
+            <td>buyer_user</td>
+            <td>Acme Ltd</td>
+            <td>RFQ-003 published, deadline: 25 Nov 2026</td>
+          </tr>
+          <tr>
+            <td>21 Nov 2026, 15:50</td>
+            <td><span class="badge badge-open">RFQ_CREATED</span></td>
+            <td>buyer_user</td>
+            <td>Acme Ltd</td>
+            <td>RFQ-003 created: Printing, Nairobi</td>
+          </tr>
+          <tr>
+            <td>20 Nov 2026, 09:00</td>
+            <td><span class="badge badge-verified">PROFILE_VERIFIED</span></td>
+            <td>superadmin</td>
+            <td>PrintMaster Kenya</td>
+            <td>Provider verified for pilot cohort</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:12px;">
+      <button class="btn btn-secondary btn-sm">View Full Audit Log</button>
+    </div>
+  </div>
+</section>
+
+<script>
+  // Simple tab switching for mockup navigation
+  const navLinks = document.querySelectorAll('.mockup-nav a');
+  const sections = document.querySelectorAll('.mockup-section');
+
+  navLinks.forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      navLinks.forEach(l => l.classList.remove('active'));
+      link.classList.add('active');
+      const view = link.getAttribute('data-view');
+      sections.forEach(s => {
+        s.classList.toggle('active', s.id === view);
+      });
+    });
+  });
+</script>
+
+</body>
+</html>

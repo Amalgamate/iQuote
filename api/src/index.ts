@@ -10,7 +10,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
 import { getIndustryPack } from './industry-packs.js'
-import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, emailSubjects } from './email-templates.js'
+import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, emailSubjects } from './email-templates.js'
 
 const prisma = new PrismaClient()
 const app = express()
@@ -190,6 +190,16 @@ app.set('trust proxy', isProduction ? 1 : false)
 app.use(express.json({ limit: '10mb' }))
 app.use(cookieParser())
 
+// ---- Webhook raw body capture for signature verification ----
+// The webhook endpoint needs the raw body to verify the Svix/Resend signature.
+// We store it on the request object for later use.
+app.use('/api/webhooks/resend', express.json({
+  limit: '1mb',
+  verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+    req.rawBody = buf
+  },
+}))
+
 // ---- Logo uploads: static serving ----
 const uploadsDir = process.env.UPLOADS_DIR ?? join(process.cwd(), 'uploads')
 app.use('/uploads', express.static(uploadsDir, { maxAge: '7d', immutable: true }))
@@ -276,7 +286,9 @@ function platformEmailReady() {
   return Boolean(process.env.RESEND_API_KEY && platformSenderEmail())
 }
 
-async function sendEmail(to: string, subject: string, html: string, idempotencyKey: string, organisationId?: string) {
+type SendEmailResult = { success: true; messageId: string | null }
+
+async function sendEmail(to: string, subject: string, html: string, idempotencyKey: string, organisationId?: string, attachments?: Array<{ filename: string; content: string }>): Promise<SendEmailResult | false> {
   const tenantSettings = organisationId ? await prisma.tenantEmailSettings.findUnique({ where: { organisationId } }) : null
   const tenantKey = tenantSettings?.provider === 'CUSTOM' && tenantSettings.resendApiKeyCiphertext ? decryptEmailSecret(tenantSettings.resendApiKeyCiphertext) : null
   const apiKey = tenantKey ?? process.env.RESEND_API_KEY
@@ -288,6 +300,11 @@ async function sendEmail(to: string, subject: string, html: string, idempotencyK
 
   const replyTo = process.env.SUPPORT_EMAIL ?? undefined
 
+  const body: Record<string, unknown> = { from, to: [to], subject, html, ...(replyTo ? { reply_to: replyTo } : {}) }
+  if (attachments && attachments.length > 0) {
+    body.attachments = attachments
+  }
+
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -295,12 +312,13 @@ async function sendEmail(to: string, subject: string, html: string, idempotencyK
       'Content-Type': 'application/json',
       'Idempotency-Key': idempotencyKey,
     },
-    body: JSON.stringify({ from, to: [to], subject, html, ...(replyTo ? { reply_to: replyTo } : {}) }),
+    body: JSON.stringify(body),
   })
   if (!response.ok) {
     console.error(`Resend email failed (${response.status}).`)
     throw new Error('Email delivery failed. Check the Resend API key and verified sender address.')
   }
+  const responseBody = await response.json().catch(() => ({})) as { id?: string }
   if (tenantSettings?.provider === 'CUSTOM' && tenantSettings.customDomain && tenantSettings.domainStatus !== 'VERIFIED') {
     const domainResponse = await fetch(`https://api.resend.com/domains`, { headers: { Authorization: `Bearer ${tenantKey}` } })
     if (domainResponse.ok) {
@@ -311,7 +329,7 @@ async function sendEmail(to: string, subject: string, html: string, idempotencyK
       }
     }
   }
-  return true
+  return { success: true as const, messageId: responseBody.id ?? null }
 }
 
 async function getOrganisationId(userId: string) {
@@ -638,7 +656,7 @@ app.post('/api/auth/verification/send', publicRateLimit, async (req, res) => {
   const from = platformSenderEmail()
   if (!apiKey && process.env.NODE_ENV === 'production') return res.status(503).json({ message: 'Email verification is not configured. Add a Resend API key and verified sender address.' })
   if (apiKey && !from) return res.status(503).json({ message: 'Set a verified Resend sender address before sending email.' })
-  let emailSent = false
+  let emailSent: false | { success: true; messageId: string | null } = false
   try {
     if (apiKey && from) {
       emailSent = await sendEmail(
@@ -1250,6 +1268,335 @@ app.post('/api/quotes/:id/share', requireAuth, async (req, res) => {
   res.json({ quote: shared })
 })
 
+// ---- Quote delivery by email ----
+
+/** Validate email format */
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+}
+
+/** Check for a PENDING delivery in the last N milliseconds */
+async function hasRecentPendingDelivery(quoteId: string, recipientEmail: string, withinMs: number): Promise<boolean> {
+  const cutoff = new Date(Date.now() - withinMs)
+  const count = await prisma.quoteDelivery.count({
+    where: {
+      quoteId,
+      recipientEmail: recipientEmail.toLowerCase(),
+      status: 'PENDING',
+      createdAt: { gte: cutoff },
+    },
+  })
+  return count > 0
+}
+
+/** Check for any delivery to this recipient within N milliseconds (any status) */
+async function hasRecentDeliveryToRecipient(quoteId: string, recipientEmail: string, withinMs: number): Promise<boolean> {
+  const cutoff = new Date(Date.now() - withinMs)
+  const count = await prisma.quoteDelivery.count({
+    where: {
+      quoteId,
+      recipientEmail: recipientEmail.toLowerCase(),
+      createdAt: { gte: cutoff },
+    },
+  })
+  return count > 0
+}
+
+app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const quoteId = String(req.params.id ?? '')
+  const organisationId = await getOrganisationId(user.id)
+
+  const quote = await prisma.quote.findFirst({
+    where: { id: quoteId, organisationId: organisationId ?? '__none__' },
+    include: {
+      customer: { select: { id: true, name: true, email: true, phone: true } },
+      organisation: { select: { id: true, name: true, currency: true, logoUrl: true } },
+      lines: { orderBy: { position: 'asc' } },
+    },
+  })
+  if (!quote) return res.status(404).json({ message: 'Quote not found.' })
+
+  // Allow sending from DRAFT or SENT status
+  if (!['DRAFT', 'SENT'].includes(quote.status)) {
+    return res.status(409).json({ message: 'This quote cannot be sent in its current state.' })
+  }
+
+  const recipientEmail = String(req.body?.recipientEmail ?? '').trim().toLowerCase()
+  const recipientName = String(req.body?.recipientName ?? '').trim() || null
+  const message = String(req.body?.message ?? '').trim() || null
+
+  if (!recipientEmail) return res.status(400).json({ message: 'Recipient email is required.' })
+  if (!isValidEmail(recipientEmail)) return res.status(400).json({ message: 'Enter a valid email address.' })
+
+  // Idempotent: check for PENDING delivery in last 60 seconds
+  if (await hasRecentPendingDelivery(quoteId, recipientEmail, 60_000)) {
+    return res.status(409).json({ message: 'A send is already in progress. Wait a moment and try again.' })
+  }
+
+  // Prevent duplicate sends to same recipient within 5 minutes
+  if (await hasRecentDeliveryToRecipient(quoteId, recipientEmail, 5 * 60_000)) {
+    return res.status(409).json({ message: 'This quote was recently sent to this recipient. Wait 5 minutes before resending.' })
+  }
+
+  // Validate line items exist
+  if (!quote.lines.length) {
+    return res.status(400).json({ message: 'Add at least one line item before sending this quote.' })
+  }
+
+  // Generate or regenerate public token
+  const publicToken = quote.publicToken ?? randomBytes(24).toString('base64url')
+  const now = new Date()
+
+  // Create the delivery record
+  const delivery = await prisma.quoteDelivery.create({
+    data: {
+      quoteId: quote.id,
+      recipientEmail,
+      recipientName,
+      message,
+      status: 'PENDING',
+    },
+  })
+
+  // Update quote status to SENT and set publicToken
+  await prisma.quote.update({
+    where: { id: quote.id },
+    data: { status: 'SENT', publicToken, tokenRevokedAt: null, tokenRevokedBy: null },
+  })
+
+  // Build the public quote URL
+  const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
+  const quoteUrl = `${platformUrl}/quote/${encodeURIComponent(publicToken)}`
+
+  // Build line items for email summary
+  const lineItems = quote.lines.map((line) => ({
+    description: line.description,
+    quantity: Number(line.quantity),
+    unitPrice: Number(line.unitPrice),
+    total: roundMoney(Number(line.quantity) * Number(line.unitPrice)),
+  }))
+
+  // Send the email
+  try {
+    const result = await sendEmail(
+      recipientEmail,
+      emailSubjects.quoteDelivery(quote.organisation.name ?? 'iQuote', quote.documentNumber),
+      quoteDeliveryEmailHtml({
+        recipientName: recipientName ?? quote.customer.name,
+        businessName: quote.organisation.name ?? 'iQuote',
+        documentNumber: quote.documentNumber,
+        total: Number(quote.total),
+        currency: quote.currency,
+        validUntil: quote.validUntil ? new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium' }).format(quote.validUntil) : null,
+        lineItems,
+        customMessage: message,
+        quoteUrl,
+      }),
+      `quote-delivery/${delivery.id}`,
+      quote.organisationId,
+    )
+
+    await prisma.quoteDelivery.update({
+      where: { id: delivery.id },
+      data: {
+        status: 'SENT',
+        providerMessageId: result !== false ? (result.messageId ?? null) : null,
+        sentAt: now,
+      },
+    })
+
+    res.json({
+      delivery: {
+        id: delivery.id,
+        recipientEmail,
+        recipientName,
+        status: 'SENT',
+        providerMessageId: result !== false ? (result.messageId ?? null) : null,
+        sentAt: now.toISOString(),
+      },
+      quote: { id: quote.id, status: 'SENT', publicToken },
+    })
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Email delivery failed.'
+    await prisma.quoteDelivery.update({
+      where: { id: delivery.id },
+      data: { status: 'FAILED', errorMessage },
+    })
+    res.status(502).json({ message: errorMessage, deliveryId: delivery.id })
+  }
+})
+
+app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const quoteId = String(req.params.id ?? '')
+  const organisationId = await getOrganisationId(user.id)
+
+  const quote = await prisma.quote.findFirst({
+    where: { id: quoteId, organisationId: organisationId ?? '__none__' },
+    include: {
+      customer: { select: { id: true, name: true, email: true, phone: true } },
+      organisation: { select: { id: true, name: true, currency: true } },
+      lines: { orderBy: { position: 'asc' } },
+    },
+  })
+  if (!quote) return res.status(404).json({ message: 'Quote not found.' })
+
+  const recipientEmail = String(req.body?.recipientEmail ?? '').trim().toLowerCase()
+  const recipientName = String(req.body?.recipientName ?? '').trim() || null
+  const message = String(req.body?.message ?? '').trim() || null
+
+  if (!recipientEmail) return res.status(400).json({ message: 'Recipient email is required.' })
+  if (!isValidEmail(recipientEmail)) return res.status(400).json({ message: 'Enter a valid email address.' })
+
+  // Regenerate token for resend
+  const publicToken = randomBytes(24).toString('base64url')
+  const now = new Date()
+
+  // Create a new delivery record (explicit resend bypasses the 5-min dedup)
+  const delivery = await prisma.quoteDelivery.create({
+    data: {
+      quoteId: quote.id,
+      recipientEmail,
+      recipientName,
+      message,
+      status: 'PENDING',
+    },
+  })
+
+  await prisma.quote.update({
+    where: { id: quote.id },
+    data: { publicToken, tokenRevokedAt: null, tokenRevokedBy: null },
+  })
+
+  const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
+  const quoteUrl = `${platformUrl}/quote/${encodeURIComponent(publicToken)}`
+
+  const lineItems = quote.lines.map((line) => ({
+    description: line.description,
+    quantity: Number(line.quantity),
+    unitPrice: Number(line.unitPrice),
+    total: roundMoney(Number(line.quantity) * Number(line.unitPrice)),
+  }))
+
+  try {
+    const result = await sendEmail(
+      recipientEmail,
+      emailSubjects.quoteDelivery(quote.organisation.name ?? 'iQuote', quote.documentNumber),
+      quoteDeliveryEmailHtml({
+        recipientName: recipientName ?? quote.customer.name,
+        businessName: quote.organisation.name ?? 'iQuote',
+        documentNumber: quote.documentNumber,
+        total: Number(quote.total),
+        currency: quote.currency,
+        validUntil: quote.validUntil ? new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium' }).format(quote.validUntil) : null,
+        lineItems,
+        customMessage: message,
+        quoteUrl,
+      }),
+      `quote-delivery/${delivery.id}`,
+      quote.organisationId,
+    )
+
+    await prisma.quoteDelivery.update({
+      where: { id: delivery.id },
+      data: {
+        status: 'SENT',
+        providerMessageId: result !== false ? (result.messageId ?? null) : null,
+        sentAt: now,
+      },
+    })
+
+    res.json({
+      delivery: {
+        id: delivery.id,
+        recipientEmail,
+        recipientName,
+        status: 'SENT',
+        providerMessageId: result !== false ? (result.messageId ?? null) : null,
+        sentAt: now.toISOString(),
+      },
+      quote: { id: quote.id, publicToken },
+    })
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Email delivery failed.'
+    await prisma.quoteDelivery.update({
+      where: { id: delivery.id },
+      data: { status: 'FAILED', errorMessage },
+    })
+    res.status(502).json({ message: errorMessage, deliveryId: delivery.id })
+  }
+})
+
+app.get('/api/quotes/:id/deliveries', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const quoteId = String(req.params.id ?? '')
+  const organisationId = await getOrganisationId(user.id)
+
+  const quote = await prisma.quote.findFirst({
+    where: { id: quoteId, organisationId: organisationId ?? '__none__' },
+    select: { id: true },
+  })
+  if (!quote) return res.status(404).json({ message: 'Quote not found.' })
+
+  const deliveries = await prisma.quoteDelivery.findMany({
+    where: { quoteId: quote.id },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  })
+
+  res.json({
+    deliveries: deliveries.map((d) => ({
+      id: d.id,
+      recipientEmail: d.recipientEmail,
+      recipientName: d.recipientName,
+      status: d.status,
+      providerMessageId: d.providerMessageId,
+      errorMessage: d.errorMessage,
+      sentAt: d.sentAt,
+      deliveredAt: d.deliveredAt,
+      bouncedAt: d.bouncedAt,
+      createdAt: d.createdAt,
+    })),
+  })
+})
+
+app.post('/api/quotes/:id/revoke-link', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const quoteId = String(req.params.id ?? '')
+  const organisationId = await getOrganisationId(user.id)
+
+  const quote = await prisma.quote.findFirst({
+    where: { id: quoteId, organisationId: organisationId ?? '__none__' },
+    select: { id: true, publicToken: true },
+  })
+  if (!quote) return res.status(404).json({ message: 'Quote not found.' })
+  if (!quote.publicToken) return res.status(409).json({ message: 'This quote has no active public link.' })
+
+  const generateNew = Boolean(req.body?.generateNew)
+  const newToken = generateNew ? randomBytes(24).toString('base64url') : null
+
+  await prisma.quote.update({
+    where: { id: quote.id },
+    data: {
+      publicToken: newToken,
+      tokenRevokedAt: new Date(),
+      tokenRevokedBy: user.id,
+    },
+  })
+
+  res.json({
+    revoked: true,
+    revokedAt: new Date().toISOString(),
+    revokedBy: user.id,
+    newToken: generateNew ? newToken : null,
+  })
+})
+
 app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
   const publicToken = String(req.params.token ?? '')
   const quote = await prisma.quote.findUnique({
@@ -1484,20 +1831,20 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
     createdWorkspace = true
   }
 
-  let welcomeEmailSent = false
+  let welcomeEmailSent: boolean = false
   if (createdWorkspace) {
     const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
     const baseDomain = (process.env.TENANT_BASE_DOMAIN ?? 'trendscore.co.ke').replace(/^\.+|\.+$/g, '')
     const workspaceUrl = process.env.NODE_ENV === 'production'
       ? `https://${organisation.subdomain}.${baseDomain}`
       : platformUrl
-    welcomeEmailSent = await sendEmail(
+    welcomeEmailSent = !!(await sendEmail(
       user.email,
       emailSubjects.welcome(name),
       welcomeEmailHtml({ name: user.name, businessName: name, businessType, country: country ?? '', plan: 'STARTER', trialEndsAt, phone, loginUrl: workspaceUrl }),
       `welcome/${createdEmailKey(user.email)}`,
       organisation.id,
-    ).catch(() => false)
+    ).catch(() => false))
   }
 
   res.status(createdWorkspace ? 201 : 200).json({ organisation, welcomeEmailSent })
@@ -1726,6 +2073,719 @@ app.post('/api/superadmin/promote', requireSuperadmin, async (req, res) => {
 
   const updated = await prisma.user.update({ where: { id: user.id }, data: { role: 'SUPERADMIN' }, select: { id: true, name: true, email: true, role: true } })
   res.json({ user: updated })
+})
+
+// ---- Resend webhook handler ----
+// Public endpoint (no auth) — verifies Svix signature and processes delivery events.
+app.post('/api/webhooks/resend', async (req, res) => {
+  const webhookSecret = process.env.RESEND_WEBHOOK_SECRET
+  if (!webhookSecret) {
+    console.error('[webhook] RESEND_WEBHOOK_SECRET is not configured.')
+    return res.status(503).json({ message: 'Webhook verification is not configured.' })
+  }
+
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody
+  if (!rawBody) {
+    return res.status(400).json({ message: 'Missing request body.' })
+  }
+
+  // Svix signature headers (Resend uses Svix under the hood)
+  const svixSignature = req.headers['svix-signature'] as string | undefined
+  const svixTimestamp = req.headers['svix-timestamp'] as string | undefined
+  const svixMsgId = req.headers['svix-msg-id'] as string | undefined
+
+  if (!svixSignature || !svixTimestamp || !svixMsgId) {
+    return res.status(401).json({ message: 'Missing Svix signature headers.' })
+  }
+
+  // Verify the signature
+  // Format: signed_content = `${msg_id}.${timestamp}.${raw_body}`
+  // Then compare each signature in the header (space-separated, prefixed with "v1,")
+  const signedContent = `${svixMsgId}.${svixTimestamp}.${rawBody.toString()}`
+  const expectedSignature = createHmac('sha256', webhookSecret).update(signedContent).digest('base64')
+
+  const signatures = svixSignature.split(' ').map((sig) => {
+    const parts = sig.split(',')
+    return parts.length === 2 && parts[0] === 'v1' ? parts[1] : null
+  }).filter((sig): sig is string => sig !== null)
+
+  const signatureMatches = signatures.some((sig) => {
+    try {
+      // Use timing-safe comparison
+      const a = Buffer.from(sig)
+      const b = Buffer.from(expectedSignature)
+      if (a.length !== b.length) return false
+      return createHash('sha256').update(a).digest('hex') === createHash('sha256').update(b).digest('hex')
+    } catch {
+      return false
+    }
+  })
+
+  if (!signatureMatches) {
+    return res.status(401).json({ message: 'Invalid webhook signature.' })
+  }
+
+  // Check timestamp freshness (prevent replay — 5 minute window)
+  const timestampMs = Number(svixTimestamp) * 1000
+  if (Number.isNaN(timestampMs) || Math.abs(Date.now() - timestampMs) > 5 * 60 * 1000) {
+    return res.status(401).json({ message: 'Webhook timestamp is stale.' })
+  }
+
+  const payload = req.body as { type?: string; data?: { email_id?: string; event_id?: string; created_at?: string } }
+
+  if (!payload || !payload.type) {
+    return res.status(400).json({ message: 'Invalid webhook payload.' })
+  }
+
+  const eventType = payload.type
+  const eventId = svixMsgId // Svix msg-id is the unique event identifier
+
+  // Replay protection: check if we already processed this event
+  try {
+    await prisma.webhookEvent.create({
+      data: {
+        source: 'resend',
+        eventId,
+        eventType,
+        payload: payload as object,
+      },
+    })
+  } catch {
+    // Unique constraint violation — already processed
+    return res.status(200).json({ message: 'Event already processed.' })
+  }
+
+  // Find the email_id from the payload to match a delivery
+  const emailId = payload.data?.email_id
+  if (!emailId) {
+    // No email_id to match — acknowledge but don't fail
+    return res.status(200).json({ message: 'Event received (no email_id).' })
+  }
+
+  // Find the delivery by providerMessageId
+  const delivery = await prisma.quoteDelivery.findFirst({
+    where: { providerMessageId: emailId },
+  })
+
+  if (!delivery) {
+    return res.status(200).json({ message: 'Event received (no matching delivery).' })
+  }
+
+  const now = new Date()
+
+  // Map event types to delivery status updates
+  switch (eventType) {
+    case 'email.sent':
+      if (delivery.status === 'PENDING') {
+        await prisma.quoteDelivery.update({
+          where: { id: delivery.id },
+          data: { status: 'SENT', sentAt: delivery.sentAt ?? now },
+        })
+      }
+      break
+    case 'email.delivered':
+      await prisma.quoteDelivery.update({
+        where: { id: delivery.id },
+        data: { status: 'DELIVERED', deliveredAt: now },
+      })
+      break
+    case 'email.bounced':
+      await prisma.quoteDelivery.update({
+        where: { id: delivery.id },
+        data: { status: 'BOUNCED', bouncedAt: now, errorMessage: 'Email bounced.' },
+      })
+      break
+    case 'email.complained':
+      // Complaint doesn't change delivery status but we could log it
+      break
+    default:
+      // Unknown event type — acknowledge
+      break
+  }
+
+  res.status(200).json({ message: 'Event processed.' })
+})
+
+// ---- Stage 14: Jobs ----
+
+const VALID_JOB_STATUSES = ['PLANNED', 'IN_PROGRESS', 'COMPLETED', 'ON_HOLD', 'CANCELLED']
+const VALID_COST_CATEGORIES = ['MATERIALS', 'LABOR', 'SUPPLIER', 'TRANSPORT', 'OTHER']
+const VALID_PAYMENT_METHODS = ['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY', 'CARD', 'OTHER']
+const VALID_INVOICE_STATUSES = ['DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED']
+
+function serializeJob(job: any) {
+  return {
+    ...job,
+    costs: Array.isArray(job.costs) ? job.costs.map((c: any) => ({ ...c, amount: Number(c.amount) })) : job.costs,
+  }
+}
+
+app.post('/api/jobs', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const title = String(req.body?.title ?? '').trim()
+  const customerId = String(req.body?.customerId ?? '').trim()
+  const description = String(req.body?.description ?? '').trim() || null
+  const quoteId = String(req.body?.quoteId ?? '').trim() || null
+  const status = String(req.body?.status ?? 'PLANNED').toUpperCase()
+  const startDate = req.body?.startDate ? new Date(req.body.startDate) : null
+  const endDate = req.body?.endDate ? new Date(req.body.endDate) : null
+
+  if (!title) return res.status(400).json({ message: 'Job title is required.' })
+  if (!VALID_JOB_STATUSES.includes(status)) return res.status(400).json({ message: 'Invalid job status.' })
+
+  const customer = await prisma.customer.findFirst({ where: { id: customerId, organisationId } })
+  if (!customer) return res.status(400).json({ message: 'Choose a valid customer for this job.' })
+
+  const organisation = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { currency: true } })
+  const currency = organisation?.currency ?? 'KES'
+
+  let acceptedQuoteSnapshot: unknown = null
+  let validatedQuoteId: string | null = null
+
+  if (quoteId) {
+    const quote = await prisma.quote.findFirst({
+      where: { id: quoteId, organisationId },
+      include: { lines: { orderBy: { position: 'asc' } }, customer: { select: { id: true, name: true } } },
+    })
+    if (!quote) return res.status(404).json({ message: 'Quote not found.' })
+    if (quote.status !== 'APPROVED') return res.status(409).json({ message: 'Only approved quotes can be converted to jobs.' })
+
+    // Build immutable snapshot
+    acceptedQuoteSnapshot = {
+      id: quote.id,
+      documentNumber: quote.documentNumber,
+      currency: quote.currency,
+      subtotal: Number(quote.subtotal),
+      taxTotal: Number(quote.taxTotal),
+      total: Number(quote.total),
+      notes: quote.notes,
+      terms: quote.terms,
+      lines: quote.lines.map((l) => ({
+        description: l.description,
+        quantity: Number(l.quantity),
+        unit: l.unit,
+        unitPrice: Number(l.unitPrice),
+        taxRate: l.taxRate === null ? null : Number(l.taxRate),
+      })),
+      customerName: quote.customer.name,
+      snapshotTakenAt: new Date().toISOString(),
+    }
+    validatedQuoteId = quoteId
+  }
+
+  const job = await prisma.job.create({
+    data: {
+      organisationId,
+      quoteId: validatedQuoteId,
+      ownerId: user.id,
+      customerId,
+      title,
+      description,
+      status: status as never,
+      currency,
+      startDate: startDate && !Number.isNaN(startDate.getTime()) ? startDate : null,
+      endDate: endDate && !Number.isNaN(endDate.getTime()) ? endDate : null,
+      acceptedQuoteSnapshot: acceptedQuoteSnapshot as never,
+    },
+    include: {
+      customer: { select: { id: true, name: true, phone: true, email: true } },
+      milestones: { orderBy: { position: 'asc' } },
+    },
+  })
+
+  res.status(201).json({ job })
+})
+
+app.get('/api/jobs', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const statusFilter = req.query?.status ? String(req.query.status).toUpperCase().split(',') : undefined
+  const customerFilter = req.query?.customerId ? String(req.query.customerId) : undefined
+  const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 200)
+  const offset = Math.max(Number(req.query?.offset ?? 0), 0)
+
+  const where: Record<string, unknown> = { organisationId }
+  if (statusFilter && statusFilter.every((s) => VALID_JOB_STATUSES.includes(s))) where.status = { in: statusFilter }
+  if (customerFilter) where.customerId = customerFilter
+
+  const [jobs, totalCount] = await Promise.all([
+    prisma.job.findMany({
+      where: where as never,
+      orderBy: { updatedAt: 'desc' },
+      take: limit,
+      skip: offset,
+      include: { customer: { select: { id: true, name: true } } },
+    }),
+    prisma.job.count({ where: where as never }),
+  ])
+
+  res.json({ jobs, totalCount, hasMore: offset + limit < totalCount })
+})
+
+app.get('/api/jobs/:id', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const job = await prisma.job.findFirst({
+    where: { id: String(req.params.id ?? ''), organisationId },
+    include: {
+      customer: { select: { id: true, name: true, phone: true, email: true } },
+      milestones: { orderBy: { position: 'asc' } },
+      costs: { orderBy: { incurredAt: 'desc' } },
+      quote: { select: { id: true, documentNumber: true, status: true } },
+    },
+  })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+
+  res.json({
+    job: {
+      ...job,
+      costs: job.costs.map((c) => ({ ...c, amount: Number(c.amount) })),
+    },
+  })
+})
+
+app.put('/api/jobs/:id', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+
+  const title = req.body?.title !== undefined ? String(req.body.title).trim() : undefined
+  const description = req.body?.description !== undefined ? (String(req.body.description).trim() || null) : undefined
+  const status = req.body?.status !== undefined ? String(req.body.status).toUpperCase() : undefined
+  const startDate = req.body?.startDate !== undefined ? (req.body.startDate ? new Date(req.body.startDate) : null) : undefined
+  const endDate = req.body?.endDate !== undefined ? (req.body.endDate ? new Date(req.body.endDate) : null) : undefined
+
+  if (status && !VALID_JOB_STATUSES.includes(status)) return res.status(400).json({ message: 'Invalid job status.' })
+  if (title !== undefined && !title) return res.status(400).json({ message: 'Title cannot be empty.' })
+
+  const data: Record<string, unknown> = {}
+  if (title !== undefined) data.title = title
+  if (description !== undefined) data.description = description
+  if (status !== undefined) data.status = status
+  if (startDate !== undefined) data.startDate = startDate && !Number.isNaN(startDate.getTime()) ? startDate : null
+  if (endDate !== undefined) data.endDate = endDate && !Number.isNaN(endDate.getTime()) ? endDate : null
+
+  const updated = await prisma.job.update({
+    where: { id: job.id },
+    data: data as never,
+    include: { customer: { select: { id: true, name: true } } },
+  })
+  res.json({ job: updated })
+})
+
+app.post('/api/jobs/:id/milestones', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+
+  const title = String(req.body?.title ?? '').trim()
+  const description = String(req.body?.description ?? '').trim() || null
+  const dueDate = req.body?.dueDate ? new Date(req.body.dueDate) : null
+  const position = Number(req.body?.position ?? 0)
+
+  if (!title) return res.status(400).json({ message: 'Milestone title is required.' })
+
+  const milestone = await prisma.jobMilestone.create({
+    data: {
+      jobId: job.id,
+      title,
+      description,
+      dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null,
+      position,
+    },
+  })
+  res.status(201).json({ milestone })
+})
+
+app.put('/api/jobs/:id/milestones/:milestoneId', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+
+  const milestone = await prisma.jobMilestone.findFirst({ where: { id: String(req.params.milestoneId ?? ''), jobId: job.id } })
+  if (!milestone) return res.status(404).json({ message: 'Milestone not found.' })
+
+  const data: Record<string, unknown> = {}
+  if (req.body?.title !== undefined) data.title = String(req.body.title).trim()
+  if (req.body?.description !== undefined) data.description = String(req.body.description).trim() || null
+  if (req.body?.dueDate !== undefined) {
+    const d = req.body.dueDate ? new Date(req.body.dueDate) : null
+    data.dueDate = d && !Number.isNaN(d.getTime()) ? d : null
+  }
+  if (req.body?.completed !== undefined) {
+    data.completedAt = req.body.completed ? new Date() : null
+  }
+  if (req.body?.position !== undefined) data.position = Number(req.body.position)
+
+  const updated = await prisma.jobMilestone.update({ where: { id: milestone.id }, data: data as never })
+  res.json({ milestone: updated })
+})
+
+app.delete('/api/jobs/:id/milestones/:milestoneId', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+
+  const deleted = await prisma.jobMilestone.deleteMany({ where: { id: String(req.params.milestoneId ?? ''), jobId: job.id } })
+  if (!deleted.count) return res.status(404).json({ message: 'Milestone not found.' })
+  res.json({ success: true })
+})
+
+app.post('/api/jobs/:id/costs', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+
+  const category = String(req.body?.category ?? '').toUpperCase()
+  const description = String(req.body?.description ?? '').trim()
+  const amount = Number(req.body?.amount ?? 0)
+  const currency = String(req.body?.currency ?? job.currency).toUpperCase()
+  const incurredAt = req.body?.incurredAt ? new Date(req.body.incurredAt) : new Date()
+
+  if (!VALID_COST_CATEGORIES.includes(category)) return res.status(400).json({ message: 'Invalid cost category.' })
+  if (!description) return res.status(400).json({ message: 'Cost description is required.' })
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'Amount must be a positive number.' })
+  if (!/^[A-Z]{3}$/.test(currency)) return res.status(400).json({ message: 'Currency must be a 3-letter code.' })
+
+  const cost = await prisma.jobCost.create({
+    data: {
+      jobId: job.id,
+      category,
+      description,
+      amount,
+      currency,
+      incurredBy: user.id,
+      incurredAt: incurredAt && !Number.isNaN(incurredAt.getTime()) ? incurredAt : new Date(),
+    },
+  })
+  res.status(201).json({ cost: { ...cost, amount: Number(cost.amount) } })
+})
+
+app.get('/api/jobs/:id/costs', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+
+  const costs = await prisma.jobCost.findMany({
+    where: { jobId: job.id },
+    orderBy: { incurredAt: 'desc' },
+  })
+  res.json({ costs: costs.map((c) => ({ ...c, amount: Number(c.amount) })) })
+})
+
+// ---- Stage 14: Invoices ----
+
+async function generateInvoiceNumber(organisationId: string, prefix: string): Promise<string> {
+  const year = new Date().getFullYear()
+  // Count existing invoices for this org to build a sequential number
+  const count = await prisma.invoice.count({ where: { organisationId } })
+  return `${prefix || 'INV'}-${year}-${String(count + 1).padStart(4, '0')}`
+}
+
+app.post('/api/invoices', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const customerId = String(req.body?.customerId ?? '').trim()
+  const jobId = req.body?.jobId ? String(req.body.jobId).trim() : null
+  const subtotal = Number(req.body?.subtotal ?? 0)
+  const taxTotal = Number(req.body?.taxTotal ?? 0)
+  const notes = String(req.body?.notes ?? '').trim() || null
+  const dueDate = req.body?.dueDate ? new Date(req.body.dueDate) : null
+
+  const customer = await prisma.customer.findFirst({ where: { id: customerId, organisationId } })
+  if (!customer) return res.status(400).json({ message: 'Choose a valid customer for this invoice.' })
+
+  let currency = 'KES'
+  if (jobId) {
+    const job = await prisma.job.findFirst({ where: { id: jobId, organisationId } })
+    if (!job) return res.status(404).json({ message: 'Job not found.' })
+    currency = job.currency
+  } else {
+    const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { currency: true, quotePrefix: true } })
+    currency = org?.currency ?? 'KES'
+  }
+
+  if (!Number.isFinite(subtotal) || subtotal < 0) return res.status(400).json({ message: 'Subtotal must be a non-negative number.' })
+  if (!Number.isFinite(taxTotal) || taxTotal < 0) return res.status(400).json({ message: 'Tax total must be a non-negative number.' })
+
+  const total = roundMoney(subtotal + taxTotal)
+  const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { quotePrefix: true } })
+  const invoiceNumber = await generateInvoiceNumber(organisationId, org?.quotePrefix ?? 'INV')
+
+  const invoice = await prisma.invoice.create({
+    data: {
+      organisationId,
+      jobId,
+      customerId,
+      invoiceNumber,
+      status: 'DRAFT',
+      currency,
+      subtotal,
+      taxTotal,
+      total,
+      balanceDue: total,
+      dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null,
+      notes,
+    },
+    include: {
+      customer: { select: { id: true, name: true, phone: true, email: true } },
+      job: { select: { id: true, title: true } },
+    },
+  })
+
+  res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue) } })
+})
+
+app.get('/api/invoices', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const statusFilter = req.query?.status ? String(req.query.status).toUpperCase().split(',') : undefined
+  const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 200)
+  const offset = Math.max(Number(req.query?.offset ?? 0), 0)
+
+  const where: Record<string, unknown> = { organisationId }
+  if (statusFilter && statusFilter.every((s) => VALID_INVOICE_STATUSES.includes(s))) where.status = { in: statusFilter }
+
+  const [invoices, totalCount] = await Promise.all([
+    prisma.invoice.findMany({
+      where: where as never,
+      orderBy: { updatedAt: 'desc' },
+      take: limit,
+      skip: offset,
+      include: { customer: { select: { id: true, name: true } }, job: { select: { id: true, title: true } } },
+    }),
+    prisma.invoice.count({ where: where as never }),
+  ])
+
+  res.json({
+    invoices: invoices.map((inv) => ({
+      ...inv,
+      subtotal: Number(inv.subtotal),
+      taxTotal: Number(inv.taxTotal),
+      total: Number(inv.total),
+      amountPaid: Number(inv.amountPaid),
+      balanceDue: Number(inv.balanceDue),
+    })),
+    totalCount,
+    hasMore: offset + limit < totalCount,
+  })
+})
+
+app.get('/api/invoices/:id', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const invoice = await prisma.invoice.findFirst({
+    where: { id: String(req.params.id ?? ''), organisationId },
+    include: {
+      customer: { select: { id: true, name: true, phone: true, email: true } },
+      job: { select: { id: true, title: true } },
+      payments: { orderBy: { paymentDate: 'desc' } },
+    },
+  })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+
+  res.json({
+    invoice: {
+      ...invoice,
+      subtotal: Number(invoice.subtotal),
+      taxTotal: Number(invoice.taxTotal),
+      total: Number(invoice.total),
+      amountPaid: Number(invoice.amountPaid),
+      balanceDue: Number(invoice.balanceDue),
+      payments: invoice.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+    },
+  })
+})
+
+app.put('/api/invoices/:id', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const invoice = await prisma.invoice.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+  if (invoice.status !== 'DRAFT') return res.status(409).json({ message: 'Only draft invoices can be edited.' })
+
+  const subtotal = req.body?.subtotal !== undefined ? Number(req.body.subtotal) : undefined
+  const taxTotal = req.body?.taxTotal !== undefined ? Number(req.body.taxTotal) : undefined
+  const notes = req.body?.notes !== undefined ? (String(req.body.notes).trim() || null) : undefined
+  const dueDate = req.body?.dueDate !== undefined ? (req.body.dueDate ? new Date(req.body.dueDate) : null) : undefined
+  const status = req.body?.status !== undefined ? String(req.body.status).toUpperCase() : undefined
+
+  const data: Record<string, unknown> = {}
+  if (subtotal !== undefined) {
+    if (!Number.isFinite(subtotal) || subtotal < 0) return res.status(400).json({ message: 'Subtotal must be non-negative.' })
+    data.subtotal = subtotal
+  }
+  if (taxTotal !== undefined) {
+    if (!Number.isFinite(taxTotal) || taxTotal < 0) return res.status(400).json({ message: 'Tax total must be non-negative.' })
+    data.taxTotal = taxTotal
+  }
+  if (subtotal !== undefined || taxTotal !== undefined) {
+    const s = subtotal ?? Number(invoice.subtotal)
+    const t = taxTotal ?? Number(invoice.taxTotal)
+    data.total = roundMoney(s + t)
+    data.balanceDue = roundMoney(s + t) - Number(invoice.amountPaid)
+  }
+  if (notes !== undefined) data.notes = notes
+  if (dueDate !== undefined) data.dueDate = dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null
+  if (status && VALID_INVOICE_STATUSES.includes(status) && status !== 'DRAFT') {
+    data.status = status
+  }
+
+  const updated = await prisma.invoice.update({
+    where: { id: invoice.id },
+    data: data as never,
+    include: { customer: { select: { id: true, name: true } }, job: { select: { id: true, title: true } } },
+  })
+  res.json({
+    invoice: {
+      ...updated,
+      subtotal: Number(updated.subtotal),
+      taxTotal: Number(updated.taxTotal),
+      total: Number(updated.total),
+      amountPaid: Number(updated.amountPaid),
+      balanceDue: Number(updated.balanceDue),
+    },
+  })
+})
+
+app.post('/api/invoices/:id/payments', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const invoice = await prisma.invoice.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+  if (invoice.status === 'CANCELLED') return res.status(409).json({ message: 'Cannot record payments on a cancelled invoice.' })
+
+  const amount = Number(req.body?.amount ?? 0)
+  const method = String(req.body?.method ?? '').toUpperCase()
+  const reference = req.body?.reference ? String(req.body.reference).trim() : null
+  const paymentDate = req.body?.paymentDate ? new Date(req.body.paymentDate) : new Date()
+
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'Payment amount must be a positive number.' })
+  if (!VALID_PAYMENT_METHODS.includes(method)) return res.status(400).json({ message: 'Invalid payment method.' })
+  if (paymentDate && Number.isNaN(paymentDate.getTime())) return res.status(400).json({ message: 'Invalid payment date.' })
+
+  // Idempotency: check for duplicate payment within 5-minute window
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
+  const existingPayment = await prisma.payment.findFirst({
+    where: {
+      invoiceId: invoice.id,
+      amount,
+      method,
+      reference: reference ?? undefined,
+      paymentDate: { gte: fiveMinutesAgo },
+    },
+  })
+  if (existingPayment) {
+    return res.status(409).json({ message: 'A similar payment was already recorded recently. Duplicate payments are not allowed.' })
+  }
+
+  // Create payment and update invoice in a transaction
+  const result = await prisma.$transaction(async (tx) => {
+    const payment = await tx.payment.create({
+      data: {
+        invoiceId: invoice.id,
+        organisationId,
+        amount,
+        currency: invoice.currency,
+        method,
+        reference,
+        paymentDate: paymentDate && !Number.isNaN(paymentDate.getTime()) ? paymentDate : new Date(),
+        receivedBy: user.id,
+      },
+    })
+
+    const allPayments = await tx.payment.findMany({ where: { invoiceId: invoice.id } })
+    const totalPaid = allPayments.reduce((sum, p) => sum + Number(p.amount), 0)
+    const invoiceTotal = Number(invoice.total)
+    const balanceDue = roundMoney(invoiceTotal - totalPaid)
+
+    let nextStatus: string
+    if (totalPaid >= invoiceTotal) {
+      nextStatus = 'PAID'
+    } else if (totalPaid > 0) {
+      nextStatus = 'PARTIALLY_PAID'
+    } else {
+      nextStatus = invoice.status
+    }
+
+    await tx.invoice.update({
+      where: { id: invoice.id },
+      data: {
+        amountPaid: totalPaid,
+        balanceDue,
+        status: nextStatus as never,
+      },
+    })
+
+    return payment
+  })
+
+  res.status(201).json({ payment: { ...result, amount: Number(result.amount) } })
+})
+
+app.get('/api/invoices/:id/payments', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const invoice = await prisma.invoice.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+
+  const payments = await prisma.payment.findMany({
+    where: { invoiceId: invoice.id },
+    orderBy: { paymentDate: 'desc' },
+  })
+  res.json({ payments: payments.map((p) => ({ ...p, amount: Number(p.amount) })) })
 })
 
 // ---- 404 handler (catches all unmatched routes) ----

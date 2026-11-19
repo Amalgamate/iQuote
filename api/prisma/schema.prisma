@@ -8,20 +8,26 @@ datasource db {
 }
 
 model User {
-  id                String         @id @default(cuid())
+  id                String           @id @default(cuid())
   name              String
-  email             String         @unique
+  email             String           @unique
   passwordHash      String
-  role              String         @default("USER")
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
+  role              String           @default("USER")
+  teamRole          TeamRole         @default(OWNER)
+  mfaSecret         String?
+  mfaEnabled        Boolean          @default(false)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
   emailVerifiedAt   DateTime?
   organisationId    String?
-  organisation      Organisation?  @relation("UserOrganisation", fields: [organisationId], references: [id])
-  ownedOrganisation Organisation?  @relation("OrganisationOwner")
+  organisation      Organisation?    @relation("UserOrganisation", fields: [organisationId], references: [id])
+  ownedOrganisation Organisation?    @relation("OrganisationOwner")
   sessions          Session[]
   customers         Customer[]
   quotes            Quote[]
+  jobs              Job[]
+  jobCosts          JobCost[]
+  sentInvitations   TeamInvitation[]
 }
 
 model Organisation {
@@ -50,6 +56,10 @@ model Organisation {
   quoteSequences QuoteSequence[]
   subscription   Subscription?
   emailSettings TenantEmailSettings?
+  jobs           Job[]
+  invoices       Invoice[]
+  payments       Payment[]
+  invitations    TeamInvitation[]
 }
 
 model TenantEmailSettings {
@@ -123,6 +133,7 @@ model QuoteTemplate {
   defaultNotes   String?
   defaultTerms   String?
   isStarter      Boolean      @default(false)
+  version        Int          @default(1)
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
@@ -148,11 +159,15 @@ model Customer {
   name      String
   phone     String?
   email     String?
+  archivedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   quotes    Quote[]
+  jobs      Job[]
+  invoices  Invoice[]
 
-  @@index([organisationId, updatedAt])
+  @@index([organisationId, archivedAt, updatedAt])
+  @@index([organisationId, archivedAt, name])
   @@index([ownerId, updatedAt])
 }
 
@@ -186,13 +201,21 @@ model Quote {
   viewedAt           DateTime?
   decisionComment    String?
   decidedAt          DateTime?
+  tokenRevokedAt     DateTime?
+  tokenRevokedBy     String?
+  version            Int         @default(1)
+  parentQuoteId      String?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
   lines              QuoteLine[]
+  deliveries         QuoteDelivery[]
+  jobs               Job[]
 
   @@unique([organisationId, documentNumber])
   @@index([ownerId, updatedAt])
   @@index([organisationId, status, updatedAt])
+  @@index([organisationId, updatedAt])
+  @@index([parentQuoteId])
 }
 
 model QuoteLine {
@@ -226,4 +249,183 @@ model LoginAttempt {
   updatedAt   DateTime @default(now())
 
   @@index([lockedUntil])
+}
+
+model QuoteDelivery {
+  id                 String   @id @default(cuid())
+  quoteId            String
+  quote              Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  recipientEmail     String
+  recipientName      String?
+  message            String?
+  providerMessageId  String?
+  status             String   @default("PENDING")
+  errorMessage       String?
+  sentAt             DateTime?
+  deliveredAt        DateTime?
+  bouncedAt          DateTime?
+  createdAt          DateTime @default(now())
+
+  @@index([quoteId, createdAt])
+  @@index([status])
+}
+
+model WebhookEvent {
+  id          String   @id @default(cuid())
+  source      String
+  eventId     String   @unique
+  eventType   String
+  payload     Json
+  processedAt DateTime @default(now())
+}
+
+// ---- Stage 14: Jobs and Financial Records ----
+
+enum JobStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  ON_HOLD
+  CANCELLED
+}
+
+model Job {
+  id             String   @id @default(cuid())
+  organisationId String
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  quoteId        String?
+  quote          Quote?   @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  ownerId        String
+  owner          User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  title          String
+  description    String?
+  status         JobStatus @default(PLANNED)
+  currency       String
+  startDate      DateTime?
+  endDate        DateTime?
+  acceptedQuoteSnapshot Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  milestones     JobMilestone[]
+  costs          JobCost[]
+  invoices       Invoice[]
+
+  @@index([organisationId, status, updatedAt])
+  @@index([ownerId, updatedAt])
+  @@index([customerId])
+}
+
+model JobMilestone {
+  id          String   @id @default(cuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  dueDate     DateTime?
+  completedAt DateTime?
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@index([jobId, position])
+}
+
+model JobCost {
+  id          String   @id @default(cuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  category    String
+  description String
+  amount      Decimal  @db.Decimal(14, 2)
+  currency    String
+  incurredBy  String
+  incurredByUser User  @relation(fields: [incurredBy], references: [id], onDelete: Cascade)
+  incurredAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([jobId, category])
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model Invoice {
+  id             String   @id @default(cuid())
+  organisationId String
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  jobId          String?
+  job            Job?     @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  customerId     String
+  customer       Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  invoiceNumber  String
+  status         InvoiceStatus @default(DRAFT)
+  currency       String
+  subtotal       Decimal  @default(0) @db.Decimal(14, 2)
+  taxTotal       Decimal  @default(0) @db.Decimal(14, 2)
+  total          Decimal  @default(0) @db.Decimal(14, 2)
+  amountPaid     Decimal  @default(0) @db.Decimal(14, 2)
+  balanceDue     Decimal  @default(0) @db.Decimal(14, 2)
+  issueDate      DateTime @default(now())
+  dueDate        DateTime?
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  payments       Payment[]
+
+  @@unique([organisationId, invoiceNumber])
+  @@index([organisationId, status])
+  @@index([customerId])
+}
+
+model Payment {
+  id             String   @id @default(cuid())
+  invoiceId      String
+  invoice        Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  organisationId String
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  amount         Decimal  @db.Decimal(14, 2)
+  currency       String
+  method         String
+  reference      String?
+  paymentDate    DateTime @default(now())
+  receivedBy     String
+  createdAt      DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([organisationId, paymentDate])
+}
+
+// ---- Stage 15: Team membership and invitations ----
+
+enum TeamRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model TeamInvitation {
+  id              String   @id @default(cuid())
+  organisationId  String
+  organisation    Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  email           String
+  role            TeamRole @default(MEMBER)
+  token           String   @unique
+  invitedBy       String
+  inviter         User     @relation(fields: [invitedBy], references: [id], onDelete: Cascade)
+  acceptedAt      DateTime?
+  revokedAt       DateTime?
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+
+  @@index([organisationId, email])
+  @@unique([organisationId, email])
 }

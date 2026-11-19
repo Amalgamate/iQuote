@@ -386,6 +386,93 @@ export function quoteDecisionEmailHtml(params: {
   })
 }
 
+// ---- Quote delivery email (sent to the customer) ----
+
+export function quoteDeliveryEmailHtml(params: {
+  recipientName: string
+  businessName: string
+  documentNumber: string
+  total: number
+  currency: string
+  validUntil: string | null
+  lineItems: Array<{ description: string; quantity: number; unitPrice: number; total: number }>
+  customMessage: string | null
+  quoteUrl: string
+}): string {
+  const { recipientName, businessName, documentNumber, total, currency, validUntil, lineItems, customMessage, quoteUrl } = params
+
+  const rowsHtml = lineItems.slice(0, 8).map((item) => `
+    <tr>
+      <td style="padding:8px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;color:#0A1128;border-bottom:1px solid #E8EEF4">${escapeText(item.description)}</td>
+      <td style="padding:8px 0;font-family:'Montserrat',Arial,sans-serif;font-size:13px;color:#53647A;text-align:right;white-space:nowrap;border-bottom:1px solid #E8EEF4">${item.quantity}</td>
+      <td style="padding:8px 0;font-family:'Montserrat',Arial,sans-serif;font-size:13px;color:#0A1128;font-weight:600;text-align:right;white-space:nowrap;border-bottom:1px solid #E8EEF4">${formatCurrency(item.total, currency)}</td>
+    </tr>
+  `).join('')
+
+  const moreCount = lineItems.length > 8 ? lineItems.length - 8 : 0
+
+  const content = `
+    <h1 style="margin:0 0 8px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:26px;font-weight:800;color:#0A1128;letter-spacing:-0.5px">
+      ${escapeText(businessName)} sent you a quote
+    </h1>
+    <p style="margin:0 0 24px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:15px;line-height:1.6;color:#53647A">
+      Hi ${escapeText(recipientName.split(' ')[0] || 'there')}, you have a new quotation to review.
+    </p>
+
+    ${customMessage ? `
+      <div style="margin:0 0 24px;padding:16px 20px;background:#EBF3FF;border-left:3px solid #0052FF;border-radius:0 6px 6px 0">
+        <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;line-height:1.6;color:#0A1128">${escapeText(customMessage)}</p>
+      </div>
+    ` : ''}
+
+    <!-- Quote summary card -->
+    <div style="margin:0 0 20px;padding:24px;background:#F4F8FD;border:1px solid #D8E4F2;border-radius:8px">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="padding:4px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;color:#53647A;width:120px">Quote #</td>
+          <td style="padding:4px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;font-weight:700;color:#0A1128">${escapeText(documentNumber)}</td>
+        </tr>
+        ${validUntil ? `<tr>
+          <td style="padding:4px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;color:#53647A">Valid until</td>
+          <td style="padding:4px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;font-weight:600;color:#0A1128">${escapeText(validUntil)}</td>
+        </tr>` : ''}
+      </table>
+
+      <!-- Line items -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:16px">
+        <tr>
+          <td style="padding:4px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#53647A">Description</td>
+          <td style="padding:4px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#53647A;text-align:right">Qty</td>
+          <td style="padding:4px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#53647A;text-align:right">Amount</td>
+        </tr>
+        ${rowsHtml}
+      </table>
+
+      ${moreCount > 0 ? `<p style="margin:8px 0 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:12px;color:#53647A;font-style:italic">+ ${moreCount} more item${moreCount === 1 ? '' : 's'} — see full quote</p>` : ''}
+
+      <!-- Total -->
+      <div style="margin-top:16px;padding-top:12px;border-top:2px solid #0052FF">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:16px;font-weight:700;color:#0A1128">Total</td>
+            <td style="font-family:'Montserrat','Poppins',Arial,sans-serif;font-size:20px;font-weight:800;color:#0052FF;text-align:right;font-variant-numeric:tabular-nums">${formatCurrency(total, currency)}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    ${button(`Review your quote →`, quoteUrl)}
+
+    <p style="margin:16px 0 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;line-height:1.6;color:#53647A">
+      Click the button above to view the full quotation. You can approve or decline it directly from the link.
+    </p>
+  `
+
+  return emailShell(content, {
+    previewText: `${escapeText(businessName)} sent you ${escapeText(documentNumber)} — ${formatCurrency(total, currency)}`,
+  })
+}
+
 // ---- Helpers ----
 
 function escapeText(value: string): string {
@@ -407,4 +494,5 @@ export const emailSubjects = {
   welcome: (businessName: string) => `Your ${businessName.slice(0, 60)} workspace is ready`,
   quoteApproved: (docNumber: string) => `✓ ${docNumber} approved`,
   quoteDeclined: (docNumber: string) => `${docNumber} declined`,
+  quoteDelivery: (businessName: string, docNumber: string) => `${businessName.slice(0, 40)} sent you ${docNumber}`,
 }
