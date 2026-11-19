@@ -13,20 +13,6 @@ type User = {
   role: string
 }
 
-type BusinessProfile = {
-  id: string
-  name: string
-  email: string | null
-  phone: string | null
-  country: string | null
-  businessType: string | null
-  currency: string
-  defaultTaxRate: number | string | null
-  quotePrefix: string | null
-  subdomain?: string | null
-  subscription?: { plan: string; status: string; trialEndsAt: string; simulated: boolean } | null
-}
-
 function App() {
   const publicMatch = window.location.pathname.match(/^\/quote\/([^/]+)\/?$/)
   const [user, setUser] = useState<User | null>(null)

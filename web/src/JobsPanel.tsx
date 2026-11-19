@@ -103,7 +103,7 @@ function totalCosts(costs: Cost[]): number {
   return costs.reduce((sum, cost) => sum + Number(cost.amount || 0), 0)
 }
 
-export default function JobsPanel({ business, customers, currency }: { business: Business; customers: Customer[]; currency: string }) {
+export default function JobsPanel({ customers, currency }: { business: Business; customers: Customer[]; currency: string }) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

@@ -100,7 +100,7 @@ function formatDate(date: string | null | undefined): string {
   }
 }
 
-export default function InvoicesPanel({ business, customers, currency }: { business: Business; customers: Customer[]; currency: string }) {
+export default function InvoicesPanel({ customers, currency }: { business: Business; customers: Customer[]; currency: string }) {
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -291,7 +291,7 @@ export default function InvoicesPanel({ business, customers, currency }: { busin
   )
 }
 
-function InvoiceDetail({ invoice, currency, customers, onBack, onSend, onInvoiceUpdate, setError }: {
+function InvoiceDetail({ invoice, customers, onBack, onSend, onInvoiceUpdate, setError }: {
   invoice: Invoice
   currency: string
   customers: Customer[]
