@@ -117,17 +117,17 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 
 ## Stage 9 — Establish safe database, CI, deploy, and recovery practices
 
-- [ ] Before baselining, take a verified backup of the target database and inspect/reconcile its schema against the checked-in Prisma schema; document drift and environment assumptions without exposing customer data or secrets.
-- [ ] Choose and document the initial Prisma migration baseline/reconciliation procedure for the existing database; rehearse it against a non-production copy first.
-- [ ] Create reviewed Prisma migration history; stop using `prisma db push` as the production schema-deployment mechanism.
-- [ ] Define migration rollout and recovery steps, including pre-deploy backup, compatibility window, and response to a failed migration.
-- [ ] Implement the reviewed composite tenant-consistency constraints and any nullable legacy customer cleanup through migrations; add rollback/recovery notes.
-- [ ] Add CI for API/web type checks, lint, automated tests, and production builds; protect secrets from untrusted pull-request jobs.
-- [ ] Correct the deployment health-check path and make deployment fail when the application does not become healthy.
-- [ ] Verify TLS termination, redirects, tenant wildcard certificate state, and security headers at the actual public edge.
-- [ ] Write backup and restore procedures covering PostgreSQL and uploaded media together; define retention and recovery objectives.
-- [ ] Perform and record a restore rehearsal in a non-production environment.
-- [ ] Add an operational release checklist and a way to identify the deployed commit/build.
+- [x] Before baselining, take a verified backup of the target database and inspect/reconcile its schema against the checked-in Prisma schema; document drift and environment assumptions without exposing customer data or secrets.
+- [x] Choose and document the initial Prisma migration baseline/reconciliation procedure for the existing database; rehearse it against a non-production copy first.
+- [x] Create reviewed Prisma migration history; stop using `prisma db push` as the production schema-deployment mechanism.
+- [x] Define migration rollout and recovery steps, including pre-deploy backup, compatibility window, and response to a failed migration.
+- [x] Implement the reviewed composite tenant-consistency constraints and any nullable legacy customer cleanup through migrations; add rollback/recovery notes.
+- [x] Add CI for API/web type checks, lint, automated tests, and production builds; protect secrets from untrusted pull-request jobs.
+- [x] Correct the deployment health-check path and make deployment fail when the application does not become healthy.
+- [x] Verify TLS termination, redirects, tenant wildcard certificate state, and security headers at the actual public edge.
+- [x] Write backup and restore procedures covering PostgreSQL and uploaded media together; define retention and recovery objectives.
+- [x] Perform and record a restore rehearsal in a non-production environment.
+- [x] Add an operational release checklist and a way to identify the deployed commit/build.
 
 **Exit checks:** schema changes are versioned and reviewable; CI gates a release; deployment health is enforced; a database-plus-upload restore has been rehearsed.
 
