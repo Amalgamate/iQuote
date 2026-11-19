@@ -22,6 +22,7 @@ type Business = {
   defaultTaxRate: number | string | null
   quotePrefix: string | null
   logoUrl: string | null
+  website: string | null
   paymentInstructions: string | null
   terms: string | null
   subdomain: string | null
@@ -70,7 +71,7 @@ const blankCustomer: CustomerForm = { id: '', name: '', phone: '', email: '' }
 const blankService: ServiceForm = { id: '', name: '', category: '', kind: 'SERVICE', description: '', unit: 'job', defaultPrice: '0', defaultTaxRate: '' }
 const emptyBusiness: Omit<Business, 'id'> = {
   name: '', email: '', phone: '', country: 'Kenya', businessType: '', currency: 'KES', defaultTaxRate: '16',
-  quotePrefix: 'QT', logoUrl: '', paymentInstructions: '', terms: '', subdomain: null,
+  quotePrefix: 'QT', logoUrl: '', website: '', paymentInstructions: '', terms: '', subdomain: null,
 }
 const statusNames: Record<QuoteStatus, string> = {
   DRAFT: 'Draft', SENT: 'Sent', VIEWED: 'Viewed', APPROVED: 'Approved', DECLINED: 'Declined', EXPIRED: 'Expired',
@@ -111,6 +112,7 @@ function documentFromDraft(draft: QuoteDraft, quoteNumber: string, business: Bus
       email: business.email,
       phone: business.phone,
       country: business.country,
+      website: business.website,
       logoUrl: assetUrl(business.logoUrl),
       paymentInstructions: business.paymentInstructions,
     },
@@ -811,6 +813,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
                 <label>Business name<input className="input-control" required value={businessForm.name} onChange={(event) => setBusinessForm((current) => ({ ...current, name: event.target.value }))} /></label>
                 <label>Business email<input className="input-control" type="email" value={businessForm.email ?? ''} onChange={(event) => setBusinessForm((current) => ({ ...current, email: event.target.value }))} /></label>
                 <label>Phone<input className="input-control" value={businessForm.phone ?? ''} onChange={(event) => setBusinessForm((current) => ({ ...current, phone: event.target.value }))} /></label>
+                <label>Website<input className="input-control" type="url" value={businessForm.website ?? ''} onChange={(event) => setBusinessForm((current) => ({ ...current, website: event.target.value }))} placeholder="https://yourbusiness.com" /></label>
                 <label>Country<input className="input-control" value={businessForm.country ?? ''} onChange={(event) => setBusinessForm((current) => ({ ...current, country: event.target.value }))} /></label>
                 <label>Business type<select className="input-control" value={businessForm.businessType ?? ''} onChange={(event) => setBusinessForm((current) => ({ ...current, businessType: event.target.value }))}><option value="">General service business</option><option>Handyman / home repair</option><option>Plumbing</option><option>Electrical</option><option>Cleaning &amp; maintenance</option><option>Construction &amp; contracting</option><option>Consulting &amp; professional services</option><option>Creative studio</option><option>Retail &amp; product sales</option><option>Other service business</option></select></label>
                 <label>Currency<input className="input-control" maxLength={3} required value={businessForm.currency} onChange={(event) => setBusinessForm((current) => ({ ...current, currency: event.target.value.toUpperCase() }))} /></label>

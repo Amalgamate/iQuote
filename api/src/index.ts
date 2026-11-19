@@ -1723,7 +1723,7 @@ app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
     where: { publicToken },
     include: {
       customer: { select: { name: true } },
-      organisation: { select: { name: true, email: true, phone: true, country: true, currency: true, logoUrl: true, paymentInstructions: true } },
+      organisation: { select: { name: true, email: true, phone: true, country: true, currency: true, logoUrl: true, website: true, paymentInstructions: true } },
       lines: { orderBy: { position: 'asc' } },
     },
   })
@@ -1839,6 +1839,7 @@ app.get('/api/business/me', requireAuth, async (req, res) => {
       defaultTaxRate: true,
       quotePrefix: true,
       logoUrl: true,
+      website: true,
       paymentInstructions: true,
       terms: true,
       subdomain: true,
@@ -1868,6 +1869,7 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
   // logoUrl is now only set via the file upload endpoint — reject arbitrary URLs from the form
   const rawLogoUrl = String(req.body?.logoUrl ?? '').trim()
   const logoUrl = rawLogoUrl.startsWith('/uploads/') ? rawLogoUrl.slice(0, 200) : null
+  const website = String(req.body?.website ?? '').trim().slice(0, 200) || null
 
   const rawTaxRate = req.body?.defaultTaxRate
   let defaultTaxRate: number | null = null
@@ -1899,6 +1901,7 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
     defaultTaxRate: true,
     quotePrefix: true,
     logoUrl: true,
+    website: true,
     paymentInstructions: true,
     terms: true,
     subdomain: true,
@@ -1915,7 +1918,7 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
       const subdomain = existing.subdomain ?? await allocateSubdomain(transaction, name)
       return transaction.organisation.update({
         where: { id: organisationId },
-        data: { subdomain, name, email, phone, country, businessType, currency, defaultTaxRate, quotePrefix, logoUrl, paymentInstructions, terms },
+        data: { subdomain, name, email, phone, country, businessType, currency, defaultTaxRate, quotePrefix, logoUrl, website, paymentInstructions, terms },
         select,
       })
     })
@@ -1936,6 +1939,7 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
           defaultTaxRate: defaultTaxRate === null ? undefined : defaultTaxRate,
           quotePrefix,
           logoUrl,
+          website,
           paymentInstructions,
           terms,
           members: { connect: { id: user.id } },

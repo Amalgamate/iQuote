@@ -13,44 +13,58 @@ import { assetUrl, formatMoney } from './api'
 const ink = '#18212d'
 const muted = '#5e6874'
 const rule = '#c8cdd3'
+const footerBg = '#18212d'
+const footerText = '#e8eaed'
+const footerMuted = '#c8cdd3'
 
 const styles = StyleSheet.create({
-  page: { paddingTop: 42, paddingBottom: 55, paddingHorizontal: 46, color: ink, fontFamily: 'Helvetica', fontSize: 9 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 20, borderBottomWidth: 1, borderBottomColor: '#8993a0' },
-  business: { flexDirection: 'column', alignItems: 'flex-start', gap: 8, flex: 1, paddingRight: 20 },
-  logo: { width: 56, height: 56, objectFit: 'contain' },
-  logoFallback: { width: 56, height: 56, borderWidth: 1, borderColor: rule, alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, color: '#26364a' },
+  page: { paddingTop: 40, paddingBottom: 110, paddingHorizontal: 46, color: ink, fontFamily: 'Helvetica', fontSize: 9 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 22, borderBottomWidth: 2, borderBottomColor: ink },
+  brand: { flexDirection: 'column', alignItems: 'flex-start', gap: 10, flex: 1, paddingRight: 20 },
+  logo: { width: 76, height: 76, objectFit: 'contain' },
+  logoFallback: { width: 76, height: 76, borderWidth: 1, borderColor: rule, alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 800, color: '#26364a' },
   businessDetails: { flexDirection: 'column', gap: 4, flex: 1 },
-  businessName: { fontSize: 13, fontWeight: 700, color: ink, marginBottom: 1 },
-  businessMeta: { fontSize: 8, color: muted },
-  titleBlock: { width: 185, alignItems: 'flex-end', gap: 5 },
-  title: { fontSize: 18, fontWeight: 700, letterSpacing: 0.5, color: ink, marginBottom: 2 },
-  documentNumber: { fontSize: 9, fontWeight: 700, color: ink },
-  meta: { fontSize: 8, color: muted },
+  businessName: { fontSize: 15, fontWeight: 800, color: ink, marginBottom: 2 },
+  businessMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
+  businessMeta: { fontSize: 8.5, color: muted },
+  businessMetaDot: { fontSize: 8.5, color: rule, marginHorizontal: 4 },
+  titleBlock: { width: 200, alignItems: 'flex-end', gap: 5 },
+  title: { fontSize: 28, fontWeight: 800, letterSpacing: 0.8, color: ink, marginBottom: 3 },
+  documentNumber: { fontSize: 10, fontWeight: 700, color: '#384454' },
+  meta: { fontSize: 8.5, color: muted },
   recipient: { paddingTop: 22, paddingBottom: 18, gap: 5 },
-  eyebrow: { fontSize: 7, fontWeight: 700, letterSpacing: 0.8, color: muted, marginBottom: 3 },
-  recipientName: { fontSize: 11, fontWeight: 700, color: ink },
+  eyebrow: { fontSize: 8, fontWeight: 800, letterSpacing: 0.8, color: muted, marginBottom: 3, textTransform: 'uppercase' },
+  recipientName: { fontSize: 12, fontWeight: 700, color: ink },
   table: { width: '100%', marginTop: 2 },
-  tableHeader: { flexDirection: 'row', alignItems: 'center', minHeight: 25, borderTopWidth: 1, borderTopColor: '#8993a0', borderBottomWidth: 1, borderBottomColor: '#8993a0', color: '#384454', fontSize: 7, fontWeight: 700 },
-  row: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 9, borderBottomWidth: 0.5, borderBottomColor: '#e0e3e6' },
-  descriptionColumn: { width: '45%', paddingRight: 8 },
-  quantityColumn: { width: '9%', paddingRight: 4 },
-  unitPriceColumn: { width: '19%', paddingRight: 4 },
-  taxColumn: { width: '10%', paddingRight: 4 },
-  amountColumn: { width: '17%', textAlign: 'right' },
-  headerCell: { paddingHorizontal: 4 },
-  description: { color: ink, fontSize: 8.5, lineHeight: 1.35 },
-  unit: { color: muted, fontSize: 7.5, marginTop: 3 },
-  cell: { color: '#384454', fontSize: 8.5, lineHeight: 1.35 },
+  tableHeader: { flexDirection: 'row', alignItems: 'center', minHeight: 26, borderTopWidth: 1, borderTopColor: '#8993a0', borderBottomWidth: 1, borderBottomColor: '#8993a0', backgroundColor: '#f8f9fa', color: '#384454', fontSize: 7.5, fontWeight: 800 },
+  row: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 10, borderBottomWidth: 0.5, borderBottomColor: '#e0e3e6' },
+  descriptionColumn: { width: '45%', paddingRight: 8, paddingLeft: 5 },
+  quantityColumn: { width: '9%', paddingRight: 4, paddingLeft: 5 },
+  unitPriceColumn: { width: '19%', paddingRight: 4, paddingLeft: 5 },
+  taxColumn: { width: '10%', paddingRight: 4, paddingLeft: 5 },
+  amountColumn: { width: '17%', paddingRight: 5, paddingLeft: 5, textAlign: 'right' },
+  headerCell: { paddingVertical: 7 },
+  description: { color: ink, fontSize: 9, lineHeight: 1.35 },
+  unit: { color: muted, fontSize: 8, marginTop: 3 },
+  cell: { color: '#384454', fontSize: 9, lineHeight: 1.35 },
   empty: { color: muted, textAlign: 'center', paddingVertical: 13, fontSize: 8 },
-  totals: { width: 220, alignSelf: 'flex-end', marginTop: 14, gap: 7 },
-  totalRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, color: muted, fontSize: 8.5 },
-  totalValue: { color: ink, fontSize: 8.5 },
-  grandTotal: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 9, marginTop: 2, borderTopWidth: 1, borderTopColor: '#8993a0', color: ink, fontSize: 10, fontWeight: 700 },
-  note: { marginTop: 19, gap: 5 },
-  noteHeading: { color: '#384454', fontSize: 7.5, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase' },
-  noteText: { color: muted, fontSize: 8.5, lineHeight: 1.45 },
-  footer: { position: 'absolute', bottom: 26, left: 46, right: 46, paddingTop: 8, borderTopWidth: 0.5, borderTopColor: rule, flexDirection: 'row', justifyContent: 'space-between', color: muted, fontSize: 7 },
+  totals: { width: 230, alignSelf: 'flex-end', marginTop: 16, gap: 8 },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, color: muted, fontSize: 9 },
+  totalValue: { color: ink, fontSize: 9, fontWeight: 600 },
+  grandTotal: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 10, marginTop: 2, borderTopWidth: 1, borderTopColor: '#697381', color: ink, fontSize: 11, fontWeight: 800 },
+  notesBlock: { marginTop: 22, gap: 14 },
+  note: { gap: 5 },
+  noteHeading: { color: '#384454', fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase' },
+  noteText: { color: muted, fontSize: 9, lineHeight: 1.5 },
+  footer: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: footerBg, color: footerText, paddingTop: 16, paddingBottom: 18, paddingHorizontal: 46 },
+  footerMain: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12, fontSize: 8.5 },
+  footerThanks: { color: footerMuted },
+  footerContacts: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, color: footerText },
+  footerContact: { fontSize: 8.5 },
+  footerContactDot: { fontSize: 8.5, color: '#5e6874', marginHorizontal: 4 },
+  footerPayment: { marginTop: 12, paddingTop: 10, borderTopWidth: 0.5, borderTopColor: '#384454' },
+  footerPaymentHeading: { color: footerMuted, fontSize: 8, fontWeight: 800, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 },
+  footerPaymentText: { color: footerText, fontSize: 8.5, lineHeight: 1.5 },
 })
 
 function dateLabel(value?: string | null) {
@@ -59,22 +73,56 @@ function dateLabel(value?: string | null) {
   return Number.isNaN(date.getTime()) ? '' : new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(date)
 }
 
+function cleanUrl(url?: string | null) {
+  if (!url) return ''
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+}
+
+function ContactDots({ items }: { items: (string | null | undefined)[] }) {
+  const visible = items.filter(Boolean)
+  return (
+    <View style={styles.businessMetaRow}>
+      {visible.map((item, index) => (
+        <View key={index} style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={styles.businessMeta}>{item}</Text>
+          {index < visible.length - 1 && <Text style={styles.businessMetaDot}>•</Text>}
+        </View>
+      ))}
+    </View>
+  )
+}
+
+function FooterContacts({ items }: { items: (string | null | undefined)[] }) {
+  const visible = items.filter(Boolean)
+  return (
+    <View style={styles.footerContacts}>
+      {visible.map((item, index) => (
+        <View key={index} style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={styles.footerContact}>{item}</Text>
+          {index < visible.length - 1 && <Text style={styles.footerContactDot}>•</Text>}
+        </View>
+      ))}
+    </View>
+  )
+}
+
 function QuotePdfDocument({ quote }: { quote: QuoteDocumentData }) {
   const lines = quote.lines.length ? quote.lines : null
+  const org = quote.organisation
+  const contacts = [org.email, org.phone, org.country, cleanUrl(org.website)]
+  const hasFooterDetails = contacts.some(Boolean) || org.paymentInstructions
 
   return (
-    <Document title={`Quotation ${quote.documentNumber}`} author={quote.organisation.name} subject="Business quotation">
+    <Document title={`Quotation ${quote.documentNumber}`} author={org.name} subject="Business quotation">
       <Page size="A4" style={styles.page} wrap>
         <View style={styles.header}>
-          <View style={styles.business}>
-            {quote.organisation.logoUrl
-              ? <Image src={assetUrl(quote.organisation.logoUrl) ?? undefined} style={styles.logo} />
-              : <View style={styles.logoFallback}><Text>{quote.organisation.name.slice(0, 1).toUpperCase()}</Text></View>}
+          <View style={styles.brand}>
+            {org.logoUrl
+              ? <Image src={assetUrl(org.logoUrl) ?? undefined} style={styles.logo} />
+              : <View style={styles.logoFallback}><Text>{org.name.slice(0, 1).toUpperCase()}</Text></View>}
             <View style={styles.businessDetails}>
-              <Text style={styles.businessName}>{quote.organisation.name}</Text>
-              {quote.organisation.email && <Text style={styles.businessMeta}>{quote.organisation.email}</Text>}
-              {quote.organisation.phone && <Text style={styles.businessMeta}>{quote.organisation.phone}</Text>}
-              {quote.organisation.country && <Text style={styles.businessMeta}>{quote.organisation.country}</Text>}
+              <Text style={styles.businessName}>{org.name}</Text>
+              <ContactDots items={contacts} />
             </View>
           </View>
           <View style={styles.titleBlock}>
@@ -120,23 +168,37 @@ function QuotePdfDocument({ quote }: { quote: QuoteDocumentData }) {
           <View style={styles.grandTotal}><Text>Total</Text><Text>{formatMoney(quote.total, quote.currency)}</Text></View>
         </View>
 
-        {quote.notes && <View style={styles.note}>
-          <Text style={styles.noteHeading}>Notes</Text>
-          <Text style={styles.noteText}>{quote.notes}</Text>
-        </View>}
-        {quote.terms && <View style={styles.note}>
-          <Text style={styles.noteHeading}>Terms</Text>
-          <Text style={styles.noteText}>{quote.terms}</Text>
-        </View>}
-        {quote.organisation.paymentInstructions && <View style={styles.note}>
-          <Text style={styles.noteHeading}>Payment instructions</Text>
-          <Text style={styles.noteText}>{quote.organisation.paymentInstructions}</Text>
-        </View>}
+        {(quote.notes || quote.terms || org.paymentInstructions) && (
+          <View style={styles.notesBlock} wrap={false}>
+            {quote.notes && <View style={styles.note}>
+              <Text style={styles.noteHeading}>Notes</Text>
+              <Text style={styles.noteText}>{quote.notes}</Text>
+            </View>}
+            {quote.terms && <View style={styles.note}>
+              <Text style={styles.noteHeading}>Terms</Text>
+              <Text style={styles.noteText}>{quote.terms}</Text>
+            </View>}
+            {org.paymentInstructions && <View style={styles.note}>
+              <Text style={styles.noteHeading}>Payment instructions</Text>
+              <Text style={styles.noteText}>{org.paymentInstructions}</Text>
+            </View>}
+          </View>
+        )}
 
-        <View style={styles.footer} fixed>
-          <Text>{quote.organisation.name}</Text>
-          <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
-        </View>
+        {hasFooterDetails && (
+          <View style={styles.footer} fixed>
+            <View style={styles.footerMain}>
+              <Text style={styles.footerThanks}>Thank you for considering this quotation.</Text>
+              <FooterContacts items={contacts} />
+            </View>
+            {org.paymentInstructions && (
+              <View style={styles.footerPayment}>
+                <Text style={styles.footerPaymentHeading}>Payment details</Text>
+                <Text style={styles.footerPaymentText}>{org.paymentInstructions}</Text>
+              </View>
+            )}
+          </View>
+        )}
       </Page>
     </Document>
   )

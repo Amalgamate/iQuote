@@ -27,6 +27,7 @@ export type QuoteDocumentData = {
     email?: string | null
     phone?: string | null
     country?: string | null
+    website?: string | null
     logoUrl?: string | null
     paymentInstructions?: string | null
   }
@@ -38,11 +39,18 @@ function dateLabel(value?: string | null) {
   return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(date)
 }
 
+function cleanUrl(url?: string | null) {
+  if (!url) return null
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+}
+
 export default function QuoteDocument({ quote }: { quote: QuoteDocumentData }) {
+  const hasFooterDetails = quote.organisation.email || quote.organisation.phone || quote.organisation.country || quote.organisation.website || quote.organisation.paymentInstructions
+
   return (
     <article className="quote-paper" aria-label={`Quotation ${quote.documentNumber}`}>
       <header className="document-header">
-        <div className="document-business">
+        <div className="document-brand">
           {quote.organisation.logoUrl ? (
             <img src={assetUrl(quote.organisation.logoUrl) ?? undefined} alt={`${quote.organisation.name} logo`} />
           ) : (
@@ -50,9 +58,12 @@ export default function QuoteDocument({ quote }: { quote: QuoteDocumentData }) {
           )}
           <div className="document-business-details">
             <strong>{quote.organisation.name}</strong>
-            {quote.organisation.email && <span>{quote.organisation.email}</span>}
-            {quote.organisation.phone && <span>{quote.organisation.phone}</span>}
-            {quote.organisation.country && <span>{quote.organisation.country}</span>}
+            <div className="document-business-meta">
+              {quote.organisation.email && <span>{quote.organisation.email}</span>}
+              {quote.organisation.phone && <span>{quote.organisation.phone}</span>}
+              {quote.organisation.country && <span>{quote.organisation.country}</span>}
+              {quote.organisation.website && <span>{cleanUrl(quote.organisation.website)}</span>}
+            </div>
           </div>
         </div>
         <div className="document-title">
@@ -93,11 +104,33 @@ export default function QuoteDocument({ quote }: { quote: QuoteDocumentData }) {
         <div className="document-total"><span>Total</span><strong>{formatMoney(quote.total, quote.currency)}</strong></div>
       </div>
 
-      {quote.notes && <section className="document-note"><strong>Notes</strong><p>{quote.notes}</p></section>}
-      {quote.terms && <section className="document-note"><strong>Terms</strong><p>{quote.terms}</p></section>}
-      {quote.organisation.paymentInstructions && <section className="document-note"><strong>Payment instructions</strong><p>{quote.organisation.paymentInstructions}</p></section>}
+      {(quote.notes || quote.terms || quote.organisation.paymentInstructions) && (
+        <section className="document-notes">
+          {quote.notes && <div className="document-note"><strong>Notes</strong><p>{quote.notes}</p></div>}
+          {quote.terms && <div className="document-note"><strong>Terms</strong><p>{quote.terms}</p></div>}
+          {quote.organisation.paymentInstructions && <div className="document-note"><strong>Payment instructions</strong><p>{quote.organisation.paymentInstructions}</p></div>}
+        </section>
+      )}
 
-      <footer className="document-footer">Thank you for considering this quotation.</footer>
+      <footer className="document-footer">
+        <div className="document-footer-main">
+          <span>Thank you for considering this quotation.</span>
+          {hasFooterDetails && (
+            <div className="document-footer-contacts">
+              {quote.organisation.email && <span>{quote.organisation.email}</span>}
+              {quote.organisation.phone && <span>{quote.organisation.phone}</span>}
+              {quote.organisation.country && <span>{quote.organisation.country}</span>}
+              {quote.organisation.website && <span>{cleanUrl(quote.organisation.website)}</span>}
+            </div>
+          )}
+        </div>
+        {quote.organisation.paymentInstructions && (
+          <div className="document-footer-payment">
+            <strong>Payment details</strong>
+            <p>{quote.organisation.paymentInstructions}</p>
+          </div>
+        )}
+      </footer>
     </article>
   )
 }
