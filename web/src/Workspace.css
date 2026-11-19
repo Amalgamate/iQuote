@@ -415,6 +415,7 @@
 .workspace-content { display: grid; gap: 20px; max-width: 1440px; margin: 0 auto; padding: 28px 32px 48px; }
 .workspace-alert { display: flex; justify-content: space-between; gap: 12px; margin: 18px 32px 0; padding: 11px 13px; border: 1px solid #f0c5c1; border-radius: 6px; background: #fff8f7; color: #9f231b; font-size: 13px; }
 .workspace-alert button { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 17px; }
+.workspace-alert-success { border-color: #86efac; background: #f0fdf4; color: #166534; }
 .welcome-row,.list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .welcome-row { padding: 4px 0 3px; }
 .welcome-row h2,.list-toolbar h2 { margin: 5px 0 6px; font-size: 22px; font-weight: 600; letter-spacing: -.035em; }

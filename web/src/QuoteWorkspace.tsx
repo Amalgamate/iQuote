@@ -170,6 +170,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [showSendModal, setShowSendModal] = useState(false)
   const [sendEmail, setSendEmail] = useState('')
   const [sendMessage, setSendMessage] = useState('')
+  const [sendStatus, setSendStatus] = useState<'success' | 'error' | null>(null)
   const [sending, setSending] = useState(false)
   const [deliveries, setDeliveries] = useState<QuoteDelivery[]>([])
   const [revoking, setRevoking] = useState(false)
@@ -595,14 +596,17 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     if (!editorQuoteId || !sendEmail.trim()) return
     setSending(true)
     setSendMessage('')
+    setSendStatus(null)
     try {
       await apiRequest(`/api/quotes/${editorQuoteId}/send`, { method: 'POST', body: JSON.stringify({ recipientEmail: sendEmail.trim() }) })
       setSendMessage('Quote email sent. Delivery status will update below.')
+      setSendStatus('success')
       setShowSendModal(false)
       setSendEmail('')
       await loadDeliveries(editorQuoteId)
     } catch (requestError) {
       setSendMessage(requestError instanceof Error ? requestError.message : 'Unable to send quote email.')
+      setSendStatus('error')
     } finally {
       setSending(false)
     }
@@ -612,12 +616,15 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     if (!editorQuoteId) return
     setSending(true)
     setSendMessage('')
+    setSendStatus(null)
     try {
       await apiRequest(`/api/quotes/${editorQuoteId}/resend`, { method: 'POST' })
       setSendMessage('Resent. Delivery status will update below.')
+      setSendStatus('success')
       await loadDeliveries(editorQuoteId)
     } catch (requestError) {
       setSendMessage(requestError instanceof Error ? requestError.message : 'Unable to resend.')
+      setSendStatus('error')
     } finally {
       setSending(false)
     }
@@ -855,7 +862,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           <section className="editor-content">
             <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => { setShowSendModal(true); void loadDeliveries(editorQuoteId) }}>Send email</button>}<button className="button button-primary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Mark as sent</button></div></div>
             {sharedUrl && <div className="share-callout"><div><strong>Quote link is ready</strong><span>{sharedUrl}</span></div><div className="share-actions"><button className="button button-secondary" type="button" onClick={() => { void navigator.clipboard.writeText(sharedUrl).then(() => setCopied(true)).catch(() => setError('Copy the quote link from the address shown.')) }}>{copied ? 'Copied' : 'Copy link'}</button><a className="button button-secondary" href={`https://wa.me/?text=${encodeURIComponent(`Here is your quotation: ${sharedUrl}`)}`} target="_blank" rel="noreferrer">WhatsApp</a><button className="quiet-button danger-button" type="button" onClick={() => void revokeQuoteLink()} disabled={revoking}>{revoking ? 'Revoking…' : 'Revoke link'}</button></div></div>}
-            {sendMessage && <div className="workspace-alert" role="status"><span>{sendMessage}</span><button type="button" onClick={() => setSendMessage('')} aria-label="Dismiss">×</button></div>}
+            {sendMessage && <div className={sendStatus === 'success' ? 'workspace-alert workspace-alert-success' : 'workspace-alert'} role="status"><span>{sendMessage}</span><button type="button" onClick={() => { setSendMessage(''); setSendStatus(null) }} aria-label="Dismiss">×</button></div>}
             {deliveries.length > 0 && (
               <section className="workspace-panel delivery-panel">
                 <div className="panel-heading"><div><h2>Email delivery status</h2><p>Track when your quote email was sent, delivered, or bounced.</p></div>{deliveries.some((d) => d.status === 'PENDING' || d.status === 'SENT') && <button className="button button-secondary" type="button" onClick={() => void resendQuoteEmail()} disabled={sending}>Resend</button>}</div>
