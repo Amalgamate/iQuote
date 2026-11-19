@@ -88,13 +88,13 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 
 ## Stage 7 — Verify the delivered quotation workflow
 
-- [ ] Run the documented local setup from a clean checkout and confirm web, API, database connection, and health endpoint.
-- [ ] Walk through registration, verification, business setup, customer creation, quote creation, draft persistence, and quote numbering.
-- [ ] Verify subtotal, tax, total, currency formatting, and rounding for representative quantities, rates, and boundary values.
-- [ ] Open a public quote in a logged-out browser; verify view timestamp, approve, decline, optional comment, expiry, and repeat-decision behavior.
-- [ ] Compare HTML preview, downloaded PDF, and print output for short and long quotes, page breaks, logo, and mobile customer view.
-- [ ] Verify service catalogue, templates, settings, logo upload, and super-admin dashboard paths without assuming that source presence proves the user flow.
-- [ ] Record reproducible defects and environment assumptions in the stage notes before beginning feature expansion.
+- [x] Run the documented local setup from a clean checkout and confirm web, API, database connection, and health endpoint.
+- [x] Walk through registration, verification, business setup, customer creation, quote creation, draft persistence, and quote numbering.
+- [x] Verify subtotal, tax, total, currency formatting, and rounding for representative quantities, rates, and boundary values.
+- [x] Open a public quote in a logged-out browser; verify view timestamp, approve, decline, optional comment, expiry, and repeat-decision behavior.
+- [x] Compare HTML preview, downloaded PDF, and print output for short and long quotes, page breaks, logo, and mobile customer view.
+- [x] Verify service catalogue, templates, settings, logo upload, and super-admin dashboard paths without assuming that source presence proves the user flow.
+- [x] Record reproducible defects and environment assumptions in the stage notes before beginning feature expansion.
 
 **Exit checks:** the existing core loop works end to end in a clean local environment; quote math and document output have reviewed acceptance evidence; defects are recorded. Fix blocking defects before marking complete.
 
