@@ -119,6 +119,258 @@ function documentFromDraft(draft: QuoteDraft, quoteNumber: string, business: Bus
   }
 }
 
+function CustomerCombobox({
+  customers,
+  selectedId,
+  onSelect,
+  onCreateQuick,
+  onCreateAndEdit,
+}: {
+  customers: Customer[]
+  selectedId: string
+  onSelect: (customer: Customer) => void
+  onCreateQuick: (name: string) => Promise<void>
+  onCreateAndEdit: (name: string) => void
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [isCreating, setIsCreating] = useState(false)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+
+  const selectedCustomer = customers.find((c) => c.id === selectedId)
+
+  useEffect(() => {
+    if (!isOpen) {
+      setQuery(selectedCustomer ? selectedCustomer.name : '')
+    }
+  }, [selectedCustomer, isOpen])
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false)
+        setQuery(selectedCustomer ? selectedCustomer.name : '')
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [selectedCustomer])
+
+  const filtered = customers.filter((c) => {
+    const q = query.toLowerCase().trim()
+    if (!q) return true
+    return (
+      c.name.toLowerCase().includes(q) ||
+      (c.email && c.email.toLowerCase().includes(q)) ||
+      (c.phone && c.phone.toLowerCase().includes(q))
+    )
+  })
+
+  const exactMatch = customers.some(
+    (c) => c.name.toLowerCase().trim() === query.toLowerCase().trim()
+  )
+
+  const handleQuickCreate = async () => {
+    if (!query.trim() || isCreating) return
+    setIsCreating(true)
+    try {
+      await onCreateQuick(query.trim())
+      setIsOpen(false)
+    } finally {
+      setIsCreating(false)
+    }
+  }
+
+  return (
+    <div className="combobox-container" ref={wrapperRef}>
+      <div className="combobox-control-wrap">
+        <input
+          className="input-control combobox-input"
+          placeholder="Search customer by name, email or phone…"
+          value={query}
+          onFocus={() => setIsOpen(true)}
+          onChange={(e) => {
+            setQuery(e.target.value)
+            setIsOpen(true)
+          }}
+        />
+        {selectedCustomer && (
+          <button
+            type="button"
+            className="combobox-clear"
+            title="Clear customer"
+            onClick={(e) => {
+              e.stopPropagation()
+              setQuery('')
+              setIsOpen(true)
+            }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+
+      {isOpen && (
+        <div className="combobox-dropdown" role="listbox">
+          {filtered.slice(0, 8).map((customer) => (
+            <div
+              key={customer.id}
+              className={`combobox-item ${customer.id === selectedId ? 'active' : ''}`}
+              onClick={() => {
+                onSelect(customer)
+                setIsOpen(false)
+              }}
+            >
+              <span className="combobox-item-title">{customer.name}</span>
+              {(customer.email || customer.phone) && (
+                <span className="combobox-item-subtitle">
+                  {[customer.phone, customer.email].filter(Boolean).join(' · ')}
+                </span>
+              )}
+            </div>
+          ))}
+
+          {query.trim().length > 0 && !exactMatch && (
+            <>
+              <div
+                className="combobox-create-item"
+                role="button"
+                onClick={() => void handleQuickCreate()}
+              >
+                <span>+</span>
+                <span>
+                  {isCreating ? 'Creating…' : `Create "${query.trim()}"`}
+                </span>
+              </div>
+              <div
+                className="combobox-create-edit-item"
+                role="button"
+                onClick={() => {
+                  setIsOpen(false)
+                  onCreateAndEdit(query.trim())
+                }}
+              >
+                <span>✎</span>
+                <span>Create and edit…</span>
+              </div>
+            </>
+          )}
+
+          {filtered.length === 0 && !query.trim() && (
+            <div className="combobox-item muted-text">No customers saved yet. Type a name to create one.</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function LineItemDescriptionField({
+  index,
+  line,
+  serviceItems,
+  currency,
+  businessTaxRate,
+  onUpdateLine,
+  onUpdateFullLine,
+  onSaveToCatalog,
+}: {
+  index: number
+  line: QuoteLine
+  serviceItems: ServiceItem[]
+  currency: string
+  businessTaxRate: number
+  onUpdateLine: (index: number, field: keyof QuoteLine, value: string | number) => void
+  onUpdateFullLine: (index: number, patch: Partial<QuoteLine>) => void
+  onSaveToCatalog: (line: QuoteLine) => Promise<void>
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const query = line.description.toLowerCase().trim()
+  const matching = serviceItems.filter((item) =>
+    query ? item.name.toLowerCase().includes(query) || item.category.toLowerCase().includes(query) : true
+  )
+
+  const isExactInCatalog = serviceItems.some(
+    (item) => item.name.toLowerCase().trim() === line.description.toLowerCase().trim()
+  )
+
+  const handleSelectService = (item: ServiceItem) => {
+    onUpdateFullLine(index, {
+      description: item.name,
+      unitPrice: item.defaultPrice,
+      unit: item.unit,
+      taxRate: item.defaultTaxRate !== null && item.defaultTaxRate !== undefined ? item.defaultTaxRate : businessTaxRate,
+    })
+    setIsOpen(false)
+  }
+
+  const handleSaveCatalog = async () => {
+    if (isSaving || saved || !line.description.trim()) return
+    setIsSaving(true)
+    try {
+      await onSaveToCatalog(line)
+      setSaved(true)
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <div className="line-desc-wrap" ref={containerRef}>
+      <input
+        className="input-control"
+        value={line.description}
+        placeholder="Service or product name…"
+        onFocus={() => setIsOpen(true)}
+        onChange={(event) => {
+          setSaved(false)
+          onUpdateLine(index, 'description', event.target.value)
+          setIsOpen(true)
+        }}
+      />
+
+      {isOpen && matching.length > 0 && query.length > 0 && (
+        <div className="catalog-dropdown">
+          {matching.slice(0, 6).map((item) => (
+            <div key={item.id} className="catalog-item" onClick={() => handleSelectService(item)}>
+              <div className="catalog-item-info">
+                <span className="catalog-item-name">{item.name}</span>
+                <span className="catalog-item-cat">{item.category} · {item.unit}</span>
+              </div>
+              <span className="catalog-item-price">{formatMoney(item.defaultPrice, currency)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {line.description.trim().length >= 3 && !isExactInCatalog && (
+        <button
+          type="button"
+          className={`save-catalog-pill ${saved ? 'saved' : ''}`}
+          onClick={() => void handleSaveCatalog()}
+          disabled={saved || isSaving}
+        >
+          {saved ? '✓ Saved to price book' : isSaving ? 'Saving…' : '+ Save to price book'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 export default function QuoteWorkspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const publicMatch = window.location.pathname.match(/^\/quote\/([^/]+)\/?$/)
   if (publicMatch) return <PublicQuote token={decodeURIComponent(publicMatch[1])} />
@@ -158,8 +410,6 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [editorNumber, setEditorNumber] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
   const [saveState, setSaveState] = useState('')
-  const [quickCustomer, setQuickCustomer] = useState({ name: '', phone: '', email: '' })
-  const [showQuickCustomer, setShowQuickCustomer] = useState(false)
   const [sharedUrl, setSharedUrl] = useState('')
   const [copied, setCopied] = useState(false)
   const [showMobilePreview, setShowMobilePreview] = useState(false)
@@ -436,11 +686,18 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
       setError(requestError instanceof Error ? requestError.message : 'Unable to save this quote template.')
     }
   }
-  const updateLine = (index: number, field: keyof QuoteLine, value: string) => {
+  const updateLine = (index: number, field: keyof QuoteLine, value: string | number) => {
     if (!editor) return
+    const strVal = String(value)
     const lines = editor.lines.map((line, lineIndex) => lineIndex === index
-      ? { ...line, [field]: field === 'description' || field === 'unit' ? value : field === 'taxRate' && value === '' ? null : Number(value) }
+      ? { ...line, [field]: field === 'description' || field === 'unit' ? strVal : field === 'taxRate' && strVal === '' ? null : Number(value) }
       : line)
+    updateEditor({ lines })
+  }
+
+  const updateFullLine = (index: number, patch: Partial<QuoteLine>) => {
+    if (!editor) return
+    const lines = editor.lines.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line)
     updateEditor({ lines })
   }
 
@@ -456,21 +713,46 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
       setCustomers((current) => edit ? current.map((item) => item.id === response.customer.id ? response.customer : item) : [response.customer, ...current])
       setCustomerModal(false)
       setCustomerForm(blankCustomer)
-      if (!edit && page === 'editor' && editor && !editor.customerId) updateEditor({ customerId: response.customer.id })
+      if (!edit && page === 'editor' && editor) updateEditor({ customerId: response.customer.id })
     } catch (requestError) {
       setCustomerError(requestError instanceof Error ? requestError.message : 'Unable to save customer.')
     }
   }
 
-  const createQuickCustomer = async () => {
+  const createCustomerQuick = async (name: string) => {
     try {
-      const response = await apiRequest<{ customer: Customer }>('/api/customers', { method: 'POST', body: JSON.stringify(quickCustomer) })
+      const response = await apiRequest<{ customer: Customer }>('/api/customers', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      })
       setCustomers((current) => [response.customer, ...current])
       updateEditor({ customerId: response.customer.id })
-      setQuickCustomer({ name: '', phone: '', email: '' })
-      setShowQuickCustomer(false)
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to add customer.')
+      setError(requestError instanceof Error ? requestError.message : 'Unable to create customer.')
+    }
+  }
+
+  const openCustomerCreateAndEdit = (name: string) => {
+    setCustomerForm({ ...blankCustomer, name })
+    setCustomerError('')
+    setCustomerModal(true)
+  }
+
+  const saveLineToCatalog = async (line: QuoteLine) => {
+    try {
+      const response = await apiRequest<{ item: ServiceItem }>('/api/service-items', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: line.description.trim(),
+          category: 'General',
+          unit: line.unit.trim() || 'item',
+          defaultPrice: Number(line.unitPrice) || 0,
+          defaultTaxRate: line.taxRate ?? null,
+        }),
+      })
+      setServiceItems((prev) => [response.item, ...prev])
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to save item to price book.')
     }
   }
 
@@ -911,16 +1193,174 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
             )}
             <div className="editor-layout">
               <div className="editor-fields">
-                <section className="workspace-panel editor-section"><div className="panel-heading"><div><h2>Quote details</h2><p>{editorNumber}</p></div><span className={statusClass(editorQuoteId ? quotes.find((quote) => quote.id === editorQuoteId)?.status ?? 'DRAFT' : 'DRAFT')}>{editorQuoteId ? statusNames[quotes.find((quote) => quote.id === editorQuoteId)?.status ?? 'DRAFT'] : 'Draft'}</span></div>
-                  <label className="field-label">Customer<select className="input-control" value={editor.customerId} onChange={(event) => event.target.value === '__new__' ? setShowQuickCustomer(true) : updateEditor({ customerId: event.target.value })}>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}<option value="__new__">+ Add a customer</option></select></label>
-                  {showQuickCustomer && <div className="quick-customer"><div className="quick-customer-fields"><input className="input-control" placeholder="Customer name" value={quickCustomer.name} onChange={(event) => setQuickCustomer((current) => ({ ...current, name: event.target.value }))} /><input className="input-control" type="tel" placeholder="Phone" value={quickCustomer.phone} onChange={(event) => setQuickCustomer((current) => ({ ...current, phone: event.target.value }))} /><input className="input-control" type="email" placeholder="Email" value={quickCustomer.email} onChange={(event) => setQuickCustomer((current) => ({ ...current, email: event.target.value }))} /></div><button type="button" className="button button-primary" onClick={() => void createQuickCustomer()}>Save customer</button><button type="button" className="quiet-button" onClick={() => setShowQuickCustomer(false)}>Cancel</button></div>}
-                  <label className="field-label">Valid until<input className="input-control" type="date" value={editor.validUntil} onChange={(event) => updateEditor({ validUntil: event.target.value })} /></label>
+                <section className="workspace-panel editor-section">
+                  <div className="panel-heading">
+                    <div>
+                      <h2>Quote details</h2>
+                      <p>{editorNumber}</p>
+                    </div>
+                    <span className={statusClass(editorQuoteId ? quotes.find((quote) => quote.id === editorQuoteId)?.status ?? 'DRAFT' : 'DRAFT')}>
+                      {editorQuoteId ? statusNames[quotes.find((quote) => quote.id === editorQuoteId)?.status ?? 'DRAFT'] : 'Draft'}
+                    </span>
+                  </div>
+                  <label className="field-label">
+                    Customer
+                    <CustomerCombobox
+                      customers={customers}
+                      selectedId={editor.customerId}
+                      onSelect={(c) => updateEditor({ customerId: c.id })}
+                      onCreateQuick={createCustomerQuick}
+                      onCreateAndEdit={openCustomerCreateAndEdit}
+                    />
+                  </label>
+                  <label className="field-label">
+                    Valid until
+                    <input
+                      className="input-control"
+                      type="date"
+                      value={editor.validUntil}
+                      onChange={(event) => updateEditor({ validUntil: event.target.value })}
+                    />
+                  </label>
                 </section>
 
-                <section className="workspace-panel editor-section"><div className="panel-heading"><div><h2>Line items</h2><p>Describe the work or products in this quotation.</p></div><div className="quote-line-tools">{quoteTemplates.length > 0 && <select className="input-control template-select" aria-label="Start from a quote template" defaultValue="" onChange={(event) => { applyQuoteTemplate(event.target.value); event.target.value = '' }}><option value="">Use a template…</option>{quoteTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select>}<select className="input-control template-select" aria-label="Add from service catalogue" defaultValue="" onChange={(event) => { addServiceItemToQuote(event.target.value); event.target.value = '' }}><option value="">Add from price book…</option>{serviceItems.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.category}</option>)}</select><button className="quiet-button" type="button" onClick={addLine}>+ Add line</button></div></div>
-                  <div className="quote-lines-editor">{editor.lines.map((line, index) => <div className="quote-line-editor" key={line.id ?? index}><label>Description<input className="input-control" value={line.description} placeholder="Service or product" onChange={(event) => updateLine(index, 'description', event.target.value)} /></label><label>Qty<input className="input-control" type="number" min="0.001" step="0.001" value={line.quantity} onChange={(event) => updateLine(index, 'quantity', event.target.value)} /></label><label>Unit<input className="input-control" value={line.unit} onChange={(event) => updateLine(index, 'unit', event.target.value)} /></label><label>Unit price<input className="input-control" type="number" min="0" step="0.01" value={line.unitPrice} onChange={(event) => updateLine(index, 'unitPrice', event.target.value)} /></label><label>Tax %<input className="input-control" type="number" min="0" max="100" step="0.01" value={line.taxRate ?? ''} onChange={(event) => updateLine(index, 'taxRate', event.target.value)} /></label><div className="line-amount">{formatMoney(line.quantity * line.unitPrice, business.currency)}<button className="quiet-button danger-button" type="button" aria-label="Remove line" onClick={() => updateEditor({ lines: editor.lines.filter((_, rowIndex) => rowIndex !== index) })}>×</button></div></div>)}</div>
-                  <button className="add-line-button" type="button" onClick={addLine}>+ Add a line item</button>
-                  <div className="totals-summary"><div><span>Subtotal</span><strong>{formatMoney(quoteTotals(editor.lines).subtotal, business.currency)}</strong></div><div><span>Tax</span><strong>{formatMoney(quoteTotals(editor.lines).taxTotal, business.currency)}</strong></div><div className="summary-grand-total"><span>Total</span><strong>{formatMoney(quoteTotals(editor.lines).total, business.currency)}</strong></div></div>
+                <section className="workspace-panel editor-section">
+                  <div className="panel-heading">
+                    <div>
+                      <h2>Line items</h2>
+                      <p>Describe the work or products in this quotation.</p>
+                    </div>
+                    <div className="quote-line-tools">
+                      {quoteTemplates.length > 0 && (
+                        <select
+                          className="input-control template-select"
+                          aria-label="Start from a quote template"
+                          defaultValue=""
+                          onChange={(event) => {
+                            applyQuoteTemplate(event.target.value)
+                            event.target.value = ''
+                          }}
+                        >
+                          <option value="">Use a template…</option>
+                          {quoteTemplates.map((template) => (
+                            <option key={template.id} value={template.id}>
+                              {template.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <select
+                        className="input-control template-select"
+                        aria-label="Add from service catalogue"
+                        defaultValue=""
+                        onChange={(event) => {
+                          addServiceItemToQuote(event.target.value)
+                          event.target.value = ''
+                        }}
+                      >
+                        <option value="">Add from price book…</option>
+                        {serviceItems.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name} · {item.category}
+                          </option>
+                        ))}
+                      </select>
+                      <button className="quiet-button" type="button" onClick={addLine}>
+                        + Add line
+                      </button>
+                    </div>
+                  </div>
+                  <div className="quote-lines-editor">
+                    {editor.lines.map((line, index) => (
+                      <div className="quote-line-editor" key={line.id ?? index}>
+                        <label>
+                          Description
+                          <LineItemDescriptionField
+                            index={index}
+                            line={line}
+                            serviceItems={serviceItems}
+                            currency={business.currency}
+                            businessTaxRate={Number(business.defaultTaxRate ?? 0)}
+                            onUpdateLine={updateLine}
+                            onUpdateFullLine={updateFullLine}
+                            onSaveToCatalog={saveLineToCatalog}
+                          />
+                        </label>
+                        <label>
+                          Qty
+                          <input
+                            className="input-control"
+                            type="number"
+                            min="0.001"
+                            step="0.001"
+                            value={line.quantity}
+                            onChange={(event) => updateLine(index, 'quantity', event.target.value)}
+                          />
+                        </label>
+                        <label>
+                          Unit
+                          <input
+                            className="input-control"
+                            value={line.unit}
+                            onChange={(event) => updateLine(index, 'unit', event.target.value)}
+                          />
+                        </label>
+                        <label>
+                          Unit price
+                          <input
+                            className="input-control"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={line.unitPrice}
+                            onChange={(event) => updateLine(index, 'unitPrice', event.target.value)}
+                          />
+                        </label>
+                        <label>
+                          Tax %
+                          <input
+                            className="input-control"
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.01"
+                            value={line.taxRate ?? ''}
+                            onChange={(event) => updateLine(index, 'taxRate', event.target.value)}
+                          />
+                        </label>
+                        <div className="line-amount">
+                          {formatMoney(line.quantity * line.unitPrice, business.currency)}
+                          <button
+                            className="quiet-button danger-button"
+                            type="button"
+                            aria-label="Remove line"
+                            onClick={() =>
+                              updateEditor({ lines: editor.lines.filter((_, rowIndex) => rowIndex !== index) })
+                            }
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <button className="add-line-button" type="button" onClick={addLine}>
+                    + Add a line item
+                  </button>
+                  <div className="totals-summary">
+                    <div>
+                      <span>Subtotal</span>
+                      <strong>{formatMoney(quoteTotals(editor.lines).subtotal, business.currency)}</strong>
+                    </div>
+                    <div>
+                      <span>Tax</span>
+                      <strong>{formatMoney(quoteTotals(editor.lines).taxTotal, business.currency)}</strong>
+                    </div>
+                    <div className="summary-grand-total">
+                      <span>Total</span>
+                      <strong>{formatMoney(quoteTotals(editor.lines).total, business.currency)}</strong>
+                    </div>
+                  </div>
                 </section>
 
                 <section className="workspace-panel editor-section notes-section"><label className="field-label">Notes<textarea className="input-control" rows={3} value={editor.notes} onChange={(event) => updateEditor({ notes: event.target.value })} placeholder="Anything the customer should know" /></label><label className="field-label">Terms<textarea className="input-control" rows={3} value={editor.terms} onChange={(event) => updateEditor({ terms: event.target.value })} placeholder="Payment, delivery, and validity terms" /></label></section>

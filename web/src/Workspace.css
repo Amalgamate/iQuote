@@ -645,6 +645,38 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
 .field-hint-inline { font-size: 11px; color: #6b7280; font-weight: 400; }
 .checkbox-field-label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #374151; background: #F4F8FD; padding: 8px 10px; border-radius: 6px; border: 1px solid #D8E4F2; cursor: pointer; user-select: none; }
 .checkbox-field-label input[type="checkbox"] { cursor: pointer; accent-color: #0052FF; }
+
+/* Odoo-style Combobox */
+.combobox-container { position: relative; width: 100%; }
+.combobox-control-wrap { position: relative; display: flex; align-items: center; }
+.combobox-input { width: 100%; padding-right: 32px; }
+.combobox-clear { position: absolute; right: 8px; background: none; border: none; color: #9ca3af; font-size: 16px; cursor: pointer; padding: 2px 6px; }
+.combobox-clear:hover { color: #111827; }
+.combobox-dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; max-height: 260px; overflow-y: auto; background: #ffffff; border: 1px solid #d1d5db; border-radius: 6px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1); z-index: 50; padding: 4px 0; }
+.combobox-item { display: flex; flex-direction: column; padding: 8px 12px; cursor: pointer; transition: background 0.1s ease; font-size: 13px; border-bottom: 1px solid #f3f4f6; }
+.combobox-item:last-child { border-bottom: none; }
+.combobox-item:hover, .combobox-item.active { background: #F4F8FD; }
+.combobox-item-title { font-weight: 600; color: #1e293b; }
+.combobox-item-subtitle { font-size: 11px; color: #64748b; margin-top: 1px; }
+.combobox-create-item { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: #F4F8FD; color: #0052FF; font-weight: 550; font-size: 13px; cursor: pointer; border-top: 1px solid #E2E8F0; }
+.combobox-create-item:hover { background: #E8F0FE; }
+.combobox-create-edit-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #ffffff; color: #4b5563; font-size: 12px; cursor: pointer; }
+.combobox-create-edit-item:hover { background: #f9fafb; color: #0052FF; }
+
+/* Line Item Catalog Typeahead */
+.line-desc-wrap { position: relative; display: flex; flex-direction: column; }
+.catalog-dropdown { position: absolute; top: calc(100% + 2px); left: 0; min-width: 280px; max-width: 360px; max-height: 220px; overflow-y: auto; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15); z-index: 40; padding: 4px 0; }
+.catalog-item { display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; cursor: pointer; font-size: 12px; border-bottom: 1px solid #f1f5f9; }
+.catalog-item:hover { background: #F4F8FD; }
+.catalog-item-info { display: flex; flex-direction: column; }
+.catalog-item-name { font-weight: 600; color: #0f172a; }
+.catalog-item-cat { font-size: 10px; color: #64748b; }
+.catalog-item-price { font-weight: 600; color: #0052FF; }
+
+/* On-the-fly Save to Catalog Pill */
+.save-catalog-pill { margin-top: 4px; padding: 2px 8px; font-size: 11px; font-weight: 500; color: #0052FF; background: #F4F8FD; border: 1px dashed #0052FF; border-radius: 4px; cursor: pointer; width: fit-content; transition: all 0.15s ease; }
+.save-catalog-pill:hover { background: #0052FF; color: #ffffff; }
+.save-catalog-pill.saved { border-style: solid; border-color: #10b981; background: #ecfdf5; color: #047857; cursor: default; }
 .modal-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2px; }
 .modal-heading h2 { margin-top: 4px; font-size: 19px; }
 .field-hint,.muted-text { color: #78716c; font-size: 11px; }

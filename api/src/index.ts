@@ -1049,8 +1049,11 @@ app.post('/api/customers', requireAuth, async (req, res) => {
   const organisationId = await getOrganisationId(user.id)
   if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace before managing customers.' })
 
-  if (!name || (!phone && !email)) {
-    return res.status(400).json({ message: 'Customer name and at least one contact method are required.' })
+  if (!name) {
+    return res.status(400).json({ message: 'Customer name is required.' })
+  }
+  if (email && !isValidEmail(email)) {
+    return res.status(400).json({ message: 'Enter a valid email address.' })
   }
 
   const customer = await prisma.customer.create({
@@ -1080,8 +1083,11 @@ app.put('/api/customers/:id', requireAuth, async (req, res) => {
   const phone = String(req.body?.phone ?? '').trim() || null
   const email = String(req.body?.email ?? '').trim().toLowerCase() || null
 
-  if (!name || (!phone && !email)) {
-    return res.status(400).json({ message: 'Customer name and at least one contact method are required.' })
+  if (!name) {
+    return res.status(400).json({ message: 'Customer name is required.' })
+  }
+  if (email && !isValidEmail(email)) {
+    return res.status(400).json({ message: 'Enter a valid email address.' })
   }
 
   const existingCustomer = await prisma.customer.findFirst({
@@ -1178,14 +1184,14 @@ app.post('/api/service-items', requireAuth, async (req, res) => {
   const organisationId = await getOrganisationId(user.id)
   if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
   const name = String(req.body?.name ?? '').trim()
-  const category = String(req.body?.category ?? '').trim()
+  const category = String(req.body?.category ?? '').trim() || 'General'
   const kind = String(req.body?.kind ?? 'SERVICE').toUpperCase()
   const description = String(req.body?.description ?? '').trim() || null
   const unit = String(req.body?.unit ?? 'job').trim() || 'job'
   const defaultPrice = Number(req.body?.defaultPrice ?? 0)
   const rawTaxRate = req.body?.defaultTaxRate
   const defaultTaxRate = rawTaxRate === '' || rawTaxRate === null || rawTaxRate === undefined ? null : Number(rawTaxRate)
-  if (!name || !category || !['SERVICE', 'PRODUCT'].includes(kind)) return res.status(400).json({ message: 'Enter a name, category, and valid service or product type.' })
+  if (!name || !['SERVICE', 'PRODUCT'].includes(kind)) return res.status(400).json({ message: 'Enter a valid name and service or product type.' })
   if (!Number.isFinite(defaultPrice) || defaultPrice < 0) return res.status(400).json({ message: 'Enter a valid non-negative price.' })
   if (defaultTaxRate !== null && (!Number.isFinite(defaultTaxRate) || defaultTaxRate < 0 || defaultTaxRate > 100)) return res.status(400).json({ message: 'Tax rate must be between 0 and 100.' })
   try {

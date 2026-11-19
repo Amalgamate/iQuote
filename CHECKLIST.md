@@ -3,7 +3,7 @@
 Living implementation plan for evolving the existing iQuote application. Keep the current React/Express/Prisma/PostgreSQL product as the source of truth; extend it in place and do not start a rewrite.
 
 **Plan basis:** repository audits dated 18 November 2026 (`docs/audit/`), current `README.md`, existing `CHECKLIST.md`, and `progress.json`.
-**Current tracker state:** stages 0–6 recorded complete; stage 7 is next. Existing UI/API features may be present while their acceptance evidence is still outstanding.
+**Current tracker state (19 Nov 2026):** the prior tracker over-marked stages 11–15. Stage 11 still needs configured-sender evidence; Stage 12 has no recorded founder pilot evidence; Stage 13 marketplace software is not built; Stages 14–15 contain implemented modules but their original acceptance criteria are only partly met. The completion marks below are being corrected against source and the latest progress notes. Marketplace work is explicitly deferred until the other agreed non-marketplace work is complete and the founder later approves it.
 **How completion is recorded:** finish every checkbox and the stage exit checks, then run `node scripts/mark-stage.mjs <stage> --verified "evidence summary"`. The marker requires the active stage and an evidence summary; it records completion but does not run tests. Never use it to predict or pre-mark work.
 
 ## Product direction and guardrails
@@ -56,7 +56,7 @@ Reforecast after Stage 7 and again after Stage 9 using actual throughput, defect
 
 The audits report a React/Vite/TypeScript web app, Express API, Prisma/PostgreSQL schema, self-registration and OTP foundations, business workspaces, customer and service catalogues, quote creation and public decisions, PDF generation, Resend integration points, super-admin dashboard, and simulated 14-day trials. Automated test coverage and live production behavior were not established by the audits. Review `progress.json` and the feature matrix before changing completion claims.
 
-The workspace sidebar shows five navigation groups: Workspace, Find work, Deliver work, Money & insights, and Account. Only the Workspace and Account items (Overview, Quotes, Customers, Catalogue, Settings) are implemented today. The remaining items (Market, Proposals, Jobs, Finance, Reports) are muted previews that must not be treated as functional modules.
+The workspace sidebar includes Overview, Quotes, Customers, Catalogue, Market, Proposals, Jobs, Finance, Reports, Team, and Settings. Jobs, Finance, Reports, and Team have working screens and APIs, although their broad acceptance criteria still need review. Market and Proposals have a public-site concept and inactive customer-sidebar entries, but no RFQ/proposal backend. They are deferred by the founder and must remain the last workstream; do not start them as part of the current implementation sequence.
 
 ## Dashboard screen acceptance criteria
 
@@ -72,7 +72,7 @@ Screen-level specs for each sidebar module. Active screens are implemented and n
 | **Catalogue** | Business owner | Service/product items with name, category, description, kind, rate; search and filter; items reusable across quotes; edit/delete preserves historical quote line snapshots; tenant-scoped | 7, 10 |
 | **Settings** | Business owner | Business profile (name, logo, currency, tax rate); email sender config (platform vs custom domain, API key, domain verification records); user account details; trial status display; logo upload with safe MIME handling | 7, 8, 11 |
 | **Public Quote** | Customer (logged-out) | Token-authenticated view; shows quote lines, totals, business branding; records view timestamp; approve/decline with optional comment; expiry enforcement; repeat-decision prevention or explicit re-open; mobile-responsive; PDF download | 7, 11 |
-| **Superadmin Overview** | Platform admin | Platform-wide stats (total businesses, users, quotes, revenue); live data indicator; tenant list with drill-down; moderation queue stub; MFA-gated access; scoped admin routes | 7, 8, 13, 15 |
+| **Superadmin** | Platform admin | Overview, quote and signup snapshots; searchable workspace list and detail; reasoned suspend/restore; optional TOTP MFA; searchable activity log for selected actions. Still needs mandatory MFA, user/session support, delivery/health operations, platform financial reporting, and broader audit coverage. No marketplace moderation until that workstream is approved. | Current admin workstream |
 
 ### Upcoming screens (gated by stage)
 
@@ -161,70 +161,74 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 - [x] Consider a request-changes decision state and customer notification only after its business semantics are defined.
 - [x] Verify PDF attachments and rendering for long quotes, supported logos, currencies, and common mail clients.
 
-**Exit checks:** a business can send an immutable quote version with a PDF and link; delivery state and retry behavior are visible; provider failures are diagnosable; verified sender behavior is demonstrated in the intended environment.
+**Exit checks:** a business can send an immutable quote version with a PDF and link; delivery state and retry behavior are visible; provider failures are diagnosable; verified sender behavior is demonstrated in the intended environment. The source includes the send and webhook paths, but `progress.json` records no configured Resend sender; keep the operational sender item open until demonstrated.
 
-## Stage 12 — Validate marketplace demand and set a go/no-go gate
+## Stage 12 — Validate marketplace demand and set a go/no-go gate (DEFERRED)
 
-- [x] Conduct buyer/provider interviews and document the first opportunity category, geography, and supply constraints.
-- [x] Test manual concierge matching before building marketplace software; record genuine RFQs, qualified provider responses, buyer selections, and repeat intent.
-- [x] Define success and stop thresholds with the founder before the pilot (for example: completed RFQs, qualified response rate, selection rate, response time, repeat intent, and provider willingness to pay).
-- [x] Document customer, provider, and platform-admin journeys plus privacy rules for private invitations and bids.
-- [x] Validate how existing iQuote owner accounts and business workspaces can serve a small invite-only pilot; do not require paid subscriptions or team memberships to test demand.
-- [x] Record a written GO, NARROW, or STOP decision against the pre-agreed thresholds.
-- [x] If the decision is STOP, leave Stage 13 unstarted and revise the product direction based on evidence. If NARROW, record the reduced category/geography and repeat criteria.
+**Status:** The progress notes say only the validation framework is ready; no founder-run pilot evidence or GO/NARROW decision is recorded. No work on this stage is authorized in the current non-marketplace sequence.
+
+- [ ] Conduct buyer/provider interviews and document the first opportunity category, geography, and supply constraints.
+- [ ] Test manual concierge matching before building marketplace software; record genuine RFQs, qualified provider responses, buyer selections, and repeat intent.
+- [ ] Define success and stop thresholds with the founder before the pilot (for example: completed RFQs, qualified response rate, selection rate, response time, repeat intent, and provider willingness to pay).
+- [ ] Document customer, provider, and platform-admin journeys plus privacy rules for private invitations and bids.
+- [ ] Validate how existing iQuote owner accounts and business workspaces can serve a small invite-only pilot; do not require paid subscriptions or team memberships to test demand.
+- [ ] Record a written GO, NARROW, or STOP decision against the pre-agreed thresholds.
+- [ ] If the decision is STOP, leave Stage 13 unstarted and revise the product direction based on evidence. If NARROW, record the reduced category/geography and repeat criteria.
 
 **Exit checks:** a manual concierge pilot has produced recorded evidence against founder-approved thresholds, and a clear GO/NARROW/STOP decision is documented. Stage 13 implementation may begin only after GO or a specific NARROW decision.
 
-## Stage 13 — Build a narrow iQuote Market pilot (only after Stage 12 GO/NARROW)
+## Stage 13 — Build a narrow iQuote Market pilot (DEFERRED; no implementation work)
 
-- [x] Confirm the approved pilot category, geography, user cohort, and scope from the Stage 12 decision; do not silently broaden it.
-- [x] Define marketplace organization profile, service categories, coverage areas, capacity, verification, and moderation requirements for that cohort.
-- [x] Specify RFQ fields, attachments, deadlines, eligibility, invitation visibility, proposal submission, withdrawal, and revision rules.
-- [x] Design matching as explainable eligibility filters first; document ranking signals, fairness checks, and manual override.
-- [x] Add tenant-scoped RFQ, invitation, and marketplace proposal schema with audit history through versioned migrations.
-- [x] Reuse quote/document infrastructure only where marketplace proposals have compatible terms and lifecycle; keep proposal and ordinary quote semantics explicit.
-- [x] Implement customer RFQ creation and status tracking with clear privacy and consent.
-- [x] Implement provider onboarding/profile completion and invitation inbox for the pilot cohort; keep team membership and billing out unless the pilot requires them.
-- [x] Implement private invitations and proposal submission; ensure providers cannot view competing bids.
-- [x] Allow buyer selection/decline and convert only the selected proposal into an auditable ordinary quote/workflow. Defer job conversion to Stage 14.
-- [x] Add abuse reporting, moderation, provider verification controls, rate limits, retention rules, and marketplace audit views.
-- [x] Pilot with the approved small cohort; measure the Stage 12 thresholds, repeat use, support burden, and provider willingness to pay.
-- [x] Decide to continue, narrow, or stop based on evidence before adding premium access or credits.
+**Status:** Current source has no marketplace models or RFQ/proposal APIs. The design docs and mockup are planning artifacts only. Do not start this stage until the founder later directs marketplace work after the other agreed items.
+
+- [ ] Confirm the approved pilot category, geography, user cohort, and scope from a future Stage 12 decision; do not silently broaden it.
+- [ ] Define marketplace organization profile, service categories, coverage areas, capacity, verification, and moderation requirements for that cohort.
+- [ ] Specify RFQ fields, attachments, deadlines, eligibility, invitation visibility, proposal submission, withdrawal, and revision rules.
+- [ ] Design matching as explainable eligibility filters first; document ranking signals, fairness checks, and manual override.
+- [ ] Add tenant-scoped RFQ, invitation, and marketplace proposal schema with audit history through versioned migrations.
+- [ ] Reuse quote/document infrastructure only where marketplace proposals have compatible terms and lifecycle; keep proposal and ordinary quote semantics explicit.
+- [ ] Implement customer RFQ creation and status tracking with clear privacy and consent.
+- [ ] Implement provider onboarding/profile completion and invitation inbox for the pilot cohort; keep team membership and billing out unless the pilot requires them.
+- [ ] Implement private invitations and proposal submission; ensure providers cannot view competing bids.
+- [ ] Allow buyer selection/decline and convert only the selected proposal into an auditable ordinary quote/workflow. Defer job conversion to Stage 14.
+- [ ] Add abuse reporting, moderation, provider verification controls, rate limits, retention rules, and marketplace audit views.
+- [ ] Pilot with the approved small cohort; measure the Stage 12 thresholds, repeat use, support burden, and provider willingness to pay.
+- [ ] Decide to continue, narrow, or stop based on evidence before adding premium access or credits.
 
 **Exit checks:** the controlled software pilot preserves tenant privacy and bid confidentiality, and measured results meet the pre-agreed continuation threshold or produce an explicit stop/narrow decision.
 
 ## Stage 14 — Connect accepted work to delivery and financial records
 
 - [x] Define the quote-to-job conversion point and preserve accepted quote/version/terms as an immutable snapshot.
-- [x] Model jobs, ownership, status history, milestones, due dates, attachments, and customer-visible progress.
-- [x] Validate one initial vertical's real production stages before making a generalized workflow engine.
-- [x] Add materials, labor, supplier, transport, and other cost records with actor, timestamp, currency, and audit trail.
-- [x] Define invoices, deposits, partial payments, allocations, receipts, refunds, and balances as explicit financial events.
-- [x] Select and integrate payment rails only after provider, reconciliation, refunds, and failure handling are designed.
-- [x] Ensure payments cannot be silently edited or double-counted; add idempotency and reconciliation workflows.
+- [ ] Model jobs, ownership, status history, milestones, due dates, attachments, and customer-visible progress. Basic jobs/milestones exist; history, attachments, and public progress are not present.
+- [ ] Validate one initial vertical's real production stages before making a generalized workflow engine.
+- [ ] Add materials, labor, supplier, transport, and other cost records with actor, timestamp, currency, and audit trail. Generic job costs exist; full cost classes and durable audit trail need review.
+- [ ] Define invoices, deposits, partial payments, allocations, receipts, refunds, and balances as explicit financial events. Invoice and payment records exist; provider-backed receipts/refunds/allocations are not complete.
+- [ ] Select and integrate payment rails only after provider, reconciliation, refunds, and failure handling are designed.
+- [ ] Ensure payments cannot be silently edited or double-counted; add idempotency and reconciliation workflows. A duplicate window exists; provider reconciliation is absent.
 - [x] Add estimated-versus-actual cost and margin reports with currency-aware aggregation.
-- [x] Add role authorization, tenant constraints, retention, export, and recovery tests for job and financial data.
+- [ ] Add role authorization, tenant constraints, retention, export, and recovery tests for job and financial data.
 
 **Exit checks:** an accepted quote can be delivered as tracked work; costs and payment events reconcile to an auditable history; reports respect currencies and access scope.
 
 ## Stage 15 — Expand commercial controls, integrations, reporting, and operations
 
-- [x] Decide plans, entitlements, trial terms, cancellation/grace behavior, and pricing using Stage 13 marketplace evidence.
-- [x] Select a payment provider for the target market; document fees, settlement, refunds, webhook support, and operational ownership.
-- [x] Add provider customer/subscription IDs and immutable billing event records through versioned migrations.
-- [x] Implement checkout and signed, replay-protected webhooks; make lifecycle handlers idempotent.
-- [x] Reconcile provider events against local subscription state, expose failures for support review, and enforce entitlements server-side.
-- [x] Add premium opportunity credits only if provider willingness-to-pay evidence supports them; record every grant, purchase, use, refund, and expiry as auditable events.
+- [ ] Decide plans, entitlements, trial terms, cancellation/grace behavior, and pricing using validated evidence.
+- [ ] Select a payment provider for the target market; document fees, settlement, refunds, webhook support, and operational ownership.
+- [ ] Add provider customer/subscription IDs and immutable billing event records through versioned migrations.
+- [ ] Implement checkout and signed, replay-protected webhooks; make lifecycle handlers idempotent.
+- [ ] Reconcile provider events against local subscription state, expose failures for support review, and enforce entitlements server-side.
+- [ ] Add premium opportunity credits only if later marketplace evidence supports them; marketplace work remains deferred.
 - [x] Preserve explicit development/simulated mode that cannot be mistaken for paid status.
 - [x] Design team membership and invitations for multi-user organisations; define role permissions and workspace switching before implementation.
 - [x] Add invite expiry/revocation, acceptance flow, and authorization tests before enabling team access.
-- [x] Integrate WhatsApp Business Platform only with consent, approved templates, provider/webhook security, delivery status, and fallback behavior.
+- [ ] Integrate WhatsApp Business Platform only with consent, approved templates, provider/webhook security, delivery status, and fallback behavior.
 - [x] Replace cross-currency platform totals with grouped currency reporting or an explicit, sourced conversion policy.
 - [x] Add tenant reports for quote funnel, repeat customers, revenue/receivables, and job profitability where underlying data is reliable.
-- [x] Add structured logs, error monitoring, alert thresholds, privacy-conscious tracing, support runbooks, and operational release reporting.
-- [x] Measure query plans, load behavior, PDF generation, and queue throughput before scaling infrastructure.
-- [x] Define retention, deletion/export, incident response, access reviews, and recurring restore exercises.
-- [x] Reassess shared services, storage, rate limiting, and tenant architecture against observed usage before splitting services.
+- [ ] Add structured logs, error monitoring, alert thresholds, privacy-conscious tracing, support runbooks, and operational release reporting. Structured JSON logging exists; monitoring and alerts do not.
+- [ ] Measure query plans, load behavior, PDF generation, and queue throughput before scaling infrastructure.
+- [ ] Define retention, deletion/export, incident response, access reviews, and recurring restore exercises.
+- [ ] Reassess shared services, storage, rate limiting, and tenant architecture against observed usage before splitting services.
 
 **Exit checks:** any paid features are supported by observed demand and provider evidence; billing is auditable; reporting is currency-aware; integrations and operating capacity are observable and tested.
 
