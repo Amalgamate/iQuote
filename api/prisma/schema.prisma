@@ -217,3 +217,13 @@ model QuoteSequence {
 
   @@id([organisationId, year])
 }
+
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  count       Int      @default(0)
+  lockedUntil DateTime?
+  updatedAt   DateTime @default(now())
+
+  @@index([lockedUntil])
+}

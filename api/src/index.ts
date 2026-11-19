@@ -16,40 +16,33 @@ import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, emailS
 const prisma = new PrismaClient()
 const app = express()
 
-// ---- Login rate limiting (in-memory, per email + IP) ----
-const loginAttempts = new Map<string, { count: number; lockedUntil: number }>()
+// ---- Login rate limiting (database-backed, works across multiple instances) ----
 const MAX_LOGIN_ATTEMPTS = 5
 const LOGIN_LOCK_MS = 15 * 60 * 1000 // 15 minutes
 
-function checkLoginRateLimit(key: string): { allowed: boolean; retryAfterMs: number } {
-  const entry = loginAttempts.get(key)
-  if (entry && entry.lockedUntil > Date.now()) {
-    return { allowed: false, retryAfterMs: entry.lockedUntil - Date.now() }
+async function checkLoginRateLimit(key: string): Promise<{ allowed: boolean; retryAfterMs: number }> {
+  const entry = await prisma.loginAttempt.findUnique({ where: { key } })
+  if (entry && entry.lockedUntil && entry.lockedUntil.getTime() > Date.now()) {
+    return { allowed: false, retryAfterMs: entry.lockedUntil.getTime() - Date.now() }
   }
   return { allowed: true, retryAfterMs: 0 }
 }
 
-function recordFailedLogin(key: string) {
-  const entry = loginAttempts.get(key) ?? { count: 0, lockedUntil: 0 }
-  entry.count += 1
-  if (entry.count >= MAX_LOGIN_ATTEMPTS) {
-    entry.lockedUntil = Date.now() + LOGIN_LOCK_MS
-    entry.count = 0
-  }
-  loginAttempts.set(key, entry)
+async function recordFailedLogin(key: string) {
+  const entry = await prisma.loginAttempt.findUnique({ where: { key } })
+  const count = (entry?.count ?? 0) + 1
+  const isLocked = count >= MAX_LOGIN_ATTEMPTS
+  const lockedUntil = isLocked ? new Date(Date.now() + LOGIN_LOCK_MS) : null
+  await prisma.loginAttempt.upsert({
+    where: { key },
+    update: { count: isLocked ? 0 : count, lockedUntil, updatedAt: new Date() },
+    create: { key, count: isLocked ? 0 : count, lockedUntil },
+  })
 }
 
-function clearLoginAttempts(key: string) {
-  loginAttempts.delete(key)
+async function clearLoginAttempts(key: string) {
+  await prisma.loginAttempt.deleteMany({ where: { key } }).catch(() => {})
 }
-
-// Periodic cleanup of expired entries (every 10 minutes)
-setInterval(() => {
-  const now = Date.now()
-  for (const [key, entry] of loginAttempts.entries()) {
-    if (entry.lockedUntil < now && entry.count === 0) loginAttempts.delete(key)
-  }
-}, 10 * 60 * 1000)
 const port = Number(process.env.PORT ?? 4000)
 const jwtSecret = process.env.JWT_SECRET ?? 'dev-secret-change-me'
 const sessionCookieName = 'iquote_session'
@@ -82,7 +75,7 @@ app.use(express.json())
 app.use(cookieParser())
 
 // ---- Logo uploads: static serving ----
-const uploadsDir = join(process.cwd(), 'uploads')
+const uploadsDir = process.env.UPLOADS_DIR ?? join(process.cwd(), 'uploads')
 app.use('/uploads', express.static(uploadsDir, { maxAge: '7d', immutable: true }))
 
 function readTokenFromRequest(req: Request) {
@@ -649,7 +642,7 @@ app.post('/api/auth/login', async (req, res) => {
   // Rate limit by email and IP — prevents brute-force attacks
   const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown'
   const rateLimitKey = `${email}:${ip}`
-  const rateCheck = checkLoginRateLimit(rateLimitKey)
+  const rateCheck = await checkLoginRateLimit(rateLimitKey)
   if (!rateCheck.allowed) {
     const minutes = Math.ceil(rateCheck.retryAfterMs / 60000)
     return res.status(429).json({ message: `Too many failed attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.` })
@@ -661,11 +654,11 @@ app.post('/api/auth/login', async (req, res) => {
   })
 
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    recordFailedLogin(rateLimitKey)
+    await recordFailedLogin(rateLimitKey)
     return res.status(401).json({ message: 'Invalid email or password.' })
   }
 
-  clearLoginAttempts(rateLimitKey)
+  await clearLoginAttempts(rateLimitKey)
   const token = await issueSession(user.id)
   sendSessionCookie(res, token)
 
@@ -915,6 +908,54 @@ app.post('/api/quote-templates', requireAuth, async (req, res) => {
   } catch {
     res.status(409).json({ message: 'A template with that name already exists.' })
   }
+})
+
+app.put('/api/quote-templates/:id', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const templateId = String(req.params.id ?? '')
+  const existing = await prisma.quoteTemplate.findFirst({ where: { id: templateId, organisationId } })
+  if (!existing) return res.status(404).json({ message: 'Template not found.' })
+  if (existing.isStarter) return res.status(403).json({ message: 'Starter templates cannot be edited.' })
+  const name = String(req.body?.name ?? '').trim()
+  const description = String(req.body?.description ?? '').trim()
+  const inputLines = req.body?.lineItems
+  if (!name || !description || !Array.isArray(inputLines) || inputLines.length === 0) return res.status(400).json({ message: 'Enter a name, a short workflow description, and at least one quote line.' })
+  const lineItems = inputLines.slice(0, 40).map((value: unknown) => {
+    const line = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+    return { description: String(line.description ?? '').trim().slice(0, 250), unit: String(line.unit ?? 'job').trim().slice(0, 24) || 'job' }
+  }).filter((line: { description: string; unit: string }) => line.description)
+  if (lineItems.length === 0) return res.status(400).json({ message: 'Add at least one line with a description.' })
+  try {
+    const template = await prisma.quoteTemplate.update({
+      where: { id: templateId },
+      data: {
+        name: name.slice(0, 100),
+        description: description.slice(0, 300),
+        lineItems,
+        defaultNotes: String(req.body?.defaultNotes ?? '').trim().slice(0, 2000) || null,
+        defaultTerms: String(req.body?.defaultTerms ?? '').trim().slice(0, 4000) || null,
+      },
+    })
+    res.json({ template })
+  } catch {
+    res.status(409).json({ message: 'A template with that name already exists.' })
+  }
+})
+
+app.delete('/api/quote-templates/:id', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const templateId = String(req.params.id ?? '')
+  const existing = await prisma.quoteTemplate.findFirst({ where: { id: templateId, organisationId } })
+  if (!existing) return res.status(404).json({ message: 'Template not found.' })
+  if (existing.isStarter) return res.status(403).json({ message: 'Starter templates cannot be deleted.' })
+  await prisma.quoteTemplate.delete({ where: { id: templateId } })
+  res.json({ success: true })
 })
 
 app.get('/api/quotes', requireAuth, async (req, res) => {
@@ -1319,7 +1360,7 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
 })
 
 // ---- Logo file upload ----
-const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml', 'image/gif']
+const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 const MAX_LOGO_SIZE = 5 * 1024 * 1024 // 5 MB
 
 // Magic bytes signatures for real image validation (not just Content-Type)
@@ -1331,14 +1372,6 @@ const IMAGE_SIGNATURES: Array<{ bytes: number[]; ext: string; mime: string }> = 
 ]
 
 function detectImageType(buffer: Buffer): { ext: string; mime: string } | null {
-  // SVG is text-based, check for XML/SVG markers
-  const head = buffer.subarray(0, 256).toString('utf8').trimStart().toLowerCase()
-  if (head.startsWith('<?xml') || head.startsWith('<svg') || head.includes('<svg')) {
-    // Basic sanity: must contain <svg somewhere in the first 1KB
-    if (buffer.subarray(0, 1024).toString('utf8').toLowerCase().includes('<svg')) {
-      return { ext: '.svg', mime: 'image/svg+xml' }
-    }
-  }
   // Binary formats: match by magic bytes
   for (const sig of IMAGE_SIGNATURES) {
     if (sig.bytes.every((byte, i) => buffer[i] === byte)) {
@@ -1419,13 +1452,14 @@ app.delete('/api/settings/logo', requireAuth, async (req, res) => {
 
 // ---- Superadmin routes ----
 app.get('/api/superadmin/stats', requireSuperadmin, async (_req, res) => {
-  const [totalUsers, totalOrganisations, totalQuotes, approvedQuotes, quoteAgg, trialCount] = await Promise.all([
+  const [totalUsers, totalOrganisations, totalQuotes, approvedQuotes, quoteAgg, trialCount, currencyBreakdown] = await Promise.all([
     prisma.user.count(),
     prisma.organisation.count(),
     prisma.quote.count(),
     prisma.quote.count({ where: { status: 'APPROVED' } }),
     prisma.quote.aggregate({ _sum: { total: true }, _count: true }),
     prisma.subscription.count({ where: { status: 'TRIALING' } }),
+    prisma.quote.groupBy({ by: ['currency'], _sum: { total: true }, _count: true, orderBy: { currency: 'asc' } }),
   ])
 
   const recentSignups = await prisma.user.findMany({
@@ -1440,8 +1474,9 @@ app.get('/api/superadmin/stats', requireSuperadmin, async (_req, res) => {
     totalQuotes,
     approvedQuotes,
     totalQuotedValue: Number(quoteAgg._sum.total ?? 0),
-    approvedQuoteCount: quoteAgg._count,
+    totalQuoteCount: quoteAgg._count,
     activeTrials: trialCount,
+    currencyBreakdown: currencyBreakdown.map((row) => ({ currency: row.currency, total: Number(row._sum.total ?? 0), count: row._count })),
     recentSignups: recentSignups.map((u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, createdAt: u.createdAt, organisationName: u.organisation?.name ?? null })),
   })
 })

@@ -8,8 +8,9 @@ type SuperadminStats = {
   totalQuotes: number
   approvedQuotes: number
   totalQuotedValue: number
-  approvedQuoteCount: number
+  totalQuoteCount: number
   activeTrials: number
+  currencyBreakdown: Array<{ currency: string; total: number; count: number }>
   recentSignups: Array<{ id: string; name: string; email: string; role: string; createdAt: string; organisationName: string | null }>
 }
 
@@ -349,7 +350,7 @@ function AdminOverview({ user, stats, workspaces, quotes, onWorkspaces, onQuotes
         <article><small>Businesses</small><strong>{stats.totalOrganisations.toLocaleString()}</strong><span>Registered workspaces</span></article>
         <article><small>Users</small><strong>{stats.totalUsers.toLocaleString()}</strong><span>Across all workspaces</span></article>
         <article><small>Quotes created</small><strong>{stats.totalQuotes.toLocaleString()}</strong><span>{stats.approvedQuotes.toLocaleString()} approved</span></article>
-        <article><small>Value quoted</small><strong>{formatMoney(stats.totalQuotedValue, 'USD')}</strong><span>Platform total</span></article>
+        <article className="admin-currency-breakdown"><small>Value quoted</small>{stats.currencyBreakdown.length > 0 ? stats.currencyBreakdown.map((row) => <strong key={row.currency}>{formatMoney(row.total, row.currency)}</strong>) : <strong>{formatMoney(0, 'KES')}</strong>}<span>{stats.totalQuoteCount ?? stats.totalQuotes} quotes across currencies</span></article>
         <article><small>Active trials</small><strong>{stats.activeTrials.toLocaleString()}</strong><span>On a 14-day trial</span></article>
       </div>
 

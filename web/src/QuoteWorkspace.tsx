@@ -820,7 +820,7 @@ function CustomerDashboard({ user, business, quotes, customers, chartRange, char
   }).join(' ')
   const chartArea = chartPoints ? `0,200 ${chartPoints} 720,200` : ''
   const firstName = user.name.trim().split(/\s+/)[0] || 'there'
-  const money = (value: number) => formatMoney(value, business.currency).replace(/\.00$/, '')
+  const money = (value: number) => formatMoney(value, business.currency)
 
   return (
     <section className="workspace-content customer-dashboard-page">
