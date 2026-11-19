@@ -100,18 +100,18 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 
 ## Stage 8 — Close critical security and tenant-isolation gaps
 
-- [ ] Replace reflected credentialed CORS with explicit trusted-origin configuration, including a documented policy for tenant subdomains.
-- [ ] Protect cookie-authenticated writes with a deliberate CSRF strategy and reject untrusted origins; cover sibling-subdomain and unrelated-origin cases.
-- [ ] Remove the known JWT fallback; fail startup in production if the configured signing secret is absent or weak. Document secret rotation.
-- [ ] Reject SVG uploads or sanitize/rasterize them; serve permitted user media safely and verify MIME/content handling and size limits.
-- [ ] Review schema-level tenant constraints needed for quote/customer/owner consistency; implement only after the Stage 9 migration baseline is established.
-- [ ] Review every tenant route and super-admin route for identity derived from the authenticated session, scoped queries, and deliberate elevated access.
-- [ ] Replace raw bearer JWTs stored in Session rows with hashed opaque session tokens; plan expiry, revocation, and safe migration/rotation of existing sessions.
-- [ ] Require stronger authentication for super-admins (MFA or equivalent), and test privileged-session revocation.
-- [ ] Move login/OTP throttles to shared storage; add budgets for public quote endpoints, request-size limits, and correct proxy trust settings.
-- [ ] Disable email-template preview in production or require authorized access.
-- [ ] Add negative tests proving one tenant cannot read, mutate, infer, or attach another tenant's customers, quotes, services, templates, or uploads.
-- [ ] Add focused tests for authentication/session revocation, OTP expiry/attempt limits, quote decisions, role boundaries, and upload rejection.
+- [x] Replace reflected credentialed CORS with explicit trusted-origin configuration, including a documented policy for tenant subdomains.
+- [x] Protect cookie-authenticated writes with a deliberate CSRF strategy and reject untrusted origins; cover sibling-subdomain and unrelated-origin cases.
+- [x] Remove the known JWT fallback; fail startup in production if the configured signing secret is absent or weak. Document secret rotation.
+- [x] Reject SVG uploads or sanitize/rasterize them; serve permitted user media safely and verify MIME/content handling and size limits.
+- [x] Review schema-level tenant constraints needed for quote/customer/owner consistency; implement only after the Stage 9 migration baseline is established.
+- [x] Review every tenant route and super-admin route for identity derived from the authenticated session, scoped queries, and deliberate elevated access.
+- [x] Replace raw bearer JWTs stored in Session rows with hashed opaque session tokens; plan expiry, revocation, and safe migration/rotation of existing sessions.
+- [x] Require stronger authentication for super-admins (MFA or equivalent), and test privileged-session revocation.
+- [x] Move login/OTP throttles to shared storage; add budgets for public quote endpoints, request-size limits, and correct proxy trust settings.
+- [x] Disable email-template preview in production or require authorized access.
+- [x] Add negative tests proving one tenant cannot read, mutate, infer, or attach another tenant's customers, quotes, services, templates, or uploads.
+- [x] Add focused tests for authentication/session revocation, OTP expiry/attempt limits, quote decisions, role boundaries, and upload rejection.
 
 **Exit checks:** high-risk security findings are fixed or explicitly risk-accepted; automated negative tenant tests pass; production startup cannot use a known secret; upload policy is safe and documented.
 
