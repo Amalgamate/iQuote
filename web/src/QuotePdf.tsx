@@ -17,9 +17,9 @@ const rule = '#c8cdd3'
 const styles = StyleSheet.create({
   page: { paddingTop: 42, paddingBottom: 55, paddingHorizontal: 46, color: ink, fontFamily: 'Helvetica', fontSize: 9 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 20, borderBottomWidth: 1, borderBottomColor: '#8993a0' },
-  business: { flexDirection: 'row', alignItems: 'flex-start', gap: 11, flex: 1, paddingRight: 20 },
-  logo: { width: 42, height: 42, objectFit: 'contain' },
-  logoFallback: { width: 42, height: 42, borderWidth: 1, borderColor: rule, alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, color: '#26364a' },
+  business: { flexDirection: 'column', alignItems: 'flex-start', gap: 8, flex: 1, paddingRight: 20 },
+  logo: { width: 56, height: 56, objectFit: 'contain' },
+  logoFallback: { width: 56, height: 56, borderWidth: 1, borderColor: rule, alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, color: '#26364a' },
   businessDetails: { flexDirection: 'column', gap: 4, flex: 1 },
   businessName: { fontSize: 13, fontWeight: 700, color: ink, marginBottom: 1 },
   businessMeta: { fontSize: 8, color: muted },

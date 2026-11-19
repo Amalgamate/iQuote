@@ -48,7 +48,7 @@ export default function QuoteDocument({ quote }: { quote: QuoteDocumentData }) {
           ) : (
             <div className="document-logo-placeholder" aria-hidden="true">{quote.organisation.name.slice(0, 1).toUpperCase()}</div>
           )}
-          <div>
+          <div className="document-business-details">
             <strong>{quote.organisation.name}</strong>
             {quote.organisation.email && <span>{quote.organisation.email}</span>}
             {quote.organisation.phone && <span>{quote.organisation.phone}</span>}

@@ -583,11 +583,11 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
 .mobile-preview-toggle,.mobile-preview-close { display: none; }
 .quote-paper { width: 100%; aspect-ratio: 210 / 297; padding: 32px 30px 24px; border: 1px solid #d6d9dd; border-radius: 0; background: #fff; box-shadow: none; color: #18212d; transform: none !important; rotate: 0deg !important; }
 .document-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 23px; border-bottom: 1px solid #aeb5bd; }
-.document-business { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
-.document-business > div:last-child { display: grid; gap: 3px; }
+.document-business { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
+.document-business-details { display: grid; gap: 3px; }
 .document-business strong { margin-bottom: 2px; color: #18212d; font-size: 13px; font-weight: 700; }
 .document-business span,.document-title span { color: #5e6874; font-size: 9px; }
-.document-business img,.document-logo-placeholder { width: 34px; height: 34px; flex: 0 0 auto; object-fit: contain; }
+.document-business img,.document-logo-placeholder { width: 48px; height: 48px; flex: 0 0 auto; object-fit: contain; }
 .document-logo-placeholder { display: grid; place-items: center; border: 1px solid #d6d9dd; border-radius: 0; background: #fff; color: #26364a; font-size: 15px; font-weight: 700; }
 .document-title { display: grid; justify-items: end; gap: 4px; text-align: right; }
 .document-title p { margin: 0 0 1px; color: #18212d; font-size: 19px; font-weight: 700; letter-spacing: .01em; text-transform: uppercase; }
