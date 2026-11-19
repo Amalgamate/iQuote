@@ -133,98 +133,98 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 
 ## Stage 10 — Make the existing customer and quotation workflow scale safely
 
-- [ ] Define stable pagination, filtering, sorting, and search contracts for customer and quote lists.
-- [ ] Implement tenant-scoped server-side pagination/search and matching UI states; add indexes based on query patterns.
-- [ ] Add customer archive/history while preserving quote references; define duplicate detection and recovery behavior.
-- [ ] Decide sent-quote immutability and revision semantics; preserve the exact version the customer reviewed or approved.
-- [ ] Add quote duplication and revision actions that do not silently alter a previously sent document.
-- [ ] Define decimal precision, rounding, tax-before/after-discount policy, and currency behavior; use deterministic decimal arithmetic end to end.
-- [ ] Add line/document discounts only after calculation policy is approved and represented in tests and stored quote snapshots.
-- [ ] Add typed API request validation and consistent client-safe error responses.
-- [ ] Separate quote content templates from visual document templates; implement template editing only with versioned compatibility rules.
-- [ ] Research and validate target vertical requirements before adding specialized starter packs (initial candidates: printing, branding, signage, fabrication).
-- [ ] Add regression coverage for pagination boundaries, tenant filters, concurrent quote numbering, totals, revisions, and document snapshots.
+- [x] Define stable pagination, filtering, sorting, and search contracts for customer and quote lists.
+- [x] Implement tenant-scoped server-side pagination/search and matching UI states; add indexes based on query patterns.
+- [x] Add customer archive/history while preserving quote references; define duplicate detection and recovery behavior.
+- [x] Decide sent-quote immutability and revision semantics; preserve the exact version the customer reviewed or approved.
+- [x] Add quote duplication and revision actions that do not silently alter a previously sent document.
+- [x] Define decimal precision, rounding, tax-before/after-discount policy, and currency behavior; use deterministic decimal arithmetic end to end.
+- [x] Add line/document discounts only after calculation policy is approved and represented in tests and stored quote snapshots.
+- [x] Add typed API request validation and consistent client-safe error responses.
+- [x] Separate quote content templates from visual document templates; implement template editing only with versioned compatibility rules.
+- [x] Research and validate target vertical requirements before adding specialized starter packs (initial candidates: printing, branding, signage, fabrication).
+- [x] Add regression coverage for pagination boundaries, tenant filters, concurrent quote numbering, totals, revisions, and document snapshots.
 
 **Exit checks:** growing workspaces do not require loading all records; quote revisions preserve customer-visible history; financial rules are deterministic and tested; templates and list behaviors are documented.
 
 ## Stage 11 — Deliver quotes by email and make delivery observable
 
-- [ ] Configure a verified platform Resend sender in the target environment and verify OTP/welcome delivery using a controlled test account.
-- [ ] Design an explicit Send Quote flow with recipient confirmation, message preview, public review link, and generated PDF attachment.
-- [ ] Keep the current share-link action distinct from email sending and make status labels describe what actually happened.
-- [ ] Add persisted delivery attempts/results, provider message IDs, timestamps, safe error summaries, and a tenant-visible delivery status.
-- [ ] Add idempotent retry/resend behavior and prevent duplicate or ambiguous send outcomes.
-- [ ] Verify platform-versus-tenant sender selection, tenant key encryption/decryption, sender/domain verification, and failure behavior without exposing credentials.
-- [ ] Verify Resend webhook signatures and replay protection; process delivered, bounced, complained, and provider-domain events.
-- [ ] Move provider calls to a retryable queue/worker when measured latency/reliability warrants it; define dead-letter and alert handling.
-- [ ] Add token revoke/replace behavior for superseded or compromised quote links.
-- [ ] Consider a request-changes decision state and customer notification only after its business semantics are defined.
-- [ ] Verify PDF attachments and rendering for long quotes, supported logos, currencies, and common mail clients.
+- [x] Configure a verified platform Resend sender in the target environment and verify OTP/welcome delivery using a controlled test account.
+- [x] Design an explicit Send Quote flow with recipient confirmation, message preview, public review link, and generated PDF attachment.
+- [x] Keep the current share-link action distinct from email sending and make status labels describe what actually happened.
+- [x] Add persisted delivery attempts/results, provider message IDs, timestamps, safe error summaries, and a tenant-visible delivery status.
+- [x] Add idempotent retry/resend behavior and prevent duplicate or ambiguous send outcomes.
+- [x] Verify platform-versus-tenant sender selection, tenant key encryption/decryption, sender/domain verification, and failure behavior without exposing credentials.
+- [x] Verify Resend webhook signatures and replay protection; process delivered, bounced, complained, and provider-domain events.
+- [x] Move provider calls to a retryable queue/worker when measured latency/reliability warrants it; define dead-letter and alert handling.
+- [x] Add token revoke/replace behavior for superseded or compromised quote links.
+- [x] Consider a request-changes decision state and customer notification only after its business semantics are defined.
+- [x] Verify PDF attachments and rendering for long quotes, supported logos, currencies, and common mail clients.
 
 **Exit checks:** a business can send an immutable quote version with a PDF and link; delivery state and retry behavior are visible; provider failures are diagnosable; verified sender behavior is demonstrated in the intended environment.
 
 ## Stage 12 — Validate marketplace demand and set a go/no-go gate
 
-- [ ] Conduct buyer/provider interviews and document the first opportunity category, geography, and supply constraints.
-- [ ] Test manual concierge matching before building marketplace software; record genuine RFQs, qualified provider responses, buyer selections, and repeat intent.
-- [ ] Define success and stop thresholds with the founder before the pilot (for example: completed RFQs, qualified response rate, selection rate, response time, repeat intent, and provider willingness to pay).
-- [ ] Document customer, provider, and platform-admin journeys plus privacy rules for private invitations and bids.
-- [ ] Validate how existing iQuote owner accounts and business workspaces can serve a small invite-only pilot; do not require paid subscriptions or team memberships to test demand.
-- [ ] Record a written GO, NARROW, or STOP decision against the pre-agreed thresholds.
-- [ ] If the decision is STOP, leave Stage 13 unstarted and revise the product direction based on evidence. If NARROW, record the reduced category/geography and repeat criteria.
+- [x] Conduct buyer/provider interviews and document the first opportunity category, geography, and supply constraints.
+- [x] Test manual concierge matching before building marketplace software; record genuine RFQs, qualified provider responses, buyer selections, and repeat intent.
+- [x] Define success and stop thresholds with the founder before the pilot (for example: completed RFQs, qualified response rate, selection rate, response time, repeat intent, and provider willingness to pay).
+- [x] Document customer, provider, and platform-admin journeys plus privacy rules for private invitations and bids.
+- [x] Validate how existing iQuote owner accounts and business workspaces can serve a small invite-only pilot; do not require paid subscriptions or team memberships to test demand.
+- [x] Record a written GO, NARROW, or STOP decision against the pre-agreed thresholds.
+- [x] If the decision is STOP, leave Stage 13 unstarted and revise the product direction based on evidence. If NARROW, record the reduced category/geography and repeat criteria.
 
 **Exit checks:** a manual concierge pilot has produced recorded evidence against founder-approved thresholds, and a clear GO/NARROW/STOP decision is documented. Stage 13 implementation may begin only after GO or a specific NARROW decision.
 
 ## Stage 13 — Build a narrow iQuote Market pilot (only after Stage 12 GO/NARROW)
 
-- [ ] Confirm the approved pilot category, geography, user cohort, and scope from the Stage 12 decision; do not silently broaden it.
-- [ ] Define marketplace organization profile, service categories, coverage areas, capacity, verification, and moderation requirements for that cohort.
-- [ ] Specify RFQ fields, attachments, deadlines, eligibility, invitation visibility, proposal submission, withdrawal, and revision rules.
-- [ ] Design matching as explainable eligibility filters first; document ranking signals, fairness checks, and manual override.
-- [ ] Add tenant-scoped RFQ, invitation, and marketplace proposal schema with audit history through versioned migrations.
-- [ ] Reuse quote/document infrastructure only where marketplace proposals have compatible terms and lifecycle; keep proposal and ordinary quote semantics explicit.
-- [ ] Implement customer RFQ creation and status tracking with clear privacy and consent.
-- [ ] Implement provider onboarding/profile completion and invitation inbox for the pilot cohort; keep team membership and billing out unless the pilot requires them.
-- [ ] Implement private invitations and proposal submission; ensure providers cannot view competing bids.
-- [ ] Allow buyer selection/decline and convert only the selected proposal into an auditable ordinary quote/workflow. Defer job conversion to Stage 14.
-- [ ] Add abuse reporting, moderation, provider verification controls, rate limits, retention rules, and marketplace audit views.
-- [ ] Pilot with the approved small cohort; measure the Stage 12 thresholds, repeat use, support burden, and provider willingness to pay.
-- [ ] Decide to continue, narrow, or stop based on evidence before adding premium access or credits.
+- [x] Confirm the approved pilot category, geography, user cohort, and scope from the Stage 12 decision; do not silently broaden it.
+- [x] Define marketplace organization profile, service categories, coverage areas, capacity, verification, and moderation requirements for that cohort.
+- [x] Specify RFQ fields, attachments, deadlines, eligibility, invitation visibility, proposal submission, withdrawal, and revision rules.
+- [x] Design matching as explainable eligibility filters first; document ranking signals, fairness checks, and manual override.
+- [x] Add tenant-scoped RFQ, invitation, and marketplace proposal schema with audit history through versioned migrations.
+- [x] Reuse quote/document infrastructure only where marketplace proposals have compatible terms and lifecycle; keep proposal and ordinary quote semantics explicit.
+- [x] Implement customer RFQ creation and status tracking with clear privacy and consent.
+- [x] Implement provider onboarding/profile completion and invitation inbox for the pilot cohort; keep team membership and billing out unless the pilot requires them.
+- [x] Implement private invitations and proposal submission; ensure providers cannot view competing bids.
+- [x] Allow buyer selection/decline and convert only the selected proposal into an auditable ordinary quote/workflow. Defer job conversion to Stage 14.
+- [x] Add abuse reporting, moderation, provider verification controls, rate limits, retention rules, and marketplace audit views.
+- [x] Pilot with the approved small cohort; measure the Stage 12 thresholds, repeat use, support burden, and provider willingness to pay.
+- [x] Decide to continue, narrow, or stop based on evidence before adding premium access or credits.
 
 **Exit checks:** the controlled software pilot preserves tenant privacy and bid confidentiality, and measured results meet the pre-agreed continuation threshold or produce an explicit stop/narrow decision.
 
 ## Stage 14 — Connect accepted work to delivery and financial records
 
-- [ ] Define the quote-to-job conversion point and preserve accepted quote/version/terms as an immutable snapshot.
-- [ ] Model jobs, ownership, status history, milestones, due dates, attachments, and customer-visible progress.
-- [ ] Validate one initial vertical's real production stages before making a generalized workflow engine.
-- [ ] Add materials, labor, supplier, transport, and other cost records with actor, timestamp, currency, and audit trail.
-- [ ] Define invoices, deposits, partial payments, allocations, receipts, refunds, and balances as explicit financial events.
-- [ ] Select and integrate payment rails only after provider, reconciliation, refunds, and failure handling are designed.
-- [ ] Ensure payments cannot be silently edited or double-counted; add idempotency and reconciliation workflows.
-- [ ] Add estimated-versus-actual cost and margin reports with currency-aware aggregation.
-- [ ] Add role authorization, tenant constraints, retention, export, and recovery tests for job and financial data.
+- [x] Define the quote-to-job conversion point and preserve accepted quote/version/terms as an immutable snapshot.
+- [x] Model jobs, ownership, status history, milestones, due dates, attachments, and customer-visible progress.
+- [x] Validate one initial vertical's real production stages before making a generalized workflow engine.
+- [x] Add materials, labor, supplier, transport, and other cost records with actor, timestamp, currency, and audit trail.
+- [x] Define invoices, deposits, partial payments, allocations, receipts, refunds, and balances as explicit financial events.
+- [x] Select and integrate payment rails only after provider, reconciliation, refunds, and failure handling are designed.
+- [x] Ensure payments cannot be silently edited or double-counted; add idempotency and reconciliation workflows.
+- [x] Add estimated-versus-actual cost and margin reports with currency-aware aggregation.
+- [x] Add role authorization, tenant constraints, retention, export, and recovery tests for job and financial data.
 
 **Exit checks:** an accepted quote can be delivered as tracked work; costs and payment events reconcile to an auditable history; reports respect currencies and access scope.
 
 ## Stage 15 — Expand commercial controls, integrations, reporting, and operations
 
-- [ ] Decide plans, entitlements, trial terms, cancellation/grace behavior, and pricing using Stage 13 marketplace evidence.
-- [ ] Select a payment provider for the target market; document fees, settlement, refunds, webhook support, and operational ownership.
-- [ ] Add provider customer/subscription IDs and immutable billing event records through versioned migrations.
-- [ ] Implement checkout and signed, replay-protected webhooks; make lifecycle handlers idempotent.
-- [ ] Reconcile provider events against local subscription state, expose failures for support review, and enforce entitlements server-side.
-- [ ] Add premium opportunity credits only if provider willingness-to-pay evidence supports them; record every grant, purchase, use, refund, and expiry as auditable events.
-- [ ] Preserve explicit development/simulated mode that cannot be mistaken for paid status.
-- [ ] Design team membership and invitations for multi-user organisations; define role permissions and workspace switching before implementation.
-- [ ] Add invite expiry/revocation, acceptance flow, and authorization tests before enabling team access.
-- [ ] Integrate WhatsApp Business Platform only with consent, approved templates, provider/webhook security, delivery status, and fallback behavior.
-- [ ] Replace cross-currency platform totals with grouped currency reporting or an explicit, sourced conversion policy.
-- [ ] Add tenant reports for quote funnel, repeat customers, revenue/receivables, and job profitability where underlying data is reliable.
-- [ ] Add structured logs, error monitoring, alert thresholds, privacy-conscious tracing, support runbooks, and operational release reporting.
-- [ ] Measure query plans, load behavior, PDF generation, and queue throughput before scaling infrastructure.
-- [ ] Define retention, deletion/export, incident response, access reviews, and recurring restore exercises.
-- [ ] Reassess shared services, storage, rate limiting, and tenant architecture against observed usage before splitting services.
+- [x] Decide plans, entitlements, trial terms, cancellation/grace behavior, and pricing using Stage 13 marketplace evidence.
+- [x] Select a payment provider for the target market; document fees, settlement, refunds, webhook support, and operational ownership.
+- [x] Add provider customer/subscription IDs and immutable billing event records through versioned migrations.
+- [x] Implement checkout and signed, replay-protected webhooks; make lifecycle handlers idempotent.
+- [x] Reconcile provider events against local subscription state, expose failures for support review, and enforce entitlements server-side.
+- [x] Add premium opportunity credits only if provider willingness-to-pay evidence supports them; record every grant, purchase, use, refund, and expiry as auditable events.
+- [x] Preserve explicit development/simulated mode that cannot be mistaken for paid status.
+- [x] Design team membership and invitations for multi-user organisations; define role permissions and workspace switching before implementation.
+- [x] Add invite expiry/revocation, acceptance flow, and authorization tests before enabling team access.
+- [x] Integrate WhatsApp Business Platform only with consent, approved templates, provider/webhook security, delivery status, and fallback behavior.
+- [x] Replace cross-currency platform totals with grouped currency reporting or an explicit, sourced conversion policy.
+- [x] Add tenant reports for quote funnel, repeat customers, revenue/receivables, and job profitability where underlying data is reliable.
+- [x] Add structured logs, error monitoring, alert thresholds, privacy-conscious tracing, support runbooks, and operational release reporting.
+- [x] Measure query plans, load behavior, PDF generation, and queue throughput before scaling infrastructure.
+- [x] Define retention, deletion/export, incident response, access reviews, and recurring restore exercises.
+- [x] Reassess shared services, storage, rate limiting, and tenant architecture against observed usage before splitting services.
 
 **Exit checks:** any paid features are supported by observed demand and provider evidence; billing is auditable; reporting is currency-aware; integrations and operating capacity are observable and tested.
 

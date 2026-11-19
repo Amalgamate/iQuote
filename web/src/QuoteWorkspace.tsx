@@ -4,6 +4,10 @@ import LogoUpload from './LogoUpload'
 import PublicQuote from './PublicQuote'
 import QuoteDocument, { type QuoteDocumentData, type QuoteLine } from './QuoteDocument'
 import { QuotePdfDownloadLink } from './QuotePdf'
+import JobsPanel from './JobsPanel'
+import InvoicesPanel from './InvoicesPanel'
+import ReportsPanel from './ReportsPanel'
+import TeamPanel from './TeamPanel'
 import './Workspace.css'
 
 type User = { id: string; name: string; email: string }
@@ -23,7 +27,7 @@ type Business = {
   subdomain: string | null
   subscription?: { plan: string; status: string; trialEndsAt: string; simulated: boolean } | null
 }
-type Customer = { id: string; name: string; phone: string | null; email: string | null }
+type Customer = { id: string; name: string; phone: string | null; email: string | null; archivedAt: string | null }
 type ServiceItem = { id: string; name: string; category: string; kind: 'SERVICE' | 'PRODUCT'; description: string | null; unit: string; defaultPrice: number; defaultTaxRate: number | null; isStarter: boolean }
 type QuoteTemplate = { id: string; name: string; description: string; workflow: string; lineItems: Array<{ description: string; unit: string }>; defaultNotes: string | null; defaultTerms: string | null; isStarter: boolean }
 type ServiceForm = { id: string; name: string; category: string; kind: 'SERVICE' | 'PRODUCT'; description: string; unit: string; defaultPrice: string; defaultTaxRate: string }
@@ -45,11 +49,22 @@ type QuoteDraft = {
   terms: string
   lines: QuoteLine[]
 }
-type Page = 'dashboard' | 'quotes' | 'customers' | 'services' | 'settings' | 'editor'
+type Page = 'dashboard' | 'quotes' | 'customers' | 'services' | 'jobs' | 'invoices' | 'reports' | 'team' | 'settings' | 'editor'
 type ChartRange = '7D' | '30D' | '90D' | '1Y'
 type CustomerForm = { id: string; name: string; phone: string; email: string }
 type EmailSettings = { provider: 'PLATFORM' | 'CUSTOM'; senderName: string; senderEmail: string; customDomain: string; domainStatus: string; domainRecords: unknown[] | null; apiKeySet: boolean; encryptionReady: boolean; platformSenderAvailable: boolean }
 type EmailSettingsForm = { provider: 'PLATFORM' | 'CUSTOM'; senderName: string; senderEmail: string; customDomain: string; apiKey: string }
+type DeliveryStatus = 'PENDING' | 'SENT' | 'DELIVERED' | 'BOUNCED' | 'FAILED'
+type QuoteDelivery = {
+  id: string
+  status: DeliveryStatus
+  recipientEmail: string
+  sentAt: string | null
+  deliveredAt: string | null
+  bouncedAt: string | null
+  errorMessage: string | null
+  messageId: string | null
+}
 
 const blankCustomer: CustomerForm = { id: '', name: '', phone: '', email: '' }
 const blankService: ServiceForm = { id: '', name: '', category: '', kind: 'SERVICE', description: '', unit: 'job', defaultPrice: '0', defaultTaxRate: '' }
@@ -120,6 +135,13 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [quoteStatusFilter, setQuoteStatusFilter] = useState('ALL')
+  const [customerPage, setCustomerPage] = useState(1)
+  const [customerLimit] = useState(50)
+  const [customerTotal, setCustomerTotal] = useState(0)
+  const [includeArchived, setIncludeArchived] = useState(false)
+  const [quotesPage, setQuotesPage] = useState(1)
+  const [quotesLimit] = useState(50)
+  const [quotesTotal, setQuotesTotal] = useState(0)
   const [customerModal, setCustomerModal] = useState(false)
   const [customerForm, setCustomerForm] = useState<CustomerForm>(blankCustomer)
   const [customerError, setCustomerError] = useState('')
@@ -145,25 +167,28 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [emailSettingsSaving, setEmailSettingsSaving] = useState(false)
   const [emailSettingsMessage, setEmailSettingsMessage] = useState('')
   const [chartRange, setChartRange] = useState<ChartRange>('30D')
+  const [showSendModal, setShowSendModal] = useState(false)
+  const [sendEmail, setSendEmail] = useState('')
+  const [sendMessage, setSendMessage] = useState('')
+  const [sending, setSending] = useState(false)
+  const [deliveries, setDeliveries] = useState<QuoteDelivery[]>([])
+  const [revoking, setRevoking] = useState(false)
   const editorRef = useRef<QuoteDraft | null>(null)
 
   useEffect(() => { editorRef.current = editor }, [editor])
 
   const loadWorkspace = async () => {
-    const [businessResponse, customerResponse, quoteResponse, serviceResponse, templateResponse] = await Promise.all([
+    const [businessResponse, serviceResponse, templateResponse] = await Promise.all([
       apiRequest<{ organisation: Business | null }>('/api/business/me'),
-      apiRequest<{ customers: Customer[] }>('/api/customers'),
-      apiRequest<{ quotes: Quote[] }>('/api/quotes'),
       apiRequest<{ items: ServiceItem[] }>('/api/service-items'),
       apiRequest<{ templates: QuoteTemplate[] }>('/api/quote-templates'),
     ])
     if (!businessResponse.organisation) throw new Error('Your business profile is missing. Sign out and complete setup again.')
     setBusiness(businessResponse.organisation)
     setBusinessForm({ ...emptyBusiness, ...businessResponse.organisation })
-    setCustomers(customerResponse.customers)
-    setQuotes(quoteResponse.quotes)
     setServiceItems(serviceResponse.items)
     setQuoteTemplates(templateResponse.templates)
+    await Promise.all([loadCustomers(1, '', false), loadQuotes(1, 'ALL', '')])
     try {
       const emailResponse = await apiRequest<EmailSettings>('/api/settings/email')
       setEmailSettings(emailResponse)
@@ -171,20 +196,57 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     } catch { /* workspace remains usable when the email settings table is not migrated yet */ }
   }
 
+  const loadCustomers = async (page: number, query: string, archived: boolean) => {
+    const params = new URLSearchParams()
+    params.set('page', String(page))
+    params.set('limit', String(customerLimit))
+    if (query.trim()) params.set('search', query.trim())
+    if (archived) params.set('includeArchived', 'true')
+    const response = await apiRequest<{ customers: Customer[]; totalCount: number; page: number; hasMore: boolean }>(`/api/customers?${params.toString()}`)
+    setCustomers(response.customers)
+    setCustomerTotal(response.totalCount)
+    setCustomerPage(response.page)
+  }
+
+  const loadQuotes = async (page: number, status: string, query: string) => {
+    const params = new URLSearchParams()
+    params.set('page', String(page))
+    params.set('limit', String(quotesLimit))
+    if (status !== 'ALL') params.set('status', status)
+    if (query.trim()) params.set('search', query.trim())
+    const response = await apiRequest<{ quotes: Quote[]; totalCount: number; page: number; hasMore: boolean }>(`/api/quotes?${params.toString()}`)
+    setQuotes(response.quotes)
+    setQuotesTotal(response.totalCount)
+    setQuotesPage(response.page)
+  }
+
   useEffect(() => {
     loadWorkspace().catch((requestError) => setError(requestError instanceof Error ? requestError.message : 'Unable to load your workspace.'))
       .finally(() => setLoading(false))
   }, [])
 
-  const filteredCustomers = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    return customers.filter((customer) => !query || [customer.name, customer.phone ?? '', customer.email ?? ''].some((value) => value.toLowerCase().includes(query)))
-  }, [customers, search])
-  const filteredQuotes = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    return quotes.filter((quote) => (quoteStatusFilter === 'ALL' || quote.status === quoteStatusFilter)
-      && (!query || [quote.documentNumber, quote.customer.name, statusNames[quote.status]].some((value) => value.toLowerCase().includes(query))))
-  }, [quotes, quoteStatusFilter, search])
+  useEffect(() => {
+    if (page !== 'customers') return
+    const timer = window.setTimeout(() => {
+      setLoading(true)
+      loadCustomers(customerPage, search, includeArchived).catch((requestError) => setError(requestError instanceof Error ? requestError.message : 'Unable to load customers.'))
+        .finally(() => setLoading(false))
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [page, customerPage, search, includeArchived])
+
+  useEffect(() => {
+    if (page !== 'quotes') return
+    const timer = window.setTimeout(() => {
+      setLoading(true)
+      loadQuotes(quotesPage, quoteStatusFilter, search).catch((requestError) => setError(requestError instanceof Error ? requestError.message : 'Unable to load quotes.'))
+        .finally(() => setLoading(false))
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [page, quotesPage, search, quoteStatusFilter])
+
+  const filteredCustomers = useMemo(() => customers, [customers])
+  const filteredQuotes = useMemo(() => quotes, [quotes])
   const filteredServiceItems = useMemo(() => {
     const query = search.trim().toLowerCase()
     return serviceItems.filter((item) => !query || [item.name, item.category, item.description ?? '', item.kind].some((value) => value.toLowerCase().includes(query)))
@@ -416,6 +478,25 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     }
   }
 
+  const archiveCustomer = async (customer: Customer) => {
+    if (!window.confirm(`Archive ${customer.name}? They will be hidden from new quotes until restored.`)) return
+    try {
+      const response = await apiRequest<{ customer: Customer }>(`/api/customers/${customer.id}/archive`, { method: 'POST' })
+      setCustomers((current) => current.map((item) => item.id === response.customer.id ? response.customer : item))
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to archive customer.')
+    }
+  }
+
+  const restoreCustomer = async (customer: Customer) => {
+    try {
+      const response = await apiRequest<{ customer: Customer }>(`/api/customers/${customer.id}/restore`, { method: 'POST' })
+      setCustomers((current) => current.map((item) => item.id === response.customer.id ? response.customer : item))
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to restore customer.')
+    }
+  }
+
   const handleBusinessSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setBusinessSaving(true)
@@ -510,6 +591,60 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     }
   }
 
+  const sendQuoteEmail = async () => {
+    if (!editorQuoteId || !sendEmail.trim()) return
+    setSending(true)
+    setSendMessage('')
+    try {
+      await apiRequest(`/api/quotes/${editorQuoteId}/send`, { method: 'POST', body: JSON.stringify({ recipientEmail: sendEmail.trim() }) })
+      setSendMessage('Quote email sent. Delivery status will update below.')
+      setShowSendModal(false)
+      setSendEmail('')
+      await loadDeliveries(editorQuoteId)
+    } catch (requestError) {
+      setSendMessage(requestError instanceof Error ? requestError.message : 'Unable to send quote email.')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const resendQuoteEmail = async () => {
+    if (!editorQuoteId) return
+    setSending(true)
+    setSendMessage('')
+    try {
+      await apiRequest(`/api/quotes/${editorQuoteId}/resend`, { method: 'POST' })
+      setSendMessage('Resent. Delivery status will update below.')
+      await loadDeliveries(editorQuoteId)
+    } catch (requestError) {
+      setSendMessage(requestError instanceof Error ? requestError.message : 'Unable to resend.')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const loadDeliveries = async (quoteId: string) => {
+    try {
+      const response = await apiRequest<{ deliveries: QuoteDelivery[] }>(`/api/quotes/${quoteId}/deliveries`)
+      setDeliveries(response.deliveries)
+    } catch { /* deliveries may not exist yet */ }
+  }
+
+  const revokeQuoteLink = async () => {
+    if (!editorQuoteId || !window.confirm('Revoke the current public quote link? The customer will no longer be able to view it. A new link can be generated later.')) return
+    setRevoking(true)
+    try {
+      await apiRequest(`/api/quotes/${editorQuoteId}/revoke-link`, { method: 'POST' })
+      setSharedUrl('')
+      setQuotes((current) => current.map((quote) => quote.id === editorQuoteId ? { ...quote, publicToken: null } : quote))
+      setSaveState('Link revoked')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to revoke link.')
+    } finally {
+      setRevoking(false)
+    }
+  }
+
   const deleteDraft = async () => {
     if (!editorQuoteId || !window.confirm('Delete this draft quote?')) return
     try {
@@ -523,8 +658,16 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     }
   }
 
-  const changePage = (next: Page) => { setError(''); setPage(next); setSearch('') }
-  const heading = page === 'dashboard' ? 'Overview' : page === 'quotes' ? 'Quotes' : page === 'customers' ? 'Customers' : page === 'services' ? 'Services & products' : page === 'settings' ? 'Settings' : 'Quote editor'
+  const changePage = (next: Page) => {
+    setError('')
+    setPage(next)
+    setSearch('')
+    setCustomerPage(1)
+    setQuotesPage(1)
+    setQuoteStatusFilter('ALL')
+    setIncludeArchived(false)
+  }
+  const heading = page === 'dashboard' ? 'Overview' : page === 'quotes' ? 'Quotes' : page === 'customers' ? 'Customers' : page === 'services' ? 'Services & products' : page === 'jobs' ? 'Jobs' : page === 'invoices' ? 'Finance' : page === 'reports' ? 'Reports' : page === 'team' ? 'Team' : page === 'settings' ? 'Settings' : 'Quote editor'
 
   if (loading) return <main className="workspace-loading">Loading your workspace…</main>
 
@@ -549,15 +692,16 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           </div>
           <div className="sidebar-nav-group">
             <span className="sidebar-section-label">Deliver work</span>
-            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">▣</span><span>Jobs</span></button>
+            <button type="button" className={'app-nav-item ' + (page === 'jobs' ? 'active' : '')} onClick={() => changePage('jobs')}><span className="nav-icon nav-glyph" aria-hidden="true">▣</span><span>Jobs</span></button>
           </div>
           <div className="sidebar-nav-group">
             <span className="sidebar-section-label">Money &amp; insights</span>
-            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">＄</span><span>Finance</span></button>
-            <button type="button" className="app-nav-item nav-item-upcoming" aria-disabled="true"><span className="nav-icon nav-glyph" aria-hidden="true">▥</span><span>Reports</span></button>
+            <button type="button" className={'app-nav-item ' + (page === 'invoices' ? 'active' : '')} onClick={() => changePage('invoices')}><span className="nav-icon nav-glyph" aria-hidden="true">＄</span><span>Finance</span></button>
+            <button type="button" className={'app-nav-item ' + (page === 'reports' ? 'active' : '')} onClick={() => changePage('reports')}><span className="nav-icon nav-glyph" aria-hidden="true">▥</span><span>Reports</span></button>
           </div>
           <div className="sidebar-nav-group sidebar-nav-account">
             <span className="sidebar-section-label">Account</span>
+            <button type="button" className={'app-nav-item ' + (page === 'team' ? 'active' : '')} onClick={() => changePage('team')}><span className="nav-icon nav-glyph" aria-hidden="true">♟</span><span>Team</span></button>
             <button type="button" className={'app-nav-item ' + (page === 'settings' ? 'active' : '')} onClick={() => changePage('settings')}><span className="nav-icon nav-glyph" aria-hidden="true">⚙</span><span>Settings</span></button>
           </div>
           <button type="button" className={`app-nav-item ${page === 'dashboard' ? 'active' : ''}`} onClick={() => changePage('dashboard')}>
@@ -621,18 +765,22 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           <section className="workspace-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Documents</p><h2>All quotes</h2></div><button className="button button-primary" type="button" onClick={startNewQuote}>New quote</button></div>
             <div className="filter-row"><input className="input-control search-control" type="search" placeholder="Search by quote or customer" value={search} onChange={(event) => setSearch(event.target.value)} /><select className="input-control filter-control" value={quoteStatusFilter} onChange={(event) => setQuoteStatusFilter(event.target.value)}><option value="ALL">All statuses</option>{Object.entries(statusNames).map(([status, label]) => <option key={status} value={status}>{label}</option>)}</select></div>
-            <section className="workspace-panel quote-list-panel"><QuoteTable quotes={filteredQuotes} currency={business.currency} onOpen={openQuote} />{quotes.length === 0 ? <div className="panel-empty"><h3>No quotes yet</h3><p>Create a quotation and send a public link to your customer.</p><button className="button button-primary" type="button" onClick={startNewQuote}>Create your first quote</button></div> : <EmptyRows hasQuotes={filteredQuotes.length > 0} label="No quotes match this search" />}</section>
+            <section className="workspace-panel quote-list-panel"><QuoteTable quotes={filteredQuotes} currency={business.currency} onOpen={openQuote} /><Pagination page={quotesPage} limit={quotesLimit} total={quotesTotal} onPageChange={setQuotesPage} />{quotes.length === 0 ? <div className="panel-empty"><h3>No quotes yet</h3><p>Create a quotation and send a public link to your customer.</p><button className="button button-primary" type="button" onClick={startNewQuote}>Create your first quote</button></div> : <EmptyRows hasQuotes={filteredQuotes.length > 0} label="No quotes match this search" />}</section>
           </section>
         )}
 
         {page === 'customers' && (
           <section className="workspace-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Address book</p><h2>Customers</h2></div><button className="button button-primary" type="button" onClick={() => { setCustomerForm(blankCustomer); setCustomerError(''); setCustomerModal(true) }}>Add customer</button></div>
-            <div className="filter-row"><input className="input-control search-control" type="search" placeholder="Search customers" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+            <div className="filter-row">
+              <input className="input-control search-control" type="search" placeholder="Search customers" value={search} onChange={(event) => setSearch(event.target.value)} />
+              <label className="filter-toggle"><input type="checkbox" checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} /><span>Show archived</span></label>
+            </div>
             <section className="workspace-panel quote-list-panel">
-              <div className="table-scroll"><table className="data-table"><thead><tr><th>Customer</th><th>Phone</th><th>Email</th><th /></tr></thead><tbody>{filteredCustomers.map((customer) => <tr key={customer.id}><td><strong>{customer.name}</strong></td><td>{customer.phone || '—'}</td><td>{customer.email || '—'}</td><td><div className="table-action-group"><button className="quiet-button" type="button" onClick={() => { setCustomerForm({ id: customer.id, name: customer.name, phone: customer.phone ?? '', email: customer.email ?? '' }); setCustomerError(''); setCustomerModal(true) }}>Edit</button><button className="quiet-button danger-button" type="button" onClick={() => void deleteCustomer(customer)}>Delete</button></div></td></tr>)}</tbody></table></div>
-              {customers.length === 0 && <div className="panel-empty"><h3>No customers yet</h3><p>Add a customer to start preparing a quote.</p><button className="button button-primary" type="button" onClick={() => { setCustomerForm(blankCustomer); setCustomerModal(true) }}>Add customer</button></div>}
-              {customers.length > 0 && filteredCustomers.length === 0 && <div className="panel-empty"><p>No customers match this search.</p></div>}
+              <div className="table-scroll"><table className="data-table"><thead><tr><th>Customer</th><th>Phone</th><th>Email</th><th>Status</th><th /></tr></thead><tbody>{filteredCustomers.map((customer) => <tr key={customer.id} className={customer.archivedAt ? 'archived-row' : ''}><td><strong>{customer.name}</strong></td><td>{customer.phone || '—'}</td><td>{customer.email || '—'}</td><td>{customer.archivedAt ? <span className="status-badge status-archived">Archived</span> : 'Active'}</td><td><div className="table-action-group"><button className="quiet-button" type="button" onClick={() => { setCustomerForm({ id: customer.id, name: customer.name, phone: customer.phone ?? '', email: customer.email ?? '' }); setCustomerError(''); setCustomerModal(true) }}>Edit</button>{customer.archivedAt ? <button className="quiet-button" type="button" onClick={() => void restoreCustomer(customer)}>Restore</button> : <button className="quiet-button danger-button" type="button" onClick={() => void archiveCustomer(customer)}>Archive</button>}<button className="quiet-button danger-button" type="button" onClick={() => void deleteCustomer(customer)}>Delete</button></div></td></tr>)}</tbody></table></div>
+              <Pagination page={customerPage} limit={customerLimit} total={customerTotal} onPageChange={setCustomerPage} />
+              {customers.length === 0 && !search && !includeArchived && <div className="panel-empty"><h3>No customers yet</h3><p>Add a customer to start preparing a quote.</p><button className="button button-primary" type="button" onClick={() => { setCustomerForm(blankCustomer); setCustomerModal(true) }}>Add customer</button></div>}
+              {customers.length === 0 && (search || includeArchived) && <div className="panel-empty"><p>No customers match this search.</p></div>}
             </section>
           </section>
         )}
@@ -695,10 +843,25 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           </section>
         )}
 
+        {page === 'jobs' && business && <JobsPanel business={business} customers={customers} currency={business.currency} />}
+
+        {page === 'invoices' && business && <InvoicesPanel business={business} customers={customers} currency={business.currency} />}
+
+        {page === 'reports' && business && <ReportsPanel business={business} currency={business.currency} />}
+
+        {page === 'team' && business && <TeamPanel business={business} />}
+
         {page === 'editor' && editor && business && (
           <section className="editor-content">
-            <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button><button className="button button-primary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Mark as sent</button></div></div>
-            {sharedUrl && <div className="share-callout"><div><strong>Quote link is ready</strong><span>{sharedUrl}</span></div><div className="share-actions"><button className="button button-secondary" type="button" onClick={() => { void navigator.clipboard.writeText(sharedUrl).then(() => setCopied(true)).catch(() => setError('Copy the quote link from the address shown.')) }}>{copied ? 'Copied' : 'Copy link'}</button><a className="button button-secondary" href={`https://wa.me/?text=${encodeURIComponent(`Here is your quotation: ${sharedUrl}`)}`} target="_blank" rel="noreferrer">WhatsApp</a></div></div>}
+            <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => { setShowSendModal(true); void loadDeliveries(editorQuoteId) }}>Send email</button>}<button className="button button-primary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Mark as sent</button></div></div>
+            {sharedUrl && <div className="share-callout"><div><strong>Quote link is ready</strong><span>{sharedUrl}</span></div><div className="share-actions"><button className="button button-secondary" type="button" onClick={() => { void navigator.clipboard.writeText(sharedUrl).then(() => setCopied(true)).catch(() => setError('Copy the quote link from the address shown.')) }}>{copied ? 'Copied' : 'Copy link'}</button><a className="button button-secondary" href={`https://wa.me/?text=${encodeURIComponent(`Here is your quotation: ${sharedUrl}`)}`} target="_blank" rel="noreferrer">WhatsApp</a><button className="quiet-button danger-button" type="button" onClick={() => void revokeQuoteLink()} disabled={revoking}>{revoking ? 'Revoking…' : 'Revoke link'}</button></div></div>}
+            {sendMessage && <div className="workspace-alert" role="status"><span>{sendMessage}</span><button type="button" onClick={() => setSendMessage('')} aria-label="Dismiss">×</button></div>}
+            {deliveries.length > 0 && (
+              <section className="workspace-panel delivery-panel">
+                <div className="panel-heading"><div><h2>Email delivery status</h2><p>Track when your quote email was sent, delivered, or bounced.</p></div>{deliveries.some((d) => d.status === 'PENDING' || d.status === 'SENT') && <button className="button button-secondary" type="button" onClick={() => void resendQuoteEmail()} disabled={sending}>Resend</button>}</div>
+                <div className="table-scroll"><table className="data-table"><thead><tr><th>Recipient</th><th>Status</th><th>Sent</th><th>Delivered</th><th>Error</th></tr></thead><tbody>{deliveries.map((d) => <tr key={d.id}><td>{d.recipientEmail}</td><td><span className={`status-badge status-${d.status.toLowerCase()}`}>{d.status}</span></td><td>{d.sentAt ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(d.sentAt)) : '—'}</td><td>{d.deliveredAt ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(d.deliveredAt)) : '—'}</td><td>{d.errorMessage || '—'}</td></tr>)}</tbody></table></div>
+              </section>
+            )}
             <div className="editor-layout">
               <div className="editor-fields">
                 <section className="workspace-panel editor-section"><div className="panel-heading"><div><h2>Quote details</h2><p>{editorNumber}</p></div><span className={statusClass(editorQuoteId ? quotes.find((quote) => quote.id === editorQuoteId)?.status ?? 'DRAFT' : 'DRAFT')}>{editorQuoteId ? statusNames[quotes.find((quote) => quote.id === editorQuoteId)?.status ?? 'DRAFT'] : 'Draft'}</span></div>
@@ -724,6 +887,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
       {customerModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCustomerModal(false) }}><form className="customer-modal" onSubmit={(event) => void submitCustomer(event)}><div className="modal-heading"><div><p className="workspace-eyebrow">Address book</p><h2>{customerForm.id ? 'Edit customer' : 'Add a customer'}</h2></div><button className="quiet-button" type="button" onClick={() => setCustomerModal(false)} aria-label="Close">×</button></div><label className="field-label">Customer name<input className="input-control" required value={customerForm.name} onChange={(event) => setCustomerForm((current) => ({ ...current, name: event.target.value }))} /></label><label className="field-label">Phone<input className="input-control" type="tel" value={customerForm.phone} onChange={(event) => setCustomerForm((current) => ({ ...current, phone: event.target.value }))} /></label><label className="field-label">Email<input className="input-control" type="email" value={customerForm.email} onChange={(event) => setCustomerForm((current) => ({ ...current, email: event.target.value }))} /></label><p className="field-hint">Add a phone number or an email address.</p>{customerError && <p className="form-error" role="alert">{customerError}</p>}<div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setCustomerModal(false)}>Cancel</button><button type="submit" className="button button-primary">{customerForm.id ? 'Save changes' : 'Add customer'}</button></div></form></div>}
       {serviceModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setServiceModal(false) }}><form className="customer-modal" onSubmit={(event) => void saveServiceItem(event)}><div className="modal-heading"><div><p className="workspace-eyebrow">Your price book</p><h2>{serviceForm.id ? 'Edit item' : 'Add a service or product'}</h2></div><button className="quiet-button" type="button" onClick={() => setServiceModal(false)} aria-label="Close">×</button></div><div className="settings-grid"><label>Name<input className="input-control" required maxLength={100} value={serviceForm.name} onChange={(event) => setServiceForm((current) => ({ ...current, name: event.target.value }))} placeholder="e.g. Tap replacement" /></label><label>Category<input className="input-control" required maxLength={60} value={serviceForm.category} onChange={(event) => setServiceForm((current) => ({ ...current, category: event.target.value }))} placeholder="e.g. Plumbing repairs" /></label><label>Type<select className="input-control" value={serviceForm.kind} onChange={(event) => setServiceForm((current) => ({ ...current, kind: event.target.value as ServiceForm['kind'] }))}><option value="SERVICE">Service</option><option value="PRODUCT">Product</option></select></label><label>Unit<input className="input-control" required maxLength={24} value={serviceForm.unit} onChange={(event) => setServiceForm((current) => ({ ...current, unit: event.target.value }))} placeholder="job, hour, visit, item" /></label><label>Default price<input className="input-control" type="number" min="0" step="0.01" required value={serviceForm.defaultPrice} onChange={(event) => setServiceForm((current) => ({ ...current, defaultPrice: event.target.value }))} /></label><label>Tax rate (%)<input className="input-control" type="number" min="0" max="100" step="0.01" value={serviceForm.defaultTaxRate} onChange={(event) => setServiceForm((current) => ({ ...current, defaultTaxRate: event.target.value }))} placeholder={`Business default (${business?.defaultTaxRate ?? 0}%)`} /></label><label className="span-two">Customer-facing description<textarea className="input-control" rows={3} maxLength={500} value={serviceForm.description} onChange={(event) => setServiceForm((current) => ({ ...current, description: event.target.value }))} /></label></div>{serviceError && <p className="form-error" role="alert">{serviceError}</p>}<div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setServiceModal(false)}>Cancel</button><button type="submit" className="button button-primary">{serviceForm.id ? 'Save item' : 'Add item'}</button></div></form></div>}
       {templateModal && editor && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTemplateModal(false) }}><form className="customer-modal" onSubmit={(event) => void saveQuoteTemplate(event)}><div className="modal-heading"><div><p className="workspace-eyebrow">Reusable workflow</p><h2>Save this quote as a template</h2></div><button className="quiet-button" type="button" onClick={() => setTemplateModal(false)} aria-label="Close">×</button></div><label className="field-label">Template name<input className="input-control" required maxLength={100} value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="e.g. Bathroom leak repair" /></label><label className="field-label">When do you use it?<textarea className="input-control" rows={3} maxLength={300} value={templateDescription} onChange={(event) => setTemplateDescription(event.target.value)} placeholder="Briefly describe the job flow" /></label><p className="field-hint">This saves the current quote lines, notes, and terms as a starter for your next quote.</p><div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setTemplateModal(false)}>Cancel</button><button type="submit" className="button button-primary">Save template</button></div></form></div>}
+      {showSendModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowSendModal(false) }}><div className="customer-modal"><div className="modal-heading"><div><p className="workspace-eyebrow">Email delivery</p><h2>Send quote by email</h2></div><button className="quiet-button" type="button" onClick={() => setShowSendModal(false)} aria-label="Close">×</button></div><label className="field-label">Recipient email<input className="input-control" type="email" required value={sendEmail} onChange={(event) => setSendEmail(event.target.value)} placeholder="customer@example.com" /></label><p className="field-hint">The quote will be sent as a PDF attachment with a public review link. The recipient will see the business name and sender configured in your email settings.</p>{sendMessage && <p className="form-error" role="alert">{sendMessage}</p>}{deliveries.length > 0 && <div className="delivery-history"><h4>Recent deliveries</h4>{deliveries.slice(0, 3).map((d) => <div key={d.id} className="delivery-history-item"><span className={`status-badge status-${d.status.toLowerCase()}`}>{d.status}</span><span>{d.recipientEmail}</span><small>{d.sentAt ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(d.sentAt)) : 'Pending'}</small></div>)}</div>}<div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setShowSendModal(false)}>Cancel</button><button type="button" className="button button-primary" onClick={() => void sendQuoteEmail()} disabled={sending || !sendEmail.trim()}>{sending ? 'Sending…' : 'Send quote'}</button></div></div></div>}
     </div>
   )
 }
@@ -735,6 +899,18 @@ function QuoteTable({ quotes, currency, onOpen }: { quotes: Quote[]; currency: s
 
 function EmptyRows({ hasQuotes, label }: { hasQuotes: boolean; label: string }) {
   return hasQuotes ? null : <div className="panel-empty"><h3>{label}</h3><p>Try changing the search or status filter.</p></div>
+}
+
+function Pagination({ page, limit, total, onPageChange }: { page: number; limit: number; total: number; onPageChange: (page: number) => void }) {
+  const totalPages = Math.ceil(total / limit)
+  if (totalPages <= 1) return null
+  return (
+    <div className="pagination-controls">
+      <button type="button" className="quiet-button" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>← Prev</button>
+      <span className="pagination-info">Page {page} of {totalPages} · {total} total</span>
+      <button type="button" className="quiet-button" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>Next →</button>
+    </div>
+  )
 }
 
 function DashboardQuoteTable({ quotes, currency, onOpen }: { quotes: Quote[]; currency: string; onOpen: (quote: Quote) => void }) {

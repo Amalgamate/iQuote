@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
+import { generateSecret, generateURI, verifySync } from 'otplib'
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
@@ -479,6 +480,38 @@ const requireSuperadmin = async (req: Request, res: Response, next: NextFunction
   next()
 }
 
+type TeamRoleName = 'OWNER' | 'ADMIN' | 'MEMBER'
+
+async function loadUserWithTeamRole(userId: string): Promise<{ id: string; name: string; email: string; role: string; teamRole: TeamRoleName; organisationId: string | null } | null> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, name: true, email: true, role: true, teamRole: true, organisationId: true },
+  })
+  if (!user) return null
+  return { ...user, teamRole: user.teamRole as TeamRoleName }
+}
+
+function requireTeamRole(...allowed: TeamRoleName[]) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const token = readTokenFromRequest(req)
+    if (!token) return res.status(401).json({ message: 'Unauthorized' })
+
+    const sessionUser = await loadUserFromToken(token)
+    if (!sessionUser) return res.status(401).json({ message: 'Unauthorized' })
+
+    const fullUser = await loadUserWithTeamRole(sessionUser.id)
+    if (!fullUser) return res.status(401).json({ message: 'Unauthorized' })
+
+    if (fullUser.role === 'SUPERADMIN' || allowed.includes(fullUser.teamRole)) {
+      ;(req as Request & { user?: typeof sessionUser }).user = sessionUser
+      ;(req as Request & { teamRole?: TeamRoleName }).teamRole = fullUser.teamRole
+      return next()
+    }
+
+    return res.status(403).json({ message: 'You do not have permission to perform this action.' })
+  }
+}
+
 app.get('/health', async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`
@@ -864,13 +897,37 @@ app.get('/api/customers', requireAuth, async (req, res) => {
 
   const organisationId = await getOrganisationId(user.id)
   if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace before managing customers.' })
-  const customers = await prisma.customer.findMany({
-    where: { organisationId },
-    orderBy: { updatedAt: 'desc' },
-    select: { id: true, name: true, phone: true, email: true },
-  })
 
-  res.json({ customers })
+  const includeArchived = req.query?.includeArchived === 'true'
+  const page = Math.max(Number(req.query?.page ?? 1), 1)
+  const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 200)
+  const offset = (page - 1) * limit
+  const searchQuery = String(req.query?.search ?? '').trim().toLowerCase()
+
+  const where: PrismaTypes.CustomerWhereInput = { organisationId }
+  if (!includeArchived) {
+    where.archivedAt = null
+  }
+  if (searchQuery) {
+    where.OR = [
+      { name: { contains: searchQuery, mode: 'insensitive' } },
+      { email: { contains: searchQuery, mode: 'insensitive' } },
+      { phone: { contains: searchQuery, mode: 'insensitive' } },
+    ]
+  }
+
+  const [customers, totalCount] = await Promise.all([
+    prisma.customer.findMany({
+      where,
+      orderBy: { updatedAt: 'desc' },
+      skip: offset,
+      take: limit,
+      select: { id: true, name: true, phone: true, email: true, archivedAt: true },
+    }),
+    prisma.customer.count({ where }),
+  ])
+
+  res.json({ customers, totalCount, page, limit, hasMore: offset + customers.length < totalCount })
 })
 
 app.post('/api/customers', requireAuth, async (req, res) => {
@@ -956,6 +1013,46 @@ app.delete('/api/customers/:id', requireAuth, async (req, res) => {
   await prisma.customer.delete({ where: { id: customerId } })
 
   res.json({ success: true })
+})
+
+app.post('/api/customers/:id/archive', requireAuth, async (req, res) => {
+  const user = (req as Request & { user?: { id: string; name: string; email: string } }).user
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+
+  const customerId = String(req.params.id ?? '')
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace before managing customers.' })
+
+  const existing = await prisma.customer.findFirst({ where: { id: customerId, organisationId } })
+  if (!existing) return res.status(404).json({ message: 'Customer not found.' })
+
+  const customer = await prisma.customer.update({
+    where: { id: customerId },
+    data: { archivedAt: new Date() },
+    select: { id: true, name: true, phone: true, email: true, archivedAt: true },
+  })
+
+  res.json({ customer })
+})
+
+app.post('/api/customers/:id/restore', requireAuth, async (req, res) => {
+  const user = (req as Request & { user?: { id: string; name: string; email: string } }).user
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+
+  const customerId = String(req.params.id ?? '')
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace before managing customers.' })
+
+  const existing = await prisma.customer.findFirst({ where: { id: customerId, organisationId } })
+  if (!existing) return res.status(404).json({ message: 'Customer not found.' })
+
+  const customer = await prisma.customer.update({
+    where: { id: customerId },
+    data: { archivedAt: null },
+    select: { id: true, name: true, phone: true, email: true, archivedAt: true },
+  })
+
+  res.json({ customer })
 })
 
 app.get('/api/service-items', requireAuth, async (req, res) => {
@@ -1130,12 +1227,35 @@ app.get('/api/quotes', requireAuth, async (req, res) => {
     where: { organisationId, status: { in: ['SENT', 'VIEWED'] }, validUntil: { lt: new Date() } },
     data: { status: 'EXPIRED' },
   })
-  const quotes = await prisma.quote.findMany({
-    where: { organisationId },
-    include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } } },
-    orderBy: { updatedAt: 'desc' },
-  })
-  res.json({ quotes: quotes.map(serializeQuote) })
+
+  const page = Math.max(Number(req.query?.page ?? 1), 1)
+  const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 200)
+  const offset = (page - 1) * limit
+  const statusFilter = String(req.query?.status ?? '').toUpperCase()
+  const searchQuery = String(req.query?.search ?? '').trim().toLowerCase()
+
+  const where: PrismaTypes.QuoteWhereInput = { organisationId }
+  if (statusFilter && ['DRAFT', 'SENT', 'VIEWED', 'APPROVED', 'DECLINED', 'EXPIRED'].includes(statusFilter)) {
+    where.status = statusFilter as never
+  }
+  if (searchQuery) {
+    where.OR = [
+      { documentNumber: { contains: searchQuery, mode: 'insensitive' } },
+      { customer: { name: { contains: searchQuery, mode: 'insensitive' } } },
+    ]
+  }
+
+  const [quotes, totalCount] = await Promise.all([
+    prisma.quote.findMany({
+      where,
+      include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } } },
+      orderBy: { updatedAt: 'desc' },
+      skip: offset,
+      take: limit,
+    }),
+    prisma.quote.count({ where }),
+  ])
+  res.json({ quotes: quotes.map(serializeQuote), totalCount, page, limit, hasMore: offset + quotes.length < totalCount })
 })
 
 app.post('/api/quotes', requireAuth, async (req, res) => {
@@ -2786,6 +2906,229 @@ app.get('/api/invoices/:id/payments', requireAuth, async (req, res) => {
     orderBy: { paymentDate: 'desc' },
   })
   res.json({ payments: payments.map((p) => ({ ...p, amount: Number(p.amount) })) })
+})
+
+// ---- Stage 15: Team membership and invitations ----
+
+app.get('/api/team', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const members = await prisma.user.findMany({
+    where: { organisationId },
+    select: { id: true, name: true, email: true, teamRole: true, createdAt: true },
+    orderBy: { createdAt: 'asc' },
+  })
+  const invitations = await prisma.teamInvitation.findMany({
+    where: { organisationId, revokedAt: null, acceptedAt: null, expiresAt: { gt: new Date() } },
+    select: { id: true, email: true, role: true, expiresAt: true, createdAt: true },
+    orderBy: { createdAt: 'desc' },
+  })
+  res.json({ members, invitations })
+})
+
+app.post('/api/team/invitations', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const email = String(req.body?.email ?? '').trim().toLowerCase()
+  const role = String(req.body?.role ?? 'MEMBER').toUpperCase()
+  if (!isValidEmail(email)) return res.status(400).json({ message: 'Enter a valid email address.' })
+  if (!['ADMIN', 'MEMBER'].includes(role)) return res.status(400).json({ message: 'Invite role must be ADMIN or MEMBER.' })
+
+  const existingUser = await prisma.user.findUnique({ where: { email } })
+  if (existingUser?.organisationId === organisationId) {
+    return res.status(409).json({ message: 'This user is already a member of your workspace.' })
+  }
+
+  const token = randomBytes(32).toString('hex')
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  try {
+    const invitation = await prisma.teamInvitation.create({
+      data: { organisationId, email, role: role as never, token, invitedBy: user.id, expiresAt },
+      select: { id: true, email: true, role: true, expiresAt: true, createdAt: true },
+    })
+    res.status(201).json({ invitation })
+  } catch {
+    res.status(409).json({ message: 'An active invitation already exists for this email.' })
+  }
+})
+
+app.post('/api/team/invitations/:id/revoke', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const invitation = await prisma.teamInvitation.findFirst({
+    where: { id: String(req.params.id ?? ''), organisationId, revokedAt: null, acceptedAt: null },
+  })
+  if (!invitation) return res.status(404).json({ message: 'Invitation not found.' })
+
+  const revoked = await prisma.teamInvitation.update({
+    where: { id: invitation.id },
+    data: { revokedAt: new Date() },
+    select: { id: true, email: true, role: true, revokedAt: true },
+  })
+  res.json({ invitation: revoked })
+})
+
+app.post('/api/team/members/:id/role', requireTeamRole('OWNER'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const memberId = String(req.params.id ?? '')
+  const role = String(req.body?.role ?? '').toUpperCase()
+  if (!['OWNER', 'ADMIN', 'MEMBER'].includes(role)) return res.status(400).json({ message: 'Invalid team role.' })
+
+  const member = await prisma.user.findFirst({ where: { id: memberId, organisationId } })
+  if (!member) return res.status(404).json({ message: 'Team member not found.' })
+  if (member.id === user.id) return res.status(409).json({ message: 'You cannot change your own role.' })
+
+  const updated = await prisma.user.update({
+    where: { id: member.id },
+    data: { teamRole: role as never },
+    select: { id: true, name: true, email: true, teamRole: true },
+  })
+  res.json({ member: updated })
+})
+
+app.delete('/api/team/members/:id', requireTeamRole('OWNER'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const memberId = String(req.params.id ?? '')
+  const member = await prisma.user.findFirst({ where: { id: memberId, organisationId } })
+  if (!member) return res.status(404).json({ message: 'Team member not found.' })
+  if (member.id === user.id) return res.status(409).json({ message: 'You cannot remove yourself.' })
+
+  await prisma.user.update({ where: { id: member.id }, data: { organisationId: null } })
+  res.json({ success: true })
+})
+
+// ---- Stage 15: Superadmin MFA ----
+
+app.get('/api/superadmin/mfa/setup', requireSuperadmin, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+
+  const existing = await prisma.user.findUnique({ where: { id: user.id }, select: { mfaSecret: true, mfaEnabled: true } })
+  if (!existing) return res.status(404).json({ message: 'User not found.' })
+  if (existing.mfaEnabled) return res.status(409).json({ message: 'MFA is already enabled.' })
+
+  const secret = generateSecret()
+  const otpauth = generateURI({ label: user.email, issuer: 'iQuote', secret })
+  await prisma.user.update({ where: { id: user.id }, data: { mfaSecret: secret } })
+  res.json({ secret, otpauth })
+})
+
+app.post('/api/superadmin/mfa/verify', requireSuperadmin, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+
+  const code = String(req.body?.code ?? '').trim()
+  const existing = await prisma.user.findUnique({ where: { id: user.id }, select: { mfaSecret: true, mfaEnabled: true } })
+  if (!existing?.mfaSecret) return res.status(409).json({ message: 'Set up MFA first.' })
+  if (existing.mfaEnabled) return res.status(409).json({ message: 'MFA is already enabled.' })
+
+  const valid = verifySync({ token: code, secret: existing.mfaSecret })
+  if (!valid) return res.status(400).json({ message: 'Invalid verification code.' })
+
+  await prisma.user.update({ where: { id: user.id }, data: { mfaEnabled: true } })
+  res.json({ success: true })
+})
+
+app.post('/api/superadmin/mfa/disable', requireSuperadmin, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+
+  const code = String(req.body?.code ?? '').trim()
+  const existing = await prisma.user.findUnique({ where: { id: user.id }, select: { mfaSecret: true, mfaEnabled: true } })
+  if (!existing?.mfaEnabled) return res.status(409).json({ message: 'MFA is not enabled.' })
+
+  const valid = verifySync({ token: code, secret: existing.mfaSecret ?? '' })
+  if (!valid) return res.status(400).json({ message: 'Invalid verification code.' })
+
+  await prisma.user.update({ where: { id: user.id }, data: { mfaEnabled: false, mfaSecret: null } })
+  res.json({ success: true })
+})
+
+// ---- Stage 15: Tenant reports ----
+
+app.get('/api/reports', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const [allQuotes, allCustomers, allJobs, allInvoices] = await Promise.all([
+    prisma.quote.findMany({ where: { organisationId }, include: { customer: { select: { id: true, name: true } }, deliveries: { select: { status: true } } } }),
+    prisma.customer.findMany({ where: { organisationId, archivedAt: null }, select: { id: true, name: true, createdAt: true } }),
+    prisma.job.findMany({ where: { organisationId }, include: { costs: true, quote: { select: { total: true } }, invoices: { select: { total: true, amountPaid: true } } } }),
+    prisma.invoice.findMany({ where: { organisationId }, select: { status: true, total: true, amountPaid: true, balanceDue: true, currency: true } }),
+  ])
+
+  // Quote funnel
+  const funnel = {
+    sent: allQuotes.filter((q) => q.status === 'SENT' || q.status === 'VIEWED' || q.status === 'APPROVED' || q.status === 'DECLINED').length,
+    viewed: allQuotes.filter((q) => q.status === 'VIEWED' || q.status === 'APPROVED' || q.status === 'DECLINED').length,
+    approved: allQuotes.filter((q) => q.status === 'APPROVED').length,
+    declined: allQuotes.filter((q) => q.status === 'DECLINED').length,
+  }
+
+  // Repeat customers (customers with more than one approved quote)
+  const customerQuoteCounts = new Map<string, number>()
+  for (const quote of allQuotes.filter((q) => q.status === 'APPROVED')) {
+    customerQuoteCounts.set(quote.customerId, (customerQuoteCounts.get(quote.customerId) ?? 0) + 1)
+  }
+  const repeatCustomers = allCustomers.filter((c) => (customerQuoteCounts.get(c.id) ?? 0) > 1).map((c) => ({
+    id: c.id,
+    name: c.name,
+    approvedQuotes: customerQuoteCounts.get(c.id) ?? 0,
+  }))
+
+  // Revenue by currency
+  const revenueByCurrency = new Map<string, { totalInvoiced: number; totalPaid: number; totalDue: number }>()
+  for (const invoice of allInvoices) {
+    const currency = invoice.currency
+    const entry = revenueByCurrency.get(currency) ?? { totalInvoiced: 0, totalPaid: 0, totalDue: 0 }
+    entry.totalInvoiced += Number(invoice.total)
+    entry.totalPaid += Number(invoice.amountPaid)
+    entry.totalDue += Number(invoice.balanceDue)
+    revenueByCurrency.set(currency, entry)
+  }
+
+  // Job profitability
+  const jobProfitability = allJobs.map((job) => {
+    const estimated = job.quote?.total ? Number(job.quote.total) : 0
+    const actualCosts = job.costs.reduce((sum, cost) => sum + Number(cost.amount), 0)
+    const invoiced = job.invoices.reduce((sum, inv) => sum + Number(inv.total), 0)
+    const collected = job.invoices.reduce((sum, inv) => sum + Number(inv.amountPaid), 0)
+    return {
+      id: job.id,
+      title: job.title,
+      estimated,
+      actualCosts,
+      invoiced,
+      collected,
+      margin: roundMoney(estimated - actualCosts),
+    }
+  })
+
+  res.json({
+    funnel,
+    repeatCustomers,
+    revenueByCurrency: Object.fromEntries(revenueByCurrency),
+    jobProfitability,
+  })
 })
 
 // ---- 404 handler (catches all unmatched routes) ----
