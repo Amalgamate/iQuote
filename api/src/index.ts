@@ -461,12 +461,27 @@ const requireSuperadmin = async (req: Request, res: Response, next: NextFunction
   next()
 }
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' })
+app.get('/health', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`
+    res.json({ status: 'ok', database: 'connected' })
+  } catch {
+    res.status(503).json({ status: 'degraded', database: 'disconnected' })
+  }
 })
 
 app.get('/api/ping', (_req, res) => {
   res.json({ ok: true, service: 'iQuote API' })
+})
+
+// Deployed commit identification — set by Docker build or deploy script
+app.get('/api/version', (_req, res) => {
+  res.json({
+    version: process.env.APP_VERSION ?? 'unknown',
+    commit: process.env.GIT_COMMIT ?? 'unknown',
+    buildTime: process.env.BUILD_TIME ?? 'unknown',
+    node: process.version,
+  })
 })
 
 // Wildcard DNS/Nginx sends tenant hostnames to the same shared application.
@@ -1113,7 +1128,7 @@ app.post('/api/quotes', requireAuth, async (req, res) => {
   if (!organisation?.name) return res.status(409).json({ message: 'Complete your business profile before creating a quote.' })
 
   const customerId = String(req.body?.customerId ?? '')
-  const customer = await prisma.customer.findFirst({ where: { id: customerId, organisationId } })
+  const customer = await prisma.customer.findFirst({ where: { id: customerId, organisationId: organisationId ?? '__none__' } })
   if (!customer) return res.status(400).json({ message: 'Choose a customer for this quote.' })
 
   const amounts = normalizeQuoteLines(req.body?.lines ?? [], Number(organisation.defaultTaxRate ?? 0))

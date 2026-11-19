@@ -34,6 +34,9 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: iquote-api
     restart: always
     depends_on:
@@ -44,6 +47,7 @@ services:
       PORT: 4000
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.prod}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.prod}
+      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
       BILLING_FROM_EMAIL: ${BILLING_FROM_EMAIL:-}
@@ -59,13 +63,18 @@ services:
       PLATFORM_LOGO_URL: ${PLATFORM_LOGO_URL:-}
       PLATFORM_HEADER_IMAGE: ${PLATFORM_HEADER_IMAGE:-}
       SUPPORT_EMAIL: ${SUPPORT_EMAIL:-hello@iquote.app}
+      UPLOADS_DIR: /app/uploads
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
       WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
-      # Trust the Nginx reverse proxy (1 hop)
-      TRUST_PROXY_HOPS: "1"
     volumes:
       - iquote_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - iquote-net
 

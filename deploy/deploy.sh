@@ -8,12 +8,12 @@
 #   bash deploy/deploy.sh
 #
 # This script:
-#   1. Clones/pulls the iQuote repo
-#   2. Configures .env.prod from template
-#   3. Builds and starts Docker containers
-#   4. Runs database migrations
-#   5. Enables Nginx reverse proxy
-#   6. Provisions SSL certificates
+#   1. Pulls the iQuote repo
+#   2. Validates .env.prod configuration
+#   3. Builds and starts Docker containers with health checks
+#   4. Runs Prisma database migrations (migrate deploy, not db push)
+#   5. Enables Nginx reverse proxy with security headers
+#   6. Reports deployment status and deployed commit
 # =============================================================
 
 set -euo pipefail
@@ -40,7 +40,11 @@ else
     cd "$REPO_DIR"
     echo "  Cloned repo to $REPO_DIR"
 fi
-echo "  Current commit: $(git rev-parse --short HEAD)"
+GIT_COMMIT=$(git rev-parse --short HEAD)
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+echo "  Commit: $GIT_COMMIT (branch: $GIT_BRANCH)"
+echo "  Build time: $BUILD_TIME"
 
 # ---- 2. Configure environment ----
 echo ""
@@ -50,7 +54,7 @@ if [ ! -f "$ENV_FILE" ]; then
         cp .env.prod.example "$ENV_FILE"
         echo "  Created $ENV_FILE from template."
         echo "  >>> EDIT $REPO_DIR/$ENV_FILE with real secrets before continuing! <<<"
-        echo "  >>> Required: POSTGRES_PASSWORD, JWT_SECRET, PLATFORM_URL <<<"
+        echo "  >>> Required: POSTGRES_PASSWORD, JWT_SECRET, PLATFORM_URL, TRUSTED_ORIGINS <<<"
         echo ""
         echo "  Run this script again after editing."
         exit 1
@@ -70,7 +74,20 @@ for var in POSTGRES_PASSWORD JWT_SECRET PLATFORM_URL; do
         exit 1
     fi
 done
+
+# Warn if TRUSTED_ORIGINS is not set
+if ! grep -q "^TRUSTED_ORIGINS=" "$ENV_FILE" 2>/dev/null; then
+    echo "  WARNING: TRUSTED_ORIGINS is not set in $ENV_FILE"
+    echo "           CORS will reject all credentialed requests in production."
+    echo "           Set it to: https://iquote.trendscore.co.ke"
+else
+    echo "  TRUSTED_ORIGINS is configured."
+fi
 echo "  All required variables are set."
+
+# Export build args for docker compose
+export GIT_COMMIT
+export BUILD_TIME
 
 # ---- 3. Build and start containers ----
 echo ""
@@ -78,27 +95,38 @@ echo "[3/6] Building and starting Docker containers..."
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build
 echo "  Containers started."
 
-# Wait for API to be healthy
-echo "  Waiting for API to start..."
+# Wait for API to be healthy (with proper failure)
+echo "  Waiting for API health check..."
+HEALTHY=false
 for i in $(seq 1 30); do
-    if curl -sf http://127.0.0.1:5180/api/health >/dev/null 2>&1; then
-        echo "  API is responding."
+    if curl -sf http://127.0.0.1:5180/health >/dev/null 2>&1; then
+        HEALTHY=true
+        echo "  API is healthy (responded in ~$((i * 2))s)."
         break
-    fi
-    if [ "$i" -eq 30 ]; then
-        echo "  WARNING: API did not respond within 30 seconds."
-        echo "  Check logs: docker compose -f $COMPOSE_FILE logs api"
     fi
     sleep 2
 done
 
+if [ "$HEALTHY" = "false" ]; then
+    echo "  FATAL: API did not become healthy within 60 seconds."
+    echo "  Check logs: docker compose -f $COMPOSE_FILE --env-file $ENV_FILE logs api"
+    echo "  Rolling back: docker compose -f $COMPOSE_FILE --env-file $ENV_FILE restart api"
+    exit 1
+fi
+
 # ---- 4. Run database migrations ----
 echo ""
-echo "[4/6] Running database migrations..."
-docker compose -f "$COMPOSE_FILE" exec -T api npx prisma db push
-echo "  Database schema is in sync."
+echo "[4/6] Running database migrations (prisma migrate deploy)..."
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T api npx prisma migrate deploy
+echo "  Database migrations applied."
+
+# Verify deployed version
+echo ""
+echo "  Deployed version:"
+curl -s http://127.0.0.1:5180/api/version || echo "  (version endpoint not available)"
 
 # ---- 5. Enable Nginx reverse proxy ----
+echo ""
 echo ""
 echo "[5/6] Configuring Nginx reverse proxy..."
 if command -v nginx >/dev/null 2>&1; then
@@ -107,23 +135,20 @@ if command -v nginx >/dev/null 2>&1; then
     sudo nginx -t && sudo systemctl reload nginx
     echo "  Nginx site enabled for iquote.trendscore.co.ke"
 else
-    echo "  Nginx not found on this server. Install Nginx or use the Docker Nginx."
-    echo "  The web container is accessible on port 5180."
+    echo "  Nginx not found on this server. The web container is on port 5180."
 fi
 
-# ---- 6. SSL (optional, prompt user) ----
+# ---- 6. Summary ----
 echo ""
-echo "[6/6] SSL Certificate..."
-echo "  To provision SSL, run:"
-echo "    sudo bash deploy/provision-ssl.sh"
-echo ""
-
-echo "=== Deployment complete! ==="
-echo "  HTTP:  http://iquote.trendscore.co.ke"
-echo "  API:   http://iquote.trendscore.co.ke/api/health"
+echo "[6/6] Deployment summary"
+echo "  HTTP:      http://iquote.trendscore.co.ke"
+echo "  API health: http://iquote.trendscore.co.ke/health"
+echo "  Version:   http://iquote.trendscore.co.ke/api/version"
+echo "  Commit:    $GIT_COMMIT"
 echo ""
 echo "  Next steps:"
-echo "    1. Run: sudo bash deploy/provision-ssl.sh"
-echo "    2. Promote a superadmin:"
-echo "       docker compose -f $COMPOSE_FILE exec -T api node scripts/promote-superadmin.mjs your@email.com"
-echo "    3. Log in at https://iquote.trendscore.co.ke"
+echo "    1. SSL:     sudo bash deploy/provision-ssl.sh"
+echo "    2. Backup:  bash deploy/backup-restore.sh backup"
+echo "    3. Superadmin: docker compose -f $COMPOSE_FILE exec -T api node scripts/promote-superadmin.mjs your@email.com"
+echo ""
+echo "=== Deployment complete! ==="

@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# No repository secrets are used in this workflow.
+# Production deploy secrets are handled separately in the deploy script on the server.
+
+jobs:
+  api:
+    name: API - Build, Migrate & Test
+    runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: postgresql://iquote:iquote_test@localhost:5432/iquote_test?schema=public
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: iquote
+          POSTGRES_PASSWORD: iquote_test
+          POSTGRES_DB: iquote_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U iquote -d iquote_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-20-api-${{ hashFiles('api/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-20-api-
+
+      - name: Install dependencies
+        working-directory: api
+        run: npm ci
+
+      - name: Generate Prisma client
+        working-directory: api
+        run: npx prisma generate
+
+      - name: Run database migrations
+        working-directory: api
+        run: npx prisma migrate deploy
+
+      - name: Type check
+        working-directory: api
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        working-directory: api
+        run: npm test
+
+  web:
+    name: Web - Build & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-20-web-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-20-web-
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Lint (non-blocking)
+        working-directory: web
+        continue-on-error: true
+        run: npm run lint
+
+      - name: Type check
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: web
+        run: npm run build

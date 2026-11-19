@@ -141,8 +141,8 @@ model Session {
 
 model Customer {
   id        String   @id @default(cuid())
-  organisationId String?
-  organisation Organisation? @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  organisationId String
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   ownerId   String
   owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   name      String
