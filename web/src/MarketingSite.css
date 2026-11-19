@@ -751,7 +751,8 @@
   background: var(--blue-surface);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  gap: 28px;
   color: var(--blue-muted);
   font-family: var(--font-ui);
   font-size: 9px;
@@ -763,7 +764,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .persona-chip {
@@ -2037,7 +2038,7 @@
   .badge-bottom { left: 0; bottom: 5px; }
   .badge-side { display: none; }
   .stage-controls { right: 10px; top: 8px; }
-  .hero-bottom { height: auto; min-height: 56px; padding: 12px 20px; gap: 10px; }
+  .hero-bottom { height: auto; min-height: 56px; padding: 12px 20px; gap: 10px; justify-content: center; }
   .hero-bottom > span { display: none; }
   .hero-bottom > div { flex-wrap: wrap; justify-content: center; gap: 8px; }
   .site-intro, .site-steps { padding: 64px 20px; grid-template-columns: 1fr; gap: 28px; }
