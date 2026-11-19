@@ -6,8 +6,7 @@ import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
-import jwt from 'jsonwebtoken'
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomInt } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
 import { getIndustryPack } from './industry-packs.js'
@@ -43,8 +42,61 @@ async function recordFailedLogin(key: string) {
 async function clearLoginAttempts(key: string) {
   await prisma.loginAttempt.deleteMany({ where: { key } }).catch(() => {})
 }
+
+// ---- Public endpoint rate limiting (in-memory, per-IP) ----
+// Public quote endpoints (view, decide) are unauthenticated, so we limit
+// by IP to prevent scraping and brute-force token guessing.
+// Budget: 60 requests per 5 minutes per IP (generous — a human viewing
+// a quote makes 1-2 requests; a scraper hitting thousands gets blocked).
+const PUBLIC_WINDOW_MS = 5 * 60 * 1000
+const PUBLIC_MAX_REQUESTS = 60
+const publicHits = new Map<string, { count: number; resetAt: number }>()
+
+function checkPublicRateLimit(ip: string): boolean {
+  const now = Date.now()
+  const entry = publicHits.get(ip)
+  if (!entry || entry.resetAt < now) {
+    publicHits.set(ip, { count: 1, resetAt: now + PUBLIC_WINDOW_MS })
+    return true
+  }
+  entry.count += 1
+  return entry.count <= PUBLIC_MAX_REQUESTS
+}
+
+// Clean up expired public rate limit entries every 10 minutes
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, entry] of publicHits.entries()) {
+    if (entry.resetAt < now) publicHits.delete(ip)
+  }
+}, 10 * 60 * 1000)
+
+const publicRateLimit = (req: Request, res: Response, next: NextFunction) => {
+  const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown'
+  if (!checkPublicRateLimit(ip)) {
+    return res.status(429).json({ message: 'Too many requests. Please try again later.' })
+  }
+  next()
+}
+
 const port = Number(process.env.PORT ?? 4000)
-const jwtSecret = process.env.JWT_SECRET ?? 'dev-secret-change-me'
+const isProduction = process.env.NODE_ENV === 'production'
+
+// ---- App secret: used for HMAC digests (OTP verification, email keys) ----
+// In development a default is used for convenience. In production the app
+// refuses to start if JWT_SECRET is missing or shorter than 32 characters.
+// To rotate: set a new JWT_SECRET, restart the API (existing sessions become
+// invalid — users will need to log in again), and optionally delete old
+// Session rows: DELETE FROM "Session" WHERE "expiresAt" < NOW();
+// Note: the env var is named JWT_SECRET for backwards compatibility, but
+// session tokens are now opaque random tokens (not JWTs).
+const appSecret = process.env.JWT_SECRET ?? (isProduction ? '' : 'dev-secret-change-me')
+if (isProduction && (!appSecret || appSecret.length < 32)) {
+  console.error('FATAL: JWT_SECRET must be set to a random string of at least 32 characters in production.')
+  console.error('Generate one with: openssl rand -hex 32')
+  process.exit(1)
+}
+
 const sessionCookieName = 'iquote_session'
 const emailEncryptionKey = process.env.EMAIL_SETTINGS_ENCRYPTION_KEY
 
@@ -65,13 +117,77 @@ function decryptEmailSecret(value: string) {
   return Buffer.concat([decipher.update(Buffer.from(encryptedText, 'base64')), decipher.final()]).toString('utf8')
 }
 
+// ---- CORS: explicit trusted origins only ----
+// TRUSTED_ORIGINS is a comma-separated list of exact URLs allowed to make
+// credentialed requests (e.g. "https://iquote.trendscore.co.ke").
+// In development, localhost origins are auto-allowed.
+const trustedOrigins: string[] = (process.env.TRUSTED_ORIGINS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+const devOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+]
+
+function isOriginAllowed(origin: string | undefined): boolean {
+  if (!origin) return false
+  // Exact match against trusted list
+  if (trustedOrigins.includes(origin)) return true
+  // Dev origins only in non-production
+  if (!isProduction && devOrigins.includes(origin)) return true
+  // Tenant subdomains: https://*.trendscore.co.ke (wildcard from TENANT_BASE_DOMAIN)
+  const baseDomain = process.env.TENANT_BASE_DOMAIN
+  if (baseDomain) {
+    const subdomainPrefix = `https://*.${baseDomain}`
+    // Match https://anything.trendscore.co.ke
+    const wildcardRegex = new RegExp(`^https://[a-z0-9-]+\\.${baseDomain.replace(/\./g, '\\.')}$`, 'i')
+    if (wildcardRegex.test(origin)) return true
+    void subdomainPrefix // kept for documentation
+  }
+  return false
+}
+
 app.use(
   cors({
-    origin: true,
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) callback(null, true)
+      else callback(null, false) // reject silently — don't echo the origin
+    },
     credentials: true,
   }),
 )
-app.use(express.json())
+
+// ---- CSRF protection: reject non-safe methods without trusted Origin ----
+// For cookie-authenticated requests, the browser automatically sends the
+// Origin header on cross-site requests. We reject POST/PUT/DELETE/PATCH
+// if the Origin is missing or not trusted. GET/HEAD/OPTIONS are allowed.
+const SAFE_METHODS = ['GET', 'HEAD', 'OPTIONS']
+app.use((req, res, next) => {
+  if (SAFE_METHODS.includes(req.method)) return next()
+  const origin = req.headers.origin
+  // If no Origin header, check Referer as fallback
+  const referer = req.headers.referer
+  const checkUrl = origin ?? (referer ? new URL(referer).origin : undefined)
+  if (!checkUrl) {
+    // No Origin/Referer at all — could be a direct API call (e.g. curl).
+    // Allow in development, reject in production for cookie-authenticated writes.
+    if (!isProduction) return next()
+    return res.status(403).json({ message: 'Missing Origin header.' })
+  }
+  if (!isOriginAllowed(checkUrl)) {
+    return res.status(403).json({ message: 'Origin not allowed.' })
+  }
+  next()
+})
+
+// ---- Trust proxy: needed behind Nginx for correct req.ip, secure cookies ----
+app.set('trust proxy', isProduction ? 1 : false)
+
+app.use(express.json({ limit: '10mb' }))
 app.use(cookieParser())
 
 // ---- Logo uploads: static serving ----
@@ -107,17 +223,24 @@ function clearSessionCookie(res: Response) {
   })
 }
 
-async function issueSession(userId: string) {
-  const token = jwt.sign({ sub: userId }, jwtSecret, { expiresIn: '7d' })
+// ---- Session token hashing ----
+// We store SHA-256 hashes of opaque session tokens in the database, never
+// raw tokens. This way a database leak does not expose valid session tokens.
+// The raw token is only ever sent to the user via the httpOnly cookie.
+function hashToken(rawToken: string): string {
+  return createHash('sha256').update(rawToken).digest('hex')
+}
+
+async function issueSession(userId: string): Promise<string> {
+  const rawToken = randomBytes(32).toString('hex')
+  const tokenHash = hashToken(rawToken)
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
 
-  await prisma.session.upsert({
-    where: { token },
-    update: { userId, expiresAt },
-    create: { token, userId, expiresAt },
+  await prisma.session.create({
+    data: { token: tokenHash, userId, expiresAt },
   })
 
-  return token
+  return rawToken
 }
 
 function toPublicUser(user: { id: string; name: string; email: string; role?: string }) {
@@ -134,11 +257,11 @@ function getRequestUser(req: Request) {
 }
 
 function verificationDigest(email: string, code: string) {
-  return createHmac('sha256', jwtSecret).update(`${email}:${code}`).digest('hex')
+  return createHmac('sha256', appSecret).update(`${email}:${code}`).digest('hex')
 }
 
 function createdEmailKey(email: string) {
-  return createHmac('sha256', jwtSecret).update(email).digest('hex')
+  return createHmac('sha256', appSecret).update(email).digest('hex')
 }
 
 function platformSenderEmail() {
@@ -290,11 +413,11 @@ function serializeQuote<T extends { subtotal: unknown; taxTotal: unknown; total:
 
 async function loadUserFromToken(token: string) {
   try {
-    const payload = jwt.verify(token, jwtSecret) as { sub: string }
-    const session = await prisma.session.findFirst({ where: { token, expiresAt: { gt: new Date() } } })
+    const tokenHash = hashToken(token)
+    const session = await prisma.session.findFirst({ where: { token: tokenHash, expiresAt: { gt: new Date() } } })
     if (!session) return null
     const user = await prisma.user.findUnique({
-      where: { id: payload.sub },
+      where: { id: session.userId },
       select: { id: true, name: true, email: true, role: true },
     })
 
@@ -360,8 +483,12 @@ app.get('/api/tenant/current', async (req, res) => {
   res.json({ tenant: organisation })
 })
 
-// Email template preview — renders HTML in browser for design review
-app.get('/api/email-preview/:template', (req, res) => {
+// Email template preview — renders HTML in browser for design review.
+// Disabled in production; requires superadmin auth otherwise.
+app.get('/api/email-preview/:template', requireSuperadmin, (req, res) => {
+  if (isProduction) {
+    return res.status(404).json({ message: 'This endpoint does not exist.' })
+  }
   const template = String(req.params.template ?? '')
   if (template === 'verification') {
     return res.set('Content-Type', 'text/html').send(verificationEmailHtml({ email: 'user@example.com', code: '483920' }))
@@ -479,7 +606,7 @@ app.post('/api/auth/register', async (req, res) => {
   res.status(201).json({ user: toPublicUser(user), welcomeEmailSent, subdomain: user.subdomain })
 })
 
-app.post('/api/auth/verification/send', async (req, res) => {
+app.post('/api/auth/verification/send', publicRateLimit, async (req, res) => {
   const email = String(req.body?.email ?? '').trim().toLowerCase()
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ message: 'Enter a valid email address.' })
   if (await prisma.user.findUnique({ where: { email }, select: { id: true } })) {
@@ -669,7 +796,8 @@ app.post('/api/auth/logout', async (req, res) => {
   const token = readTokenFromRequest(req)
 
   if (token) {
-    await prisma.session.deleteMany({ where: { token } }).catch(() => undefined)
+    const tokenHash = hashToken(token)
+    await prisma.session.deleteMany({ where: { token: tokenHash } }).catch(() => undefined)
   }
 
   clearSessionCookie(res)
@@ -786,12 +914,13 @@ app.delete('/api/customers/:id', requireAuth, async (req, res) => {
   const organisationId = await getOrganisationId(user.id)
   if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace before managing customers.' })
 
+  const existing = await prisma.customer.findFirst({ where: { id: customerId, organisationId } })
+  if (!existing) return res.status(404).json({ message: 'Customer not found.' })
+
   const hasQuotes = await prisma.quote.count({ where: { customerId, organisationId } })
   if (hasQuotes) return res.status(409).json({ message: 'This customer has quotes and cannot be deleted.' })
 
-  await prisma.customer.deleteMany({
-    where: { id: customerId, organisationId },
-  })
+  await prisma.customer.delete({ where: { id: customerId } })
 
   res.json({ success: true })
 })
@@ -1106,7 +1235,7 @@ app.post('/api/quotes/:id/share', requireAuth, async (req, res) => {
   res.json({ quote: shared })
 })
 
-app.get('/api/public/quotes/:token', async (req, res) => {
+app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
   const publicToken = String(req.params.token ?? '')
   const quote = await prisma.quote.findUnique({
     where: { publicToken },
@@ -1149,7 +1278,7 @@ app.get('/api/public/quotes/:token', async (req, res) => {
   })
 })
 
-app.post('/api/public/quotes/:token/decision', async (req, res) => {
+app.post('/api/public/quotes/:token/decision', publicRateLimit, async (req, res) => {
   const decision = String(req.body?.decision ?? '').toUpperCase()
   if (!['APPROVED', 'DECLINED'].includes(decision)) return res.status(400).json({ message: 'Choose approve or decline.' })
   const publicToken = String(req.params.token ?? '')
@@ -1394,7 +1523,7 @@ app.post('/api/settings/logo', requireAuth, async (req, res) => {
 
   const contentType = req.headers['content-type'] ?? ''
   if (!ALLOWED_IMAGE_TYPES.some((type) => contentType.includes(type))) {
-    return res.status(400).json({ message: 'Logo must be a PNG, JPEG, WebP, SVG, or GIF image.' })
+    return res.status(400).json({ message: 'Logo must be a PNG, JPEG, WebP, or GIF image.' })
   }
 
   const chunks: Buffer[] = []
@@ -1607,6 +1736,13 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   })
 })
 
-app.listen(port, () => {
-  console.log(`iQuote API listening on http://localhost:${port}`)
-})
+export { app, prisma, issueSession, hashToken, checkLoginRateLimit, recordFailedLogin, clearLoginAttempts }
+
+// Start the server only when this file is the entry point (not when imported by tests)
+const isMainModule = process.argv[1]?.endsWith('index.js') || process.argv[1]?.endsWith('index.ts') ||
+  process.argv[1]?.includes('src/index') || process.argv[1]?.includes('dist/index')
+if (isMainModule) {
+  app.listen(port, () => {
+    console.log(`iQuote API listening on http://localhost:${port}`)
+  })
+}
