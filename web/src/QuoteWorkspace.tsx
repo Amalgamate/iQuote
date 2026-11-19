@@ -171,6 +171,9 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [chartRange, setChartRange] = useState<ChartRange>('30D')
   const [showSendModal, setShowSendModal] = useState(false)
   const [sendEmail, setSendEmail] = useState('')
+  const [sendCc, setSendCc] = useState('')
+  const [sendCustomMessage, setSendCustomMessage] = useState('')
+  const [syncCustomerEmail, setSyncCustomerEmail] = useState(false)
   const [sendMessage, setSendMessage] = useState('')
   const [sendStatus, setSendStatus] = useState<'success' | 'error' | null>(null)
   const [sending, setSending] = useState(false)
@@ -594,17 +597,51 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     }
   }
 
+  const openSendModal = () => {
+    const activeCustomer = customers.find((c) => c.id === editor?.customerId)
+    const emailOnRecord = activeCustomer?.email || ''
+    setSendEmail(emailOnRecord)
+    setSendCc('')
+    setSendCustomMessage('')
+    setSyncCustomerEmail(!emailOnRecord)
+    setSendMessage('')
+    setSendStatus(null)
+    setShowSendModal(true)
+    if (editorQuoteId) {
+      void loadDeliveries(editorQuoteId)
+    }
+  }
+
   const sendQuoteEmail = async () => {
     if (!editorQuoteId || !sendEmail.trim()) return
     setSending(true)
     setSendMessage('')
     setSendStatus(null)
     try {
-      await apiRequest(`/api/quotes/${editorQuoteId}/send`, { method: 'POST', body: JSON.stringify({ recipientEmail: sendEmail.trim() }) })
+      await apiRequest<{ delivery: QuoteDelivery; quote: Quote; customerUpdated?: boolean }>(
+        `/api/quotes/${editorQuoteId}/send`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            recipientEmail: sendEmail.trim(),
+            ccEmails: sendCc.trim() || undefined,
+            message: sendCustomMessage.trim() || undefined,
+            syncCustomerEmail,
+          }),
+        }
+      )
       setSendMessage('Quote email sent. Delivery status will update below.')
       setSendStatus('success')
       setShowSendModal(false)
-      setSendEmail('')
+
+      if (syncCustomerEmail && editor?.customerId) {
+        const updatedEmail = sendEmail.trim().toLowerCase()
+        const targetCustomerId = editor.customerId
+        setCustomers((prev) =>
+          prev.map((c) => (c.id === targetCustomerId ? { ...c, email: updatedEmail } : c))
+        )
+      }
+
       await loadDeliveries(editorQuoteId)
     } catch (requestError) {
       setSendMessage(requestError instanceof Error ? requestError.message : 'Unable to send quote email.')
@@ -863,7 +900,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
 
         {page === 'editor' && editor && business && (
           <section className="editor-content">
-            <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => { setShowSendModal(true); void loadDeliveries(editorQuoteId) }}>Send email</button>}<button className="button button-primary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Mark as sent</button></div></div>
+            <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={openSendModal}>Send email</button>}<button className="button button-primary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Mark as sent</button></div></div>
             {sharedUrl && <div className="share-callout"><div><strong>Quote link is ready</strong><span>{sharedUrl}</span></div><div className="share-actions"><button className="button button-secondary" type="button" onClick={() => { void navigator.clipboard.writeText(sharedUrl).then(() => setCopied(true)).catch(() => setError('Copy the quote link from the address shown.')) }}>{copied ? 'Copied' : 'Copy link'}</button><a className="button button-secondary" href={`https://wa.me/?text=${encodeURIComponent(`Here is your quotation: ${sharedUrl}`)}`} target="_blank" rel="noreferrer">WhatsApp</a><button className="quiet-button danger-button" type="button" onClick={() => void revokeQuoteLink()} disabled={revoking}>{revoking ? 'Revoking…' : 'Revoke link'}</button></div></div>}
             {sendMessage && <div className={sendStatus === 'success' ? 'workspace-alert workspace-alert-success' : 'workspace-alert'} role="status"><span>{sendMessage}</span><button type="button" onClick={() => { setSendMessage(''); setSendStatus(null) }} aria-label="Dismiss">×</button></div>}
             {deliveries.length > 0 && (
@@ -897,7 +934,141 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
       {customerModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCustomerModal(false) }}><form className="customer-modal" onSubmit={(event) => void submitCustomer(event)}><div className="modal-heading"><div><p className="workspace-eyebrow">Address book</p><h2>{customerForm.id ? 'Edit customer' : 'Add a customer'}</h2></div><button className="quiet-button" type="button" onClick={() => setCustomerModal(false)} aria-label="Close">×</button></div><label className="field-label">Customer name<input className="input-control" required value={customerForm.name} onChange={(event) => setCustomerForm((current) => ({ ...current, name: event.target.value }))} /></label><label className="field-label">Phone<input className="input-control" type="tel" value={customerForm.phone} onChange={(event) => setCustomerForm((current) => ({ ...current, phone: event.target.value }))} /></label><label className="field-label">Email<input className="input-control" type="email" value={customerForm.email} onChange={(event) => setCustomerForm((current) => ({ ...current, email: event.target.value }))} /></label><p className="field-hint">Add a phone number or an email address.</p>{customerError && <p className="form-error" role="alert">{customerError}</p>}<div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setCustomerModal(false)}>Cancel</button><button type="submit" className="button button-primary">{customerForm.id ? 'Save changes' : 'Add customer'}</button></div></form></div>}
       {serviceModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setServiceModal(false) }}><form className="customer-modal" onSubmit={(event) => void saveServiceItem(event)}><div className="modal-heading"><div><p className="workspace-eyebrow">Your price book</p><h2>{serviceForm.id ? 'Edit item' : 'Add a service or product'}</h2></div><button className="quiet-button" type="button" onClick={() => setServiceModal(false)} aria-label="Close">×</button></div><div className="settings-grid"><label>Name<input className="input-control" required maxLength={100} value={serviceForm.name} onChange={(event) => setServiceForm((current) => ({ ...current, name: event.target.value }))} placeholder="e.g. Tap replacement" /></label><label>Category<input className="input-control" required maxLength={60} value={serviceForm.category} onChange={(event) => setServiceForm((current) => ({ ...current, category: event.target.value }))} placeholder="e.g. Plumbing repairs" /></label><label>Type<select className="input-control" value={serviceForm.kind} onChange={(event) => setServiceForm((current) => ({ ...current, kind: event.target.value as ServiceForm['kind'] }))}><option value="SERVICE">Service</option><option value="PRODUCT">Product</option></select></label><label>Unit<input className="input-control" required maxLength={24} value={serviceForm.unit} onChange={(event) => setServiceForm((current) => ({ ...current, unit: event.target.value }))} placeholder="job, hour, visit, item" /></label><label>Default price<input className="input-control" type="number" min="0" step="0.01" required value={serviceForm.defaultPrice} onChange={(event) => setServiceForm((current) => ({ ...current, defaultPrice: event.target.value }))} /></label><label>Tax rate (%)<input className="input-control" type="number" min="0" max="100" step="0.01" value={serviceForm.defaultTaxRate} onChange={(event) => setServiceForm((current) => ({ ...current, defaultTaxRate: event.target.value }))} placeholder={`Business default (${business?.defaultTaxRate ?? 0}%)`} /></label><label className="span-two">Customer-facing description<textarea className="input-control" rows={3} maxLength={500} value={serviceForm.description} onChange={(event) => setServiceForm((current) => ({ ...current, description: event.target.value }))} /></label></div>{serviceError && <p className="form-error" role="alert">{serviceError}</p>}<div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setServiceModal(false)}>Cancel</button><button type="submit" className="button button-primary">{serviceForm.id ? 'Save item' : 'Add item'}</button></div></form></div>}
       {templateModal && editor && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTemplateModal(false) }}><form className="customer-modal" onSubmit={(event) => void saveQuoteTemplate(event)}><div className="modal-heading"><div><p className="workspace-eyebrow">Reusable workflow</p><h2>Save this quote as a template</h2></div><button className="quiet-button" type="button" onClick={() => setTemplateModal(false)} aria-label="Close">×</button></div><label className="field-label">Template name<input className="input-control" required maxLength={100} value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="e.g. Bathroom leak repair" /></label><label className="field-label">When do you use it?<textarea className="input-control" rows={3} maxLength={300} value={templateDescription} onChange={(event) => setTemplateDescription(event.target.value)} placeholder="Briefly describe the job flow" /></label><p className="field-hint">This saves the current quote lines, notes, and terms as a starter for your next quote.</p><div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setTemplateModal(false)}>Cancel</button><button type="submit" className="button button-primary">Save template</button></div></form></div>}
-      {showSendModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowSendModal(false) }}><div className="customer-modal"><div className="modal-heading"><div><p className="workspace-eyebrow">Email delivery</p><h2>Send quote by email</h2></div><button className="quiet-button" type="button" onClick={() => setShowSendModal(false)} aria-label="Close">×</button></div><label className="field-label">Recipient email<input className="input-control" type="email" required value={sendEmail} onChange={(event) => setSendEmail(event.target.value)} placeholder="customer@example.com" /></label><p className="field-hint">The quote will be sent as a PDF attachment with a public review link. The recipient will see the business name and sender configured in your email settings.</p>{sendMessage && <p className="form-error" role="alert">{sendMessage}</p>}{deliveries.length > 0 && <div className="delivery-history"><h4>Recent deliveries</h4>{deliveries.slice(0, 3).map((d) => <div key={d.id} className="delivery-history-item"><span className={`status-badge status-${d.status.toLowerCase()}`}>{d.status}</span><span>{d.recipientEmail}</span><small>{d.sentAt ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(d.sentAt)) : 'Pending'}</small></div>)}</div>}<div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setShowSendModal(false)}>Cancel</button><button type="button" className="button button-primary" onClick={() => void sendQuoteEmail()} disabled={sending || !sendEmail.trim()}>{sending ? 'Sending…' : 'Send quote'}</button></div></div></div>}
+      {showSendModal && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowSendModal(false)
+          }}
+        >
+          <div className="customer-modal send-quote-modal">
+            <div className="modal-heading">
+              <div>
+                <p className="workspace-eyebrow">Email delivery</p>
+                <h2>Send quote by email</h2>
+                {(() => {
+                  const activeCustomer = customers.find((c) => c.id === editor?.customerId)
+                  return activeCustomer ? (
+                    <p className="modal-subheading">
+                      Client: <strong>{activeCustomer.name}</strong>
+                    </p>
+                  ) : null
+                })()}
+              </div>
+              <button className="quiet-button" type="button" onClick={() => setShowSendModal(false)} aria-label="Close">
+                ×
+              </button>
+            </div>
+
+            <div className="modal-fields-group">
+              <label className="field-label">
+                <div className="field-label-row">
+                  <span>Recipient email</span>
+                  {(() => {
+                    const activeCustomer = customers.find((c) => c.id === editor?.customerId)
+                    return activeCustomer?.email ? (
+                      <span className="field-source-pill">✓ Saved in customer profile</span>
+                    ) : (
+                      <span className="field-source-pill warning-pill">! Missing from profile</span>
+                    )
+                  })()}
+                </div>
+                <input
+                  className="input-control"
+                  type="email"
+                  required
+                  value={sendEmail}
+                  onChange={(event) => setSendEmail(event.target.value)}
+                  placeholder="client@example.com"
+                />
+              </label>
+
+              <label className="field-label">
+                <div className="field-label-row">
+                  <span>CC (optional)</span>
+                  <span className="field-hint-inline">Separate multiple with commas</span>
+                </div>
+                <input
+                  className="input-control"
+                  type="text"
+                  value={sendCc}
+                  onChange={(event) => setSendCc(event.target.value)}
+                  placeholder="e.g. finance@company.com, boss@company.com"
+                />
+              </label>
+
+              <label className="field-label">
+                <span>Personal message or note (optional)</span>
+                <textarea
+                  className="input-control"
+                  rows={2}
+                  value={sendCustomMessage}
+                  onChange={(event) => setSendCustomMessage(event.target.value)}
+                  placeholder="Add a friendly note to include with the quote..."
+                />
+              </label>
+
+              {(() => {
+                const activeCustomer = customers.find((c) => c.id === editor?.customerId)
+                const isDifferent =
+                  activeCustomer &&
+                  (!activeCustomer.email || activeCustomer.email.toLowerCase() !== sendEmail.trim().toLowerCase())
+                if (!isDifferent || !sendEmail.trim()) return null
+                return (
+                  <label className="checkbox-field-label">
+                    <input
+                      type="checkbox"
+                      checked={syncCustomerEmail}
+                      onChange={(event) => setSyncCustomerEmail(event.target.checked)}
+                    />
+                    <span>
+                      Save this email to <strong>{activeCustomer.name}</strong>'s profile for future quotes
+                    </span>
+                  </label>
+                )
+              })()}
+            </div>
+
+            <p className="field-hint">
+              The quote will be sent as a PDF attachment with a public review link. The recipient will see your business name and verified sender.
+            </p>
+
+            {sendMessage && <p className="form-error" role="alert">{sendMessage}</p>}
+
+            {deliveries.length > 0 && (
+              <div className="delivery-history">
+                <h4>Recent deliveries</h4>
+                {deliveries.slice(0, 3).map((d) => (
+                  <div key={d.id} className="delivery-history-item">
+                    <span className={`status-badge status-${d.status.toLowerCase()}`}>{d.status}</span>
+                    <span>{d.recipientEmail}</span>
+                    <small>
+                      {d.sentAt
+                        ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(d.sentAt))
+                        : 'Pending'}
+                    </small>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="modal-actions">
+              <button type="button" className="button button-secondary" onClick={() => setShowSendModal(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button button-primary"
+                onClick={() => void sendQuoteEmail()}
+                disabled={sending || !sendEmail.trim()}
+              >
+                {sending ? 'Sending…' : 'Send quote'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

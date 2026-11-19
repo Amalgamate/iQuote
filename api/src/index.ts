@@ -242,13 +242,13 @@ function hashToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex')
 }
 
-async function issueSession(userId: string): Promise<string> {
+async function issueSession(userId: string, mfaVerified = false): Promise<string> {
   const rawToken = randomBytes(32).toString('hex')
   const tokenHash = hashToken(rawToken)
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
 
   await prisma.session.create({
-    data: { token: tokenHash, userId, expiresAt },
+    data: { token: tokenHash, userId, expiresAt, ...(mfaVerified ? { mfaVerifiedAt: new Date() } : {}) },
   })
 
   return rawToken
@@ -264,7 +264,23 @@ function toPublicUser(user: { id: string; name: string; email: string; role?: st
 }
 
 function getRequestUser(req: Request) {
-  return (req as Request & { user?: { id: string; name: string; email: string } }).user
+  return (req as Request & { user?: { id: string; name: string; email: string; role?: string } }).user
+}
+
+async function writeSuperadminAudit(req: Request, actor: { id: string; email: string }, action: string, targetType: string, targetId: string | null, summary: string, metadata?: PrismaTypes.InputJsonValue, db: PrismaTypes.TransactionClient | typeof prisma = prisma) {
+  return (db as any).superadminAuditEvent.create({
+    data: {
+      actorId: actor.id,
+      actorEmail: actor.email,
+      action,
+      targetType,
+      targetId,
+      summary,
+      ...(metadata ? { metadata } : {}),
+      ipAddress: req.ip ?? req.socket.remoteAddress ?? null,
+      userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300) || null,
+    },
+  })
 }
 
 function verificationDigest(email: string, code: string) {
@@ -289,7 +305,15 @@ function platformEmailReady() {
 
 type SendEmailResult = { success: true; messageId: string | null }
 
-async function sendEmail(to: string, subject: string, html: string, idempotencyKey: string, organisationId?: string, attachments?: Array<{ filename: string; content: string }>): Promise<SendEmailResult | false> {
+async function sendEmail(
+  to: string,
+  subject: string,
+  html: string,
+  idempotencyKey: string,
+  organisationId?: string,
+  attachments?: Array<{ filename: string; content: string }>,
+  cc?: string[] | string,
+): Promise<SendEmailResult | false> {
   const tenantSettings = organisationId ? await prisma.tenantEmailSettings.findUnique({ where: { organisationId } }) : null
   const tenantKey = tenantSettings?.provider === 'CUSTOM' && tenantSettings.resendApiKeyCiphertext ? decryptEmailSecret(tenantSettings.resendApiKeyCiphertext) : null
   const apiKey = tenantKey ?? process.env.RESEND_API_KEY
@@ -301,7 +325,18 @@ async function sendEmail(to: string, subject: string, html: string, idempotencyK
 
   const replyTo = process.env.SUPPORT_EMAIL ?? undefined
 
-  const body: Record<string, unknown> = { from, to: [to], subject, html, ...(replyTo ? { reply_to: replyTo } : {}) }
+  const ccList = Array.isArray(cc)
+    ? cc.map((item) => String(item).trim()).filter(Boolean)
+    : (cc ? String(cc).split(',').map((item) => item.trim()).filter(Boolean) : [])
+
+  const body: Record<string, unknown> = {
+    from,
+    to: [to],
+    subject,
+    html,
+    ...(ccList.length > 0 ? { cc: ccList } : {}),
+    ...(replyTo ? { reply_to: replyTo } : {}),
+  }
   if (attachments && attachments.length > 0) {
     body.attachments = attachments
   }
@@ -338,6 +373,12 @@ async function getOrganisationId(userId: string) {
   if (user?.organisationId) return user.organisationId
   const owned = await prisma.organisation.findFirst({ where: { ownerId: userId }, select: { id: true } })
   return owned?.id ?? null
+}
+
+async function getWorkspaceSuspension(userId: string) {
+  const organisationId = await getOrganisationId(userId)
+  if (!organisationId) return null
+  return prisma.organisation.findUnique({ where: { id: organisationId }, select: { status: true, suspensionReason: true } })
 }
 
 function makeSubdomainBase(name: string) {
@@ -446,6 +487,17 @@ async function loadUserFromToken(token: string) {
   }
 }
 
+async function markSessionMfaVerified(token: string) {
+  await prisma.session.updateMany({ where: { token: hashToken(token), expiresAt: { gt: new Date() } }, data: { mfaVerifiedAt: new Date() } })
+}
+
+async function hasVerifiedSuperadminSession(token: string, userId: string) {
+  const account = await prisma.user.findUnique({ where: { id: userId }, select: { mfaEnabled: true } })
+  if (!account?.mfaEnabled) return true
+  const session = await prisma.session.findFirst({ where: { token: hashToken(token), expiresAt: { gt: new Date() } }, select: { mfaVerifiedAt: true } })
+  return Boolean(session?.mfaVerifiedAt)
+}
+
 const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   const token = readTokenFromRequest(req)
   if (!token) {
@@ -455,6 +507,15 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   const user = await loadUserFromToken(token)
   if (!user) {
     return res.status(401).json({ message: 'Unauthorized' })
+  }
+
+  if (user.role === 'SUPERADMIN' && !(await hasVerifiedSuperadminSession(token, user.id))) {
+    return res.status(403).json({ message: 'Verify your authenticator code to continue.', code: 'MFA_REQUIRED' })
+  }
+
+  if (user.role !== 'SUPERADMIN') {
+    const workspace = await getWorkspaceSuspension(user.id)
+    if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
   }
 
   ;(req as Request & { user?: typeof user }).user = user
@@ -474,6 +535,10 @@ const requireSuperadmin = async (req: Request, res: Response, next: NextFunction
 
   if (user.role !== 'SUPERADMIN') {
     return res.status(403).json({ message: 'Superadmin access required.' })
+  }
+
+  if (!(await hasVerifiedSuperadminSession(token, user.id))) {
+    return res.status(403).json({ message: 'Verify your authenticator code to continue.', code: 'MFA_REQUIRED' })
   }
 
   ;(req as Request & { user?: typeof user }).user = user
@@ -501,6 +566,15 @@ function requireTeamRole(...allowed: TeamRoleName[]) {
 
     const fullUser = await loadUserWithTeamRole(sessionUser.id)
     if (!fullUser) return res.status(401).json({ message: 'Unauthorized' })
+
+    if (fullUser.role === 'SUPERADMIN' && !(await hasVerifiedSuperadminSession(token, fullUser.id))) {
+      return res.status(403).json({ message: 'Verify your authenticator code to continue.', code: 'MFA_REQUIRED' })
+    }
+
+    if (fullUser.role !== 'SUPERADMIN') {
+      const workspace = await getWorkspaceSuspension(fullUser.id)
+      if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
+    }
 
     if (fullUser.role === 'SUPERADMIN' || allowed.includes(fullUser.teamRole)) {
       ;(req as Request & { user?: typeof sessionUser }).user = sessionUser
@@ -843,7 +917,7 @@ app.post('/api/auth/login', async (req, res) => {
 
   const user = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, name: true, email: true, role: true, passwordHash: true },
+    select: { id: true, name: true, email: true, role: true, passwordHash: true, mfaEnabled: true },
   })
 
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
@@ -851,11 +925,39 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ message: 'Invalid email or password.' })
   }
 
+  if (user.role !== 'SUPERADMIN') {
+    const workspace = await getWorkspaceSuspension(user.id)
+    if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
+  }
+
   await clearLoginAttempts(rateLimitKey)
-  const token = await issueSession(user.id)
+  const token = await issueSession(user.id, user.role !== 'SUPERADMIN' || !user.mfaEnabled)
   sendSessionCookie(res, token)
 
-  res.json({ user: toPublicUser(user) })
+  res.json({ user: toPublicUser(user), mfaRequired: user.role === 'SUPERADMIN' && user.mfaEnabled })
+})
+
+app.post('/api/auth/superadmin-mfa/verify', async (req, res) => {
+  const token = readTokenFromRequest(req)
+  if (!token) return res.status(401).json({ message: 'Unauthorized' })
+  const user = await loadUserFromToken(token)
+  if (!user || user.role !== 'SUPERADMIN') return res.status(403).json({ message: 'Superadmin access required.' })
+  const code = String(req.body?.code ?? '').trim()
+  if (!token || !/^\d{6}$/.test(code)) return res.status(400).json({ message: 'Enter your six-digit authenticator code.' })
+  const account = await prisma.user.findUnique({ where: { id: user.id }, select: { mfaSecret: true, mfaEnabled: true } })
+  if (!account?.mfaEnabled || !account.mfaSecret) return res.status(409).json({ message: 'MFA is not configured for this account.' })
+  const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown'
+  const rateLimitKey = `admin-mfa:${user.email}:${ip}`
+  const rateCheck = await checkLoginRateLimit(rateLimitKey)
+  if (!rateCheck.allowed) return res.status(429).json({ message: 'Too many incorrect authenticator codes. Try again later.' })
+  if (!verifySync({ token: code, secret: account.mfaSecret })) {
+    await recordFailedLogin(rateLimitKey)
+    return res.status(401).json({ message: 'That authenticator code is invalid. Try again.' })
+  }
+  await clearLoginAttempts(rateLimitKey)
+  await markSessionMfaVerified(token)
+  await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_LOGIN_VERIFIED', 'USER', user.id, 'Super-admin sign-in completed with authenticator verification.')
+  res.json({ verified: true })
 })
 
 app.post('/api/auth/logout', async (req, res) => {
@@ -879,6 +981,11 @@ app.get('/api/auth/me', async (req, res) => {
   const user = await loadUserFromToken(token)
   if (!user) {
     return res.status(401).json({ message: 'Unauthorized' })
+  }
+
+  if (user.role !== 'SUPERADMIN') {
+    const workspace = await getWorkspaceSuspension(user.id)
+    if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
   }
 
   res.json({ user })
@@ -1450,6 +1557,28 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
   if (!recipientEmail) return res.status(400).json({ message: 'Recipient email is required.' })
   if (!isValidEmail(recipientEmail)) return res.status(400).json({ message: 'Enter a valid email address.' })
 
+  const rawCc = req.body?.ccEmails
+  let ccList: string[] = []
+  if (Array.isArray(rawCc)) {
+    ccList = rawCc.map((item) => String(item).trim().toLowerCase()).filter(Boolean)
+  } else if (typeof rawCc === 'string' && rawCc.trim()) {
+    ccList = rawCc.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean)
+  }
+
+  for (const cc of ccList) {
+    if (!isValidEmail(cc)) {
+      return res.status(400).json({ message: `Invalid CC email: "${cc}". Please verify the address.` })
+    }
+  }
+
+  const syncCustomerEmail = Boolean(req.body?.syncCustomerEmail)
+  if (syncCustomerEmail && quote.customerId) {
+    await prisma.customer.update({
+      where: { id: quote.customerId },
+      data: { email: recipientEmail },
+    }).catch((err) => console.error('Failed to auto-sync customer email:', err))
+  }
+
   // Idempotent: check for PENDING delivery in last 60 seconds
   if (await hasRecentPendingDelivery(quoteId, recipientEmail, 60_000)) {
     return res.status(409).json({ message: 'A send is already in progress. Wait a moment and try again.' })
@@ -1469,13 +1598,17 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
   const publicToken = quote.publicToken ?? randomBytes(24).toString('base64url')
   const now = new Date()
 
+  const deliveryMessage = ccList.length > 0
+    ? (message ? `${message}\n[CC: ${ccList.join(', ')}]` : `[CC: ${ccList.join(', ')}]`)
+    : message
+
   // Create the delivery record
   const delivery = await prisma.quoteDelivery.create({
     data: {
       quoteId: quote.id,
       recipientEmail,
       recipientName,
-      message,
+      message: deliveryMessage,
       status: 'PENDING',
     },
   })
@@ -1516,6 +1649,8 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
       }),
       `quote-delivery/${delivery.id}`,
       quote.organisationId,
+      undefined,
+      ccList,
     )
 
     await prisma.quoteDelivery.update({
@@ -1537,6 +1672,7 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
         sentAt: now.toISOString(),
       },
       quote: { id: quote.id, status: 'SENT', publicToken },
+      customerUpdated: syncCustomerEmail,
     })
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Email delivery failed.'
@@ -2099,9 +2235,21 @@ app.get('/api/superadmin/stats', requireSuperadmin, async (_req, res) => {
 app.get('/api/superadmin/workspaces', requireSuperadmin, async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 200)
   const offset = Math.max(Number(req.query?.offset ?? 0), 0)
+  const search = String(req.query?.q ?? '').trim().slice(0, 120)
+  const where = search ? {
+    OR: [
+      { name: { contains: search, mode: 'insensitive' as const } },
+      { email: { contains: search, mode: 'insensitive' as const } },
+      { country: { contains: search, mode: 'insensitive' as const } },
+      { businessType: { contains: search, mode: 'insensitive' as const } },
+      { owner: { is: { name: { contains: search, mode: 'insensitive' as const } } } },
+      { owner: { is: { email: { contains: search, mode: 'insensitive' as const } } } },
+    ],
+  } : {}
 
   const [organisations, totalCount] = await Promise.all([
     prisma.organisation.findMany({
+      where,
       orderBy: { createdAt: 'desc' },
       take: limit,
       skip: offset,
@@ -2112,13 +2260,14 @@ app.get('/api/superadmin/workspaces', requireSuperadmin, async (req, res) => {
         country: true,
         businessType: true,
         currency: true,
+        status: true,
         createdAt: true,
         owner: { select: { id: true, name: true, email: true, createdAt: true } },
         subscription: { select: { plan: true, status: true, trialEndsAt: true, simulated: true } },
         _count: { select: { quotes: true, customers: true } },
       },
     }),
-    prisma.organisation.count(),
+    prisma.organisation.count({ where }),
   ])
 
   const orgIds = organisations.map((o) => o.id)
@@ -2136,6 +2285,7 @@ app.get('/api/superadmin/workspaces', requireSuperadmin, async (req, res) => {
       country: org.country,
       businessType: org.businessType,
       currency: org.currency,
+      status: org.status,
       createdAt: org.createdAt,
       owner: org.owner,
       subscription: org.subscription,
@@ -2146,6 +2296,67 @@ app.get('/api/superadmin/workspaces', requireSuperadmin, async (req, res) => {
     totalCount,
     hasMore: offset + limit < totalCount,
   })
+})
+
+app.get('/api/superadmin/workspaces/:id', requireSuperadmin, async (req, res) => {
+  const id = String(req.params.id ?? '')
+  const organisation = await prisma.organisation.findUnique({
+    where: { id },
+    select: {
+      id: true, name: true, email: true, phone: true, country: true, businessType: true, currency: true, website: true, status: true, suspendedAt: true, suspendedByEmail: true, suspensionReason: true, restoredAt: true, restoredByEmail: true, createdAt: true,
+      owner: { select: { id: true, name: true, email: true, createdAt: true, mfaEnabled: true } },
+      subscription: { select: { plan: true, status: true, trialEndsAt: true, simulated: true, billingInterval: true } },
+      members: { select: { id: true, name: true, email: true, role: true, teamRole: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
+      _count: { select: { quotes: true, customers: true, jobs: true, invoices: true } },
+    },
+  })
+  if (!organisation) return res.status(404).json({ message: 'Workspace not found.' })
+
+  const [quoted, latestQuotes, latestJobs, latestInvoices] = await Promise.all([
+    prisma.quote.aggregate({ where: { organisationId: id }, _sum: { total: true } }),
+    prisma.quote.findMany({ where: { organisationId: id }, orderBy: { updatedAt: 'desc' }, take: 8, select: { id: true, documentNumber: true, status: true, currency: true, total: true, updatedAt: true, customer: { select: { name: true } }, deliveries: { orderBy: { createdAt: 'desc' }, take: 1, select: { status: true, sentAt: true, deliveredAt: true, bouncedAt: true, errorMessage: true } } } }),
+    prisma.job.findMany({ where: { organisationId: id }, orderBy: { updatedAt: 'desc' }, take: 6, select: { id: true, title: true, status: true, currency: true, updatedAt: true } }),
+    prisma.invoice.findMany({ where: { organisationId: id }, orderBy: { updatedAt: 'desc' }, take: 6, select: { id: true, invoiceNumber: true, status: true, currency: true, total: true, amountPaid: true, balanceDue: true, updatedAt: true } }),
+  ])
+
+  res.json({
+    workspace: { ...organisation, members: organisation.members, metrics: { quoteCount: organisation._count.quotes, customerCount: organisation._count.customers, jobCount: organisation._count.jobs, invoiceCount: organisation._count.invoices, totalQuotedValue: Number(quoted._sum.total ?? 0) } },
+    recentQuotes: latestQuotes.map((quote) => ({ ...quote, total: Number(quote.total), delivery: quote.deliveries[0] ?? null })),
+    recentJobs: latestJobs,
+    recentInvoices: latestInvoices.map((invoice) => ({ ...invoice, total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue) })),
+  })
+})
+
+app.post('/api/superadmin/workspaces/:id/suspend', requireSuperadmin, async (req, res) => {
+  const user = getRequestUser(req)
+  const id = String(req.params.id ?? '')
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!reason || reason.length < 5) return res.status(400).json({ message: 'Enter a suspension reason (at least 5 characters).' })
+  const existing = await prisma.organisation.findUnique({ where: { id }, select: { id: true, status: true } })
+  if (!existing) return res.status(404).json({ message: 'Workspace not found.' })
+  if (existing.status === 'SUSPENDED') return res.status(409).json({ message: 'This workspace is already suspended.' })
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const workspace = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.organisation.update({ where: { id }, data: { status: 'SUSPENDED', suspendedAt: new Date(), suspendedByEmail: user.email, suspensionReason: reason, restoredAt: null, restoredByEmail: null }, select: { id: true, status: true, suspendedAt: true, suspendedByEmail: true, suspensionReason: true } })
+    await writeSuperadminAudit(req, user, 'WORKSPACE_SUSPENDED', 'WORKSPACE', id, `Suspended workspace ${id}.`, { reason }, transaction)
+    return updated
+  })
+  res.json({ workspace })
+})
+
+app.post('/api/superadmin/workspaces/:id/restore', requireSuperadmin, async (req, res) => {
+  const user = getRequestUser(req)
+  const id = String(req.params.id ?? '')
+  const existing = await prisma.organisation.findUnique({ where: { id }, select: { id: true, status: true } })
+  if (!existing) return res.status(404).json({ message: 'Workspace not found.' })
+  if (existing.status !== 'SUSPENDED') return res.status(409).json({ message: 'This workspace is not suspended.' })
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const workspace = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.organisation.update({ where: { id }, data: { status: 'ACTIVE', restoredAt: new Date(), restoredByEmail: user.email }, select: { id: true, status: true, restoredAt: true, restoredByEmail: true } })
+    await writeSuperadminAudit(req, user, 'WORKSPACE_RESTORED', 'WORKSPACE', id, `Restored workspace ${id}.`, undefined, transaction)
+    return updated
+  })
+  res.json({ workspace })
 })
 
 app.get('/api/superadmin/quotes', requireSuperadmin, async (req, res) => {
@@ -2187,15 +2398,42 @@ app.get('/api/superadmin/quotes', requireSuperadmin, async (req, res) => {
   })
 })
 
+app.get('/api/superadmin/audit', requireSuperadmin, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 100)
+  const offset = Math.max(Number(req.query?.offset ?? 0), 0)
+  const search = String(req.query?.q ?? '').trim().slice(0, 120)
+  const where = search ? {
+    OR: [
+      { actorEmail: { contains: search, mode: 'insensitive' as const } },
+      { action: { contains: search, mode: 'insensitive' as const } },
+      { targetType: { contains: search, mode: 'insensitive' as const } },
+      { targetId: { contains: search, mode: 'insensitive' as const } },
+      { summary: { contains: search, mode: 'insensitive' as const } },
+    ],
+  } : {}
+  const [events, totalCount] = await Promise.all([
+    (prisma as any).superadminAuditEvent.findMany({ where, orderBy: { createdAt: 'desc' }, take: limit, skip: offset, select: { id: true, actorEmail: true, action: true, targetType: true, targetId: true, summary: true, metadata: true, ipAddress: true, userAgent: true, createdAt: true } }),
+    (prisma as any).superadminAuditEvent.count({ where }),
+  ])
+  res.json({ events, totalCount, hasMore: offset + limit < totalCount })
+})
+
 // Promote a user to SUPERADMIN (only a superadmin can do this)
 app.post('/api/superadmin/promote', requireSuperadmin, async (req, res) => {
+  const actor = getRequestUser(req)
   const email = String(req.body?.email ?? '').trim().toLowerCase()
   if (!email) return res.status(400).json({ message: 'Email is required.' })
 
   const user = await prisma.user.findUnique({ where: { email } })
   if (!user) return res.status(404).json({ message: 'User not found.' })
+  if (user.role === 'SUPERADMIN') return res.status(409).json({ message: 'This user is already a super-admin.' })
+  if (!actor) return res.status(401).json({ message: 'Unauthorized' })
 
-  const updated = await prisma.user.update({ where: { id: user.id }, data: { role: 'SUPERADMIN' }, select: { id: true, name: true, email: true, role: true } })
+  const updated = await prisma.$transaction(async (transaction) => {
+    const promoted = await transaction.user.update({ where: { id: user.id }, data: { role: 'SUPERADMIN' }, select: { id: true, name: true, email: true, role: true } })
+    await writeSuperadminAudit(req, actor, 'USER_PROMOTED_TO_SUPERADMIN', 'USER', user.id, `Promoted ${user.email} to super-admin.`, undefined, transaction)
+    return promoted
+  })
   res.json({ user: updated })
 })
 
@@ -3028,9 +3266,12 @@ app.get('/api/superadmin/mfa/setup', requireSuperadmin, async (req, res) => {
   if (!existing) return res.status(404).json({ message: 'User not found.' })
   if (existing.mfaEnabled) return res.status(409).json({ message: 'MFA is already enabled.' })
 
-  const secret = generateSecret()
+  const secret = existing.mfaSecret ?? generateSecret()
   const otpauth = generateURI({ label: user.email, issuer: 'iQuote', secret })
-  await prisma.user.update({ where: { id: user.id }, data: { mfaSecret: secret } })
+  await prisma.$transaction(async (transaction) => {
+    await transaction.user.update({ where: { id: user.id }, data: { mfaSecret: secret } })
+    await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_SETUP_STARTED', 'USER', user.id, 'Authenticator setup was started.', undefined, transaction)
+  })
   res.json({ secret, otpauth })
 })
 
@@ -3046,7 +3287,12 @@ app.post('/api/superadmin/mfa/verify', requireSuperadmin, async (req, res) => {
   const valid = verifySync({ token: code, secret: existing.mfaSecret })
   if (!valid) return res.status(400).json({ message: 'Invalid verification code.' })
 
-  await prisma.user.update({ where: { id: user.id }, data: { mfaEnabled: true } })
+  await prisma.$transaction(async (transaction) => {
+    await transaction.user.update({ where: { id: user.id }, data: { mfaEnabled: true } })
+    await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_ENABLED', 'USER', user.id, 'Authenticator protection was enabled.', undefined, transaction)
+  })
+  const token = readTokenFromRequest(req)
+  if (token) await markSessionMfaVerified(token)
   res.json({ success: true })
 })
 
@@ -3061,7 +3307,10 @@ app.post('/api/superadmin/mfa/disable', requireSuperadmin, async (req, res) => {
   const valid = verifySync({ token: code, secret: existing.mfaSecret ?? '' })
   if (!valid) return res.status(400).json({ message: 'Invalid verification code.' })
 
-  await prisma.user.update({ where: { id: user.id }, data: { mfaEnabled: false, mfaSecret: null } })
+  await prisma.$transaction(async (transaction) => {
+    await transaction.user.update({ where: { id: user.id }, data: { mfaEnabled: false, mfaSecret: null } })
+    await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_DISABLED', 'USER', user.id, 'Authenticator protection was disabled.', undefined, transaction)
+  })
   res.json({ success: true })
 })
 

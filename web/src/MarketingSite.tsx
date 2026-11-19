@@ -68,6 +68,8 @@ export default function MarketingSite() {
   const [notice, setNotice] = useState('')
   const [loginEmail, setLoginEmail] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
+  const [loginMfaRequired, setLoginMfaRequired] = useState(false)
+  const [loginMfaCode, setLoginMfaCode] = useState('')
   const [stageView, setStageView] = useState<'paper' | 'mockup'>('paper')
   const [quoteApproved, setQuoteApproved] = useState(false)
 
@@ -173,10 +175,24 @@ export default function MarketingSite() {
     setBusy(true)
     setError('')
     try {
-      await apiRequest('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: loginEmail, password: loginPassword }) })
-      window.location.reload()
+      const result = await apiRequest<{ mfaRequired?: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: loginEmail, password: loginPassword }) })
+      if (result.mfaRequired) setLoginMfaRequired(true)
+      else window.location.reload()
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to sign in.')
+      setBusy(false)
+    }
+  }
+
+  const verifyLoginMfa = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await apiRequest('/api/auth/superadmin-mfa/verify', { method: 'POST', body: JSON.stringify({ code: loginMfaCode }) })
+      window.location.reload()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to verify code.')
       setBusy(false)
     }
   }
@@ -410,6 +426,7 @@ export default function MarketingSite() {
     </div>
   }
 
+  if (screen === 'login' && loginMfaRequired) return <div className="onboarding-page onboarding-page-no-header"><div className="onboarding-layout login-layout"><section className="onboarding-form-side"><div className="onboarding-form-wrap"><div className="login-brand-row"><span className="site-brand"><span className="site-brand-mark">iQ</span><span>iQuote<span className="site-brand-dot">.</span></span></span></div><p className="site-kicker">SUPERADMIN SECURITY</p><h1>Verify it’s you.</h1><p className="onboarding-copy">Enter the six-digit code from your authenticator app to open the admin dashboard.</p><form onSubmit={verifyLoginMfa} className="onboarding-form"><label>Authenticator code<input className="code-input" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" required value={loginMfaCode} onChange={event => setLoginMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Verifying…' : 'Verify and continue'} <span>↗</span></button><button type="button" className="back-link" onClick={async () => { await apiRequest('/api/auth/logout', { method: 'POST' }).catch(() => {}); setLoginMfaRequired(false); setLoginMfaCode('') }}>← Back to sign in</button></form></div></section><OnboardingAside /></div></div>
   if (screen === 'login') return <div className="onboarding-page onboarding-page-no-header"><div className="onboarding-layout login-layout"><section className="onboarding-form-side"><div className="onboarding-form-wrap"><div className="login-brand-row"><button className="site-brand" onClick={() => setScreen('landing')}><span className="site-brand-mark">iQ</span><span>iQuote<span className="site-brand-dot">.</span></span></button></div><p className="site-kicker">YOUR WORKSPACE IS WAITING</p><h1>Welcome back.</h1><p className="onboarding-copy">Sign in to pick up where your business left off.</p><form onSubmit={login} className="onboarding-form"><label>Email address<input type="email" required autoComplete="email" value={loginEmail} onChange={event => setLoginEmail(event.target.value)} placeholder="you@yourbusiness.com" /></label><label>Password<input type="password" required autoComplete="current-password" value={loginPassword} onChange={event => setLoginPassword(event.target.value)} placeholder="Your password" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'} <span>↗</span></button></form><p className="login-footer-link">New to iQuote? <button className="inline-action" onClick={startSignup}>Create an account</button></p></div></section><OnboardingAside /></div></div>
 
   const labels = ['Account', 'Verify email', 'Business', 'Plan']
