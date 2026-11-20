@@ -10,34 +10,35 @@ import {
 import type { QuoteDocumentData } from './QuoteDocument'
 import { assetUrl, formatMoney } from './api'
 
-const ink = '#18212d'
-const muted = '#5e6874'
-const rule = '#c8cdd3'
-const footerBg = '#18212d'
-const footerText = '#e8eaed'
-const footerMuted = '#c8cdd3'
+const ink = '#1b2922'
+const muted = '#5e7065'
+const rule = '#d4e0d7'
+const brandGreen = '#146b4d'
+const footerBg = '#f1f7f2'
+const footerText = '#40564a'
+const footerMuted = '#56695d'
 
 const styles = StyleSheet.create({
-  page: { paddingTop: 40, paddingBottom: 110, paddingHorizontal: 46, color: ink, fontFamily: 'Helvetica', fontSize: 9 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 22, borderBottomWidth: 2, borderBottomColor: ink },
+  page: { paddingTop: 44, paddingBottom: 110, paddingHorizontal: 48, color: ink, fontFamily: 'Helvetica', fontSize: 9 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 24, borderBottomWidth: 1, borderBottomColor: brandGreen },
   brand: { flexDirection: 'column', alignItems: 'flex-start', gap: 10, flex: 1, paddingRight: 20 },
   logo: { width: 76, height: 76, objectFit: 'contain' },
   logoFallback: { width: 76, height: 76, borderWidth: 1, borderColor: rule, alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 800, color: '#26364a' },
   businessDetails: { flexDirection: 'column', gap: 4, flex: 1 },
-  businessName: { fontSize: 15, fontWeight: 800, color: ink, marginBottom: 2 },
+  businessName: { fontSize: 16, fontWeight: 700, color: ink, marginBottom: 2 },
   businessMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   businessMeta: { fontSize: 8.5, color: muted },
   businessMetaDot: { fontSize: 8.5, color: rule, marginHorizontal: 4 },
   titleBlock: { width: 200, alignItems: 'flex-end', gap: 5 },
-  title: { fontSize: 28, fontWeight: 800, letterSpacing: 0.8, color: ink, marginBottom: 3 },
+  title: { fontSize: 27, fontWeight: 700, letterSpacing: 0.6, color: brandGreen, marginBottom: 3 },
   documentNumber: { fontSize: 10, fontWeight: 700, color: '#384454' },
   meta: { fontSize: 8.5, color: muted },
-  recipient: { paddingTop: 22, paddingBottom: 18, gap: 5 },
+  recipient: { paddingTop: 25, paddingBottom: 21, gap: 5 },
   eyebrow: { fontSize: 8, fontWeight: 800, letterSpacing: 0.8, color: muted, marginBottom: 3, textTransform: 'uppercase' },
   recipientName: { fontSize: 12, fontWeight: 700, color: ink },
   table: { width: '100%', marginTop: 2 },
-  tableHeader: { flexDirection: 'row', alignItems: 'center', minHeight: 26, borderTopWidth: 1, borderTopColor: '#8993a0', borderBottomWidth: 1, borderBottomColor: '#8993a0', backgroundColor: '#f8f9fa', color: '#384454', fontSize: 7.5, fontWeight: 800 },
-  row: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 10, borderBottomWidth: 0.5, borderBottomColor: '#e0e3e6' },
+  tableHeader: { flexDirection: 'row', alignItems: 'center', minHeight: 28, borderTopWidth: 1, borderTopColor: rule, borderBottomWidth: 1, borderBottomColor: '#cddbd0', backgroundColor: '#f3f7f4', color: '#40564a', fontSize: 7.5, fontWeight: 700 },
+  row: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: '#e5ece7' },
   descriptionColumn: { width: '45%', paddingRight: 8, paddingLeft: 5 },
   quantityColumn: { width: '9%', paddingRight: 4, paddingLeft: 5 },
   unitPriceColumn: { width: '19%', paddingRight: 4, paddingLeft: 5 },
@@ -51,18 +52,18 @@ const styles = StyleSheet.create({
   totals: { width: 230, alignSelf: 'flex-end', marginTop: 16, gap: 8 },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, color: muted, fontSize: 9 },
   totalValue: { color: ink, fontSize: 9, fontWeight: 600 },
-  grandTotal: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 10, marginTop: 2, borderTopWidth: 1, borderTopColor: '#697381', color: ink, fontSize: 11, fontWeight: 800 },
+  grandTotal: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 11, paddingHorizontal: 12, marginTop: 2, borderWidth: 1, borderColor: '#d8e8dc', backgroundColor: '#f1f7f2', color: brandGreen, fontSize: 11, fontWeight: 700 },
   notesBlock: { marginTop: 22, gap: 14 },
   note: { gap: 5 },
   noteHeading: { color: '#384454', fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase' },
   noteText: { color: muted, fontSize: 9, lineHeight: 1.5 },
-  footer: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: footerBg, color: footerText, paddingTop: 16, paddingBottom: 18, paddingHorizontal: 46 },
+  footer: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: footerBg, color: footerText, paddingTop: 16, paddingBottom: 18, paddingHorizontal: 48, borderTopWidth: 1, borderTopColor: rule },
   footerMain: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12, fontSize: 8.5 },
   footerThanks: { color: footerMuted },
   footerContacts: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, color: footerText },
   footerContact: { fontSize: 8.5 },
   footerContactDot: { fontSize: 8.5, color: '#5e6874', marginHorizontal: 4 },
-  footerPayment: { marginTop: 12, paddingTop: 10, borderTopWidth: 0.5, borderTopColor: '#384454' },
+  footerPayment: { marginTop: 12, paddingTop: 10, borderTopWidth: 0.5, borderTopColor: rule },
   footerPaymentHeading: { color: footerMuted, fontSize: 8, fontWeight: 800, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 },
   footerPaymentText: { color: footerText, fontSize: 8.5, lineHeight: 1.5 },
 })
