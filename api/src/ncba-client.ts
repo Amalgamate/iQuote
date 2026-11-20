@@ -1,6 +1,13 @@
 const BASE_URL = (process.env.NCBA_API_BASE_URL || 'https://c2bapis.ncbagroup.com').replace(/\/$/, '')
 let accessToken: string | null = null
 let accessTokenExpiresAt = 0
+let platformConfig: { username: string; secret: string; paybill: string; tillAccount: string } | null = null
+
+export function setPlatformNcbaConfig(config: { username: string; secret: string; paybill: string; tillAccount: string } | null) {
+  platformConfig = config
+  accessToken = null
+  accessTokenExpiresAt = 0
+}
 
 export type NcbaStkReply = {
   TransactionID: string | null
@@ -10,17 +17,23 @@ export type NcbaStkReply = {
 }
 
 function required(name: string) {
-  const value = process.env[name]?.trim()
+  const configured: Record<string, string | undefined> = {
+    NCBA_STK_USERNAME: platformConfig?.username,
+    NCBA_STK_SECRET_KEY: platformConfig?.secret,
+    NCBA_PAYBILL_NO: platformConfig?.paybill,
+    NCBA_TILL_ACCOUNT_NO: platformConfig?.tillAccount,
+  }
+  const value = (configured[name] || process.env[name])?.trim()
   if (!value) throw new Error(`NCBA configuration is missing ${name}.`)
   return value
 }
 
 export function ncbaStkConfigured() {
   return Boolean(
-    process.env.NCBA_STK_USERNAME?.trim()
-    && process.env.NCBA_STK_SECRET_KEY?.trim()
-    && process.env.NCBA_PAYBILL_NO?.trim()
-    && process.env.NCBA_TILL_ACCOUNT_NO?.trim(),
+    (platformConfig?.username || process.env.NCBA_STK_USERNAME)?.trim()
+    && (platformConfig?.secret || process.env.NCBA_STK_SECRET_KEY)?.trim()
+    && (platformConfig?.paybill || process.env.NCBA_PAYBILL_NO)?.trim()
+    && (platformConfig?.tillAccount || process.env.NCBA_TILL_ACCOUNT_NO)?.trim(),
   )
 }
 

@@ -946,6 +946,12 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
 .admin-pricing-note span { color: #78867d; }
 .admin-price-reason { display: grid; max-width: 520px; gap: 7px; color: #52655a; font-size: 11px; font-weight: 650; }
 .admin-price-reason .input-control { min-height: 40px; }
+.admin-ncba-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.admin-ncba-config .onboarding-form { display: grid; gap: 12px; }
+.admin-ncba-config label { display: grid; gap: 6px; color: #52655a; font-size: 11px; font-weight: 650; }
+.admin-ncba-config .input-control { min-height: 40px; }
+.admin-ncba-footnote { margin: 12px 0 0; color: #78867d; font-size: 11px; line-height: 1.5; }
+@media (max-width: 640px) { .admin-ncba-fields { grid-template-columns: 1fr; } }
 .admin-pricing-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; }
 .admin-pricing-actions [role="status"] { color: #22744d; font-size: 11px; }
 @media (max-width: 760px) { .admin-price-grid { grid-template-columns: 1fr; } .admin-pricing-actions { align-items: stretch; flex-direction: column; } .admin-pricing-actions .button { width: 100%; } }

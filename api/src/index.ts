@@ -11,7 +11,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
 import { getIndustryPack } from './industry-packs.js'
-import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush } from './ncba-client.js'
+import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush, setPlatformNcbaConfig } from './ncba-client.js'
 import { initiateMerchantStkPush, NcbaMerchantRequestError, normalizeCustomerPhone, normalizeMerchantCode, queryMerchantStkPush, verifyNotificationHash } from './customer-mpesa.js'
 import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, receiptDeliveryEmailHtml, emailSubjects } from './email-templates.js'
 
@@ -118,6 +118,34 @@ function decryptEmailSecret(value: string) {
   const decipher = createDecipheriv('aes-256-gcm', createHmac('sha256', 'iquote-email-settings').update(emailEncryptionKey).digest(), Buffer.from(ivText, 'base64'))
   decipher.setAuthTag(Buffer.from(tagText, 'base64'))
   return Buffer.concat([decipher.update(Buffer.from(encryptedText, 'base64')), decipher.final()]).toString('utf8')
+}
+
+function encryptPlatformNcbaSecret(value: string) {
+  if (!emailEncryptionKey || emailEncryptionKey.length < 32) throw new Error('Platform credential encryption is not configured on the server.')
+  const iv = randomBytes(12)
+  const key = createHmac('sha256', 'iquote-platform-ncba').update(emailEncryptionKey).digest()
+  const cipher = createCipheriv('aes-256-gcm', key, iv)
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()])
+  return `${iv.toString('base64')}.${cipher.getAuthTag().toString('base64')}.${encrypted.toString('base64')}`
+}
+
+function decryptPlatformNcbaSecret(value: string) {
+  if (!emailEncryptionKey || emailEncryptionKey.length < 32) throw new Error('Platform credential encryption is not configured on the server.')
+  const [ivText, tagText, encryptedText] = value.split('.')
+  if (!ivText || !tagText || !encryptedText) throw new Error('Stored NCBA credential is invalid.')
+  const key = createHmac('sha256', 'iquote-platform-ncba').update(emailEncryptionKey).digest()
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivText, 'base64'))
+  decipher.setAuthTag(Buffer.from(tagText, 'base64'))
+  return Buffer.concat([decipher.update(Buffer.from(encryptedText, 'base64')), decipher.final()]).toString('utf8')
+}
+
+async function hydratePlatformNcbaConfig() {
+  const row = await prisma.platformNcbaConfig.findUnique({ where: { id: 'platform' } })
+  if (row?.stkUsernameCiphertext && row.stkSecretCiphertext && row.paybillNumber && row.tillAccountNumber) {
+    setPlatformNcbaConfig({ username: decryptPlatformNcbaSecret(row.stkUsernameCiphertext), secret: decryptPlatformNcbaSecret(row.stkSecretCiphertext), paybill: row.paybillNumber, tillAccount: row.tillAccountNumber })
+  } else {
+    setPlatformNcbaConfig(null)
+  }
 }
 
 function encryptMfaSecret(value: string) {
@@ -1328,6 +1356,7 @@ async function activateSubscriptionFromPayment(paymentId: string, providerStatus
 }
 
 app.get('/api/billing/status', requireAuth, async (req, res) => {
+  await hydratePlatformNcbaConfig()
   const user = (req as Request & { user?: { id: string } }).user
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const organisationId = await getOrganisationId(user.id)
@@ -1349,6 +1378,7 @@ app.get('/api/billing/status', requireAuth, async (req, res) => {
 })
 
 app.post('/api/billing/stk', requireTeamRole('OWNER'), async (req, res) => {
+  await hydratePlatformNcbaConfig()
   const user = (req as Request & { user?: { id: string } }).user
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const organisationId = await getOrganisationId(user.id)
@@ -1390,6 +1420,7 @@ app.post('/api/billing/stk', requireTeamRole('OWNER'), async (req, res) => {
 })
 
 app.get('/api/billing/payments/:id', requireAuth, async (req, res) => {
+  await hydratePlatformNcbaConfig()
   const user = (req as Request & { user?: { id: string } }).user
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const organisationId = await getOrganisationId(user.id)
@@ -2739,6 +2770,47 @@ app.put('/api/superadmin/billing/prices', requireSuperadmin, async (req, res) =>
     return rows
   })
   res.json({ prices: await platformPlanPrices(), message: 'Plan prices saved. New checkouts will use these prices.' })
+})
+
+app.get('/api/superadmin/billing/ncba', requireSuperadmin, async (_req, res) => {
+  const row = await prisma.platformNcbaConfig.findUnique({ where: { id: 'platform' } })
+  const databaseConfigured = Boolean(row?.stkUsernameCiphertext && row?.stkSecretCiphertext && row.paybillNumber && row.tillAccountNumber)
+  res.json({
+    configured: databaseConfigured || ncbaStkConfigured(),
+    source: databaseConfigured ? 'ADMIN' : ncbaStkConfigured() ? 'ENVIRONMENT' : 'UNSET',
+    username: row?.stkUsernameCiphertext ? decryptPlatformNcbaSecret(row.stkUsernameCiphertext) : process.env.NCBA_STK_USERNAME ?? '',
+    paybillNumber: row?.paybillNumber ?? process.env.NCBA_PAYBILL_NO ?? '',
+    tillAccountNumber: row?.tillAccountNumber ?? process.env.NCBA_TILL_ACCOUNT_NO ?? '',
+    secretConfigured: databaseConfigured || Boolean(process.env.NCBA_STK_SECRET_KEY?.trim()),
+    encryptionReady: Boolean(emailEncryptionKey && emailEncryptionKey.length >= 32),
+    updatedAt: row?.updatedAt ?? null,
+  })
+})
+
+app.put('/api/superadmin/billing/ncba', requireSuperadmin, async (req, res) => {
+  const actor = getRequestUser(req)
+  if (!actor) return res.status(401).json({ message: 'Unauthorized.' })
+  if (!emailEncryptionKey || emailEncryptionKey.length < 32) return res.status(503).json({ message: 'Platform credential encryption is not configured on the server.' })
+  const username = String(req.body?.username ?? '').trim().slice(0, 200)
+  const secret = String(req.body?.secret ?? '').trim().slice(0, 500)
+  const paybillNumber = String(req.body?.paybillNumber ?? '').trim().slice(0, 40)
+  const tillAccountNumber = String(req.body?.tillAccountNumber ?? '').trim().slice(0, 80)
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!username || !paybillNumber || !tillAccountNumber || !reason) return res.status(400).json({ message: 'Enter the NCBA username, Paybill, Till account reference, and reason for this change.' })
+  const previous = await prisma.platformNcbaConfig.findUnique({ where: { id: 'platform' } })
+  const secretToSave = secret || (previous?.stkSecretCiphertext ? decryptPlatformNcbaSecret(previous.stkSecretCiphertext) : process.env.NCBA_STK_SECRET_KEY?.trim() ?? '')
+  if (!secretToSave) return res.status(400).json({ message: 'Enter the NCBA STK secret key to configure the connection.' })
+  const saved = await prisma.$transaction(async (tx) => {
+    const config = await tx.platformNcbaConfig.upsert({
+      where: { id: 'platform' },
+      create: { id: 'platform', stkUsernameCiphertext: encryptPlatformNcbaSecret(username), stkSecretCiphertext: encryptPlatformNcbaSecret(secretToSave), paybillNumber, tillAccountNumber, updatedByEmail: actor.email },
+      update: { stkUsernameCiphertext: encryptPlatformNcbaSecret(username), stkSecretCiphertext: encryptPlatformNcbaSecret(secretToSave), paybillNumber, tillAccountNumber, updatedByEmail: actor.email },
+    })
+    await writeSuperadminAudit(req, actor, 'PLATFORM_NCBA_CONFIG_UPDATED', 'PLATFORM_BILLING', null, 'Updated platform NCBA STK configuration.', { reason, secretRotated: Boolean(secret), source: 'ADMIN' }, tx)
+    return config
+  })
+  setPlatformNcbaConfig({ username, secret: decryptPlatformNcbaSecret(saved.stkSecretCiphertext!), paybill: saved.paybillNumber!, tillAccount: saved.tillAccountNumber! })
+  res.json({ message: 'NCBA configuration saved securely.', configured: ncbaStkConfigured(), updatedAt: saved.updatedAt })
 })
 
 app.get('/api/superadmin/stats', requireSuperadmin, async (_req, res) => {
@@ -4982,7 +5054,9 @@ export { app, prisma, issueSession, hashToken, checkLoginRateLimit, recordFailed
 const isMainModule = process.argv[1]?.endsWith('index.js') || process.argv[1]?.endsWith('index.ts') ||
   process.argv[1]?.includes('src/index') || process.argv[1]?.includes('dist/index')
 if (isMainModule) {
-  app.listen(port, () => {
-    console.log(`iQuote API listening on http://localhost:${port}`)
+  void hydratePlatformNcbaConfig().catch((error: unknown) => console.error('[billing] Could not load saved NCBA configuration:', error instanceof Error ? error.message : 'unknown error')).finally(() => {
+    app.listen(port, () => {
+      console.log(`iQuote API listening on http://localhost:${port}`)
+    })
   })
 }

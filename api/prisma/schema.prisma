@@ -187,6 +187,16 @@ model PlatformPlanPrice {
   updatedAt      DateTime @updatedAt
 }
 
+model PlatformNcbaConfig {
+  id                       String   @id @default("platform")
+  stkUsernameCiphertext    String?
+  stkSecretCiphertext      String?
+  paybillNumber            String?
+  tillAccountNumber        String?
+  updatedByEmail           String?
+  updatedAt                DateTime @updatedAt
+}
+
 model ServiceItem {
   id             String       @id @default(cuid())
   organisationId String

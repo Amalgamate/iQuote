@@ -90,6 +90,7 @@ type OperationsSnapshot = {
   incidents: Array<{ id: string; status: string; recipientEmail: string; errorMessage: string | null; createdAt: string; quote: { id: string; documentNumber: string; organisation: { id: string; name: string } } }>
   webhook: { latest: { source: string; eventType: string; processingStatus: string; processingError: string | null; receivedAt: string; processedAt: string | null } | null; events24h: number; failures24h: number; failures: Array<{ id: string; source: string; eventType: string; processingError: string | null; receivedAt: string }> }
 }
+type PlatformNcbaConfig = { configured: boolean; source: 'ADMIN' | 'ENVIRONMENT' | 'UNSET'; username: string; paybillNumber: string; tillAccountNumber: string; secretConfigured: boolean; encryptionReady: boolean; updatedAt: string | null }
 type PlatformReport = {
   range: string
   from: string
@@ -168,6 +169,10 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   const [accountSessions, setAccountSessions] = useState<AdminSession[]>([])
   const [operations, setOperations] = useState<OperationsSnapshot | null>(null)
   const [operationsLoading, setOperationsLoading] = useState(false)
+  const [ncbaConfig, setNcbaConfig] = useState<PlatformNcbaConfig | null>(null)
+  const [ncbaInputs, setNcbaInputs] = useState({ username: '', secret: '', paybillNumber: '', tillAccountNumber: '', reason: '' })
+  const [ncbaBusy, setNcbaBusy] = useState(false)
+  const [ncbaMessage, setNcbaMessage] = useState('')
   const [platformReport, setPlatformReport] = useState<PlatformReport | null>(null)
   const [platformReportRange, setPlatformReportRange] = useState('30d')
   const [platformReportLoading, setPlatformReportLoading] = useState(false)
@@ -202,6 +207,31 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load platform operations.')
     } finally { setOperationsLoading(false) }
+  }
+
+  const loadNcbaConfig = async () => {
+    try {
+      const result = await apiRequest<PlatformNcbaConfig>('/api/superadmin/billing/ncba')
+      setNcbaConfig(result)
+      setNcbaInputs((current) => ({ ...current, username: result.username, paybillNumber: result.paybillNumber, tillAccountNumber: result.tillAccountNumber }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load NCBA billing configuration.')
+    }
+  }
+
+  const saveNcbaConfig = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setNcbaBusy(true)
+    setNcbaMessage('')
+    setError('')
+    try {
+      await apiRequest<{ message: string }>('/api/superadmin/billing/ncba', { method: 'PUT', body: JSON.stringify(ncbaInputs) })
+      setNcbaInputs((current) => ({ ...current, secret: '', reason: '' }))
+      setNcbaMessage('NCBA billing credentials saved securely.')
+      await loadNcbaConfig()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save NCBA billing configuration.')
+    } finally { setNcbaBusy(false) }
   }
 
   const reprocessWebhook = async (id: string) => {
@@ -430,7 +460,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   }, [page, accountSearch, selectedAccount])
 
   useEffect(() => {
-    if (page === 'operations') void loadOperations()
+    if (page === 'operations') { void loadOperations(); void loadNcbaConfig() }
   }, [page])
 
   useEffect(() => {
@@ -660,6 +690,22 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
         {page === 'operations' && (
           <section className="workspace-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Service signals</p><h2>Platform operations</h2><p>Configuration, live Resend API connectivity, and recent operational records.</p></div><span className="workspace-eyebrow" aria-live="polite">{operationsLoading ? 'Refreshing…' : operations ? `Checked ${new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(operations.checkedAt))}` : 'No snapshot loaded'}</span></div>
+            <section className="workspace-panel admin-ncba-config" style={{ padding: 20 }}>
+              <div className="list-toolbar" style={{ padding: 0, marginBottom: 14 }}><div><p className="workspace-eyebrow">Platform subscriptions</p><h3>NCBA STK Push</h3><p>Credentials for iQuote subscription checkout. Tenant customer-payment credentials remain managed in each workspace.</p></div><span className={`plan-badge ${ncbaConfig?.configured ? 'plan-active' : 'plan-pastdue'}`}>{ncbaConfig?.configured ? 'Configured' : 'Not configured'}</span></div>
+              {ncbaConfig && <p className="workspace-eyebrow">Source: {ncbaConfig.source === 'ADMIN' ? 'Super-admin settings' : ncbaConfig.source === 'ENVIRONMENT' ? 'Server environment' : 'Not set'}{ncbaConfig.updatedAt ? ` · Updated ${new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ncbaConfig.updatedAt))}` : ''}</p>}
+              {!ncbaConfig?.encryptionReady && <div className="workspace-alert" style={{ display: 'block' }}>Credential encryption is not configured. Set <code>EMAIL_SETTINGS_ENCRYPTION_KEY</code> to a random value of at least 32 characters on the API before saving credentials.</div>}
+              <form className="onboarding-form" onSubmit={(event) => void saveNcbaConfig(event)}>
+                <div className="admin-ncba-fields">
+                  <label>NCBA STK username<input className="input-control" autoComplete="off" required value={ncbaInputs.username} onChange={(event) => setNcbaInputs((current) => ({ ...current, username: event.target.value }))} /></label>
+                  <label>STK secret key<input className="input-control" type="password" autoComplete="new-password" required={!ncbaConfig?.secretConfigured} placeholder={ncbaConfig?.secretConfigured ? 'Saved securely · leave blank to keep current key' : 'Enter secret key'} value={ncbaInputs.secret} onChange={(event) => setNcbaInputs((current) => ({ ...current, secret: event.target.value }))} /></label>
+                  <label>NCBA Paybill number<input className="input-control" autoComplete="off" required value={ncbaInputs.paybillNumber} onChange={(event) => setNcbaInputs((current) => ({ ...current, paybillNumber: event.target.value }))} /></label>
+                  <label>Till account reference<input className="input-control" autoComplete="off" required value={ncbaInputs.tillAccountNumber} onChange={(event) => setNcbaInputs((current) => ({ ...current, tillAccountNumber: event.target.value }))} /></label>
+                </div>
+                <label>Reason for change<input className="input-control" minLength={5} maxLength={500} required value={ncbaInputs.reason} onChange={(event) => setNcbaInputs((current) => ({ ...current, reason: event.target.value }))} placeholder="For example: NCBA production credentials activated" /></label>
+                <div className="admin-pricing-actions"><span role="status">{ncbaMessage}</span><button className="button button-primary" type="submit" disabled={ncbaBusy || !ncbaConfig?.encryptionReady}>{ncbaBusy ? 'Saving securely…' : 'Save NCBA settings'}</button></div>
+              </form>
+              <p className="admin-ncba-footnote">Secrets are encrypted before database storage and never returned by the settings API. Saving updates the STK client configuration; this page does not perform a live NCBA credential test.</p>
+            </section>
             {operations && <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
                 <section className="workspace-panel" style={{ padding: 18 }}><p className="workspace-eyebrow">Database</p><strong>{operations.database}</strong></section>
