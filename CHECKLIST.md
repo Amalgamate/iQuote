@@ -215,14 +215,16 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 ## Stage 14 — Connect accepted work to delivery and financial records
 
 - [x] Define the quote-to-job conversion point and preserve accepted quote/version/terms as an immutable snapshot.
-- [ ] Model jobs, ownership, status history, milestones, due dates, attachments, and customer-visible progress. Job activity history, authenticated private attachments, and revocable public progress links for selected milestones now exist; behavioral acceptance remains open.
+- [ ] Model jobs, ownership, status history, milestones, due dates, attachments, and customer-visible progress. Same-workspace job-owner assignment with role checks, generic status-transition guards, job activity history, authenticated private attachments, and revocable public progress links exist; founder acceptance of reopen/transition policy and behavioral acceptance remain open.
 - [ ] Validate one initial vertical's real production stages before making a generalized workflow engine.
-- [ ] Add materials, labor, supplier, transport, and other cost records with actor, timestamp, currency, and audit trail. The five cost categories, actor/timestamp/currency, and job activity entries exist; acceptance evidence remains open.
-- [ ] Define invoices, deposits, partial payments, allocations, receipts, refunds, and balances as explicit financial events. Immutable payment rows and reasoned invoice reconciliations exist; receipt delivery, allocations, and provider-backed refunds remain incomplete.
-- [ ] Select and integrate payment rails only after provider, reconciliation, refunds, and failure handling are designed.
-- [ ] Ensure payments cannot be silently edited or double-counted; add idempotency and reconciliation workflows. Stable idempotency keys, invoice row locking, and a reasoned invoice-to-payment reconciliation action are implemented; provider settlement reconciliation and behavioral acceptance remain open.
+- [ ] Add materials, labor, supplier, transport, and other cost records with actor, timestamp, currency, and audit trail. All five categories have controlled UI choices, actor/timestamp/currency are stored, and cross-currency amounts are shown separately. Profitability reports now split each job by currency and suppress incomparable margins; behavioral acceptance remains open.
+- [ ] Define invoices, deposits, partial payments, allocations, receipts, refunds, and balances as explicit financial events. Payment allocations now have an append-only reversal/allocation ledger, can be reassigned between eligible same-customer/same-currency invoices with a reason, and are included in export. Receipts have stable numbers and downloadable PDFs; externally completed refunds are recorded and reduce balances; reconciliation uses ledger allocations. Deposit semantics, customer receipt delivery, migration deployment, and behavioral acceptance remain open.
+- [ ] Select and integrate payment rails only after provider, reconciliation, refunds, and failure handling are designed. Customer-to-business NCBA M-Pesa STK Push is now implemented for owner-configured Till/Paybill accounts; merchant activation and live provider acceptance remain open.
+- [ ] Store each business's NCBA Till/Paybill and STK credentials encrypted; allow owners to configure them and send invoice-linked prompts to their customers. Encrypted credential storage and setup UI exist; confirm production encryption configuration and activated merchant credentials.
+- [ ] Confirm STK payment through NCBA status queries or authenticated, hash-verified payment notifications; add each successful payment once and update invoice balances. Query and callback paths plus idempotent ledger updates exist; hash mapping follows the documented CreditAccount field; validate callback field mapping and successful/failed live cases with NCBA.
+- [ ] Ensure payments cannot be silently edited or double-counted; add idempotency and reconciliation workflows. Stable idempotency keys, invoice row locking, a database guard against concurrent unresolved prompts, unknown-result handling, auditable allocation reversals, and reasoned invoice reconciliation are implemented; provider settlement reconciliation and behavioral acceptance remain open.
 - [x] Add estimated-versus-actual cost and margin reports with currency-aware aggregation.
-- [ ] Add role authorization, tenant constraints, retention, export, and recovery tests for job and financial data. Owner/admin JSON export is implemented; retention policy and recovery/authorization acceptance remain open.
+- [ ] Add role authorization, tenant constraints, retention, export, and recovery tests for job and financial data. Owner/admin JSON export includes sanitized invoice payment attempts, allocations, refunds, receipts, and reconciliation events without merchant credential ciphertext; retention policy and recovery/authorization acceptance remain open.
 
 **Exit checks:** an accepted quote can be delivered as tracked work; costs and payment events reconcile to an auditable history; reports respect currencies and access scope.
 
@@ -247,7 +249,9 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 
 **Exit checks:** any paid features are supported by observed demand and provider evidence; billing is auditable; reporting is currency-aware; integrations and operating capacity are observable and tested.
 
-**NCBA implementation status:** iQuote now has super-admin-managed monthly KES plan prices, NCBA STK initiation and status query, a locked-workspace payment screen, one pending payment per workspace, auditable price changes, and server-side activation only after a successful NCBA query. Production use still requires the admin to enter approved prices, a signed NCBA service request, merchant credentials/Till details, a migrated production database, and controlled live payment acceptance. Paybill push notifications and dynamic QR are deferred from the first renewal flow.
+**NCBA subscription billing status:** iQuote has super-admin-managed monthly KES plan prices, NCBA STK initiation and status query, a locked-workspace payment screen, one pending payment per workspace, auditable price changes, and server-side activation only after a successful NCBA query. Production use still requires approved prices, merchant activation, a migrated production database, and controlled live payment acceptance.
+
+**Customer invoice collection status:** businesses can configure their own NCBA Till/Paybill STK credentials, send an invoice-linked customer STK prompt, and apply confirmed payments idempotently to the invoice ledger. Notification callbacks are authenticated and hash-verified; status queries are the fallback. Production use requires each business's NCBA activation, platform encryption configuration, the callback URL registered with NCBA where notifications are enabled, and controlled live acceptance. This flow is separate from platform subscription collection. Marketplace remains deferred.
 
 ## Automatic progress workflow
 
@@ -263,5 +267,5 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 - [ ] Market pricing, premium opportunity credits, and paid provider access (after Stage 13 pilot evidence).
 - [ ] Advanced procurement/enterprise workflows (after marketplace repeatability).
 - [ ] Broad industry packs (after customer discovery for each vertical).
-- [ ] M-Pesa, eTIMS, inventory, and accounting integrations (after legal/accounting/provider requirements are established).
+- [ ] eTIMS, inventory, and accounting integrations (after legal/accounting/provider requirements are established). Customer M-Pesa collection is implemented; live provider activation and acceptance remain open as recorded in Stage 14.
 - [ ] Separate services or a platform rewrite (no current audit evidence justifies either).

@@ -23,6 +23,7 @@ type Cost = {
   id: string
   description: string
   amount: number
+  currency: string
   category: string | null
   incurredAt: string | null
 }
@@ -31,7 +32,7 @@ type JobActivity = {
   id: string
   actorName: string
   action: string
-  details: { title?: string; fromStatus?: string; toStatus?: string; amount?: number; currency?: string } | null
+  details: { title?: string; fromStatus?: string; toStatus?: string; fromOwnerId?: string; toOwnerName?: string; amount?: number; currency?: string } | null
   createdAt: string
 }
 
@@ -53,6 +54,8 @@ function fileToBase64(file: File) {
 
 type Job = {
   id: string
+  ownerId: string
+  owner?: { id: string; name: string; email: string }
   title: string
   status: JobStatus
   description: string | null
@@ -86,6 +89,14 @@ const jobStatusNames: Record<JobStatus, string> = {
   ON_HOLD: 'On Hold',
 }
 
+const nextJobStatuses: Record<JobStatus, JobStatus[]> = {
+  PLANNED: ['IN_PROGRESS', 'ON_HOLD', 'CANCELLED'],
+  IN_PROGRESS: ['ON_HOLD', 'COMPLETED', 'CANCELLED'],
+  ON_HOLD: ['PLANNED', 'IN_PROGRESS', 'CANCELLED'],
+  COMPLETED: ['IN_PROGRESS'],
+  CANCELLED: ['PLANNED'],
+}
+
 const jobStatusClasses: Record<JobStatus, string> = {
   PLANNED: 'status-badge status-planned',
   IN_PROGRESS: 'status-badge status-in_progress',
@@ -97,6 +108,7 @@ const jobStatusClasses: Record<JobStatus, string> = {
 type JobForm = {
   title: string
   customerId: string
+  ownerId: string
   description: string
   status: JobStatus
   startDate: string
@@ -106,6 +118,7 @@ type JobForm = {
 const blankJobForm: JobForm = {
   title: '',
   customerId: '',
+  ownerId: '',
   description: '',
   status: 'PLANNED',
   startDate: '',
@@ -116,7 +129,7 @@ type MilestoneForm = { title: string; dueDate: string }
 const blankMilestoneForm: MilestoneForm = { title: '', dueDate: '' }
 
 type CostForm = { description: string; amount: string; category: string; incurredAt: string }
-const blankCostForm: CostForm = { description: '', amount: '0', category: '', incurredAt: '' }
+const blankCostForm: CostForm = { description: '', amount: '0', category: 'MATERIALS', incurredAt: '' }
 
 function formatDate(date: string | null | undefined): string {
   if (!date) return '—'
@@ -127,11 +140,15 @@ function formatDate(date: string | null | undefined): string {
   }
 }
 
-function totalCosts(costs: Cost[]): number {
-  return costs.reduce((sum, cost) => sum + Number(cost.amount || 0), 0)
+function formatCostTotals(costs: Cost[], fallbackCurrency: string): string {
+  const totals = new Map<string, number>()
+  for (const cost of costs) totals.set(cost.currency || fallbackCurrency, (totals.get(cost.currency || fallbackCurrency) ?? 0) + Number(cost.amount || 0))
+  return totals.size ? Array.from(totals, ([code, amount]) => formatMoney(amount, code)).join(' · ') : formatMoney(0, fallbackCurrency)
 }
 
-export default function JobsPanel({ customers, currency }: { business: Business; customers: Customer[]; currency: string }) {
+type JobAssignee = { id: string; name: string; email: string; teamRole: string }
+
+export default function JobsPanel({ customers, currency, canManageJobs }: { business: Business; customers: Customer[]; currency: string; canManageJobs: boolean }) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -141,9 +158,11 @@ export default function JobsPanel({ customers, currency }: { business: Business;
   const [jobForm, setJobForm] = useState<JobForm>(blankJobForm)
   const [jobError, setJobError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [teamMembers, setTeamMembers] = useState<JobAssignee[]>([])
 
   useEffect(() => {
     void loadJobs()
+    void apiRequest<{ members: JobAssignee[] }>('/api/team').then((response) => setTeamMembers(response.members)).catch(() => setTeamMembers([]))
   }, [])
 
   const loadJobs = async () => {
@@ -179,7 +198,7 @@ export default function JobsPanel({ customers, currency }: { business: Business;
       setError('Add a customer first before creating a job.')
       return
     }
-    setJobForm({ ...blankJobForm, customerId: customers[0].id })
+    setJobForm({ ...blankJobForm, customerId: customers[0].id, ownerId: teamMembers.find((member) => member.teamRole === 'OWNER')?.id ?? '' })
     setJobError('')
     setJobModal(true)
   }
@@ -194,6 +213,7 @@ export default function JobsPanel({ customers, currency }: { business: Business;
         customerId: jobForm.customerId,
         description: jobForm.description || undefined,
         status: jobForm.status,
+        ...(jobForm.ownerId ? { ownerId: jobForm.ownerId } : {}),
         startDate: jobForm.startDate || undefined,
         endDate: jobForm.endDate || undefined,
       }
@@ -218,6 +238,16 @@ export default function JobsPanel({ customers, currency }: { business: Business;
     }
   }
 
+  const updateJobOwner = async (job: Job, ownerId: string) => {
+    try {
+      const response = await apiRequest<JobResponse>(`/api/jobs/${job.id}`, { method: 'PUT', body: JSON.stringify({ ownerId }) })
+      setJobs((current) => current.map((item) => item.id === response.job.id ? response.job : item))
+      setSelectedJob(response.job)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to assign this job.')
+    }
+  }
+
   if (selectedJob) {
     return (
       <JobDetail
@@ -227,6 +257,9 @@ export default function JobsPanel({ customers, currency }: { business: Business;
         onBack={() => { setSelectedJob(null); void loadJobs() }}
         onStatusChange={(status) => void updateJobStatus(selectedJob, status)}
         onJobUpdate={(updated) => setSelectedJob(updated)}
+        teamMembers={teamMembers}
+        canManageJobs={canManageJobs}
+        onOwnerChange={(ownerId) => void updateJobOwner(selectedJob, ownerId)}
         setError={setError}
       />
     )
@@ -271,12 +304,12 @@ export default function JobsPanel({ customers, currency }: { business: Business;
               <tbody>
                 {filteredJobs.map((job) => (
                   <tr key={job.id} onClick={() => void openJobDetail(job)}>
-                    <td><strong>{job.title}</strong><small>{formatDate(job.createdAt)}</small></td>
+                    <td><strong>{job.title}</strong><small>{job.owner?.name ? `Owner: ${job.owner.name} · ` : ''}{formatDate(job.createdAt)}</small></td>
                     <td>{job.customer?.name ?? '—'}</td>
                     <td><span className={jobStatusClasses[job.status]}>{jobStatusNames[job.status]}</span></td>
                     <td>{formatDate(job.startDate)}</td>
                     <td>{formatDate(job.endDate)}</td>
-                    <td>{formatMoney(totalCosts(job.costs ?? []), currency)}</td>
+                    <td>{formatCostTotals(job.costs ?? [], currency)}</td>
                     <td><button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); void openJobDetail(job) }}>View</button></td>
                   </tr>
                 ))}
@@ -304,6 +337,7 @@ export default function JobsPanel({ customers, currency }: { business: Business;
             </div>
             <label className="field-label">Title<input className="input-control" required value={jobForm.title} onChange={(event) => setJobForm((current) => ({ ...current, title: event.target.value }))} placeholder="e.g. Bathroom renovation" /></label>
             <label className="field-label">Customer<select className="input-control" required value={jobForm.customerId} onChange={(event) => setJobForm((current) => ({ ...current, customerId: event.target.value }))}>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
+            {canManageJobs && teamMembers.length > 0 && <label className="field-label">Job owner<select className="input-control" value={jobForm.ownerId} onChange={(event) => setJobForm((current) => ({ ...current, ownerId: event.target.value }))}>{teamMembers.map((member) => <option key={member.id} value={member.id}>{member.name} · {member.teamRole.toLowerCase()}</option>)}</select></label>}
             <label className="field-label">Description<textarea className="input-control" rows={3} value={jobForm.description} onChange={(event) => setJobForm((current) => ({ ...current, description: event.target.value }))} placeholder="Brief scope of work" /></label>
             <div className="settings-grid">
               <label className="field-label">Status<select className="input-control" value={jobForm.status} onChange={(event) => setJobForm((current) => ({ ...current, status: event.target.value as JobStatus }))}>{Object.entries(jobStatusNames).map(([status, label]) => <option key={status} value={status}>{label}</option>)}</select></label>
@@ -322,7 +356,7 @@ export default function JobsPanel({ customers, currency }: { business: Business;
   )
 }
 
-function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpdate, setError }: {
+function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpdate, setError, teamMembers, canManageJobs, onOwnerChange }: {
   job: Job
   currency: string
   customers: Customer[]
@@ -330,6 +364,9 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
   onStatusChange: (status: JobStatus) => void
   onJobUpdate: (job: Job) => void
   setError: (error: string) => void
+  teamMembers: JobAssignee[]
+  canManageJobs: boolean
+  onOwnerChange: (ownerId: string) => void
 }) {
   const [milestoneForm, setMilestoneForm] = useState<MilestoneForm>(blankMilestoneForm)
   const [costForm, setCostForm] = useState<CostForm>(blankCostForm)
@@ -505,7 +542,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
           <h2>{job.title}</h2>
         </div>
         <select className="input-control filter-control" value={job.status} onChange={(event) => onStatusChange(event.target.value as JobStatus)}>
-          {Object.entries(jobStatusNames).map(([status, label]) => <option key={status} value={status}>{label}</option>)}
+          {[job.status, ...nextJobStatuses[job.status]].map((status) => <option key={status} value={status}>{jobStatusNames[status]}</option>)}
         </select>
       </div>
 
@@ -522,6 +559,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
           <div><span>Start date</span><strong>{formatDate(job.startDate)}</strong></div>
           <div><span>End date</span><strong>{formatDate(job.endDate)}</strong></div>
           <div><span>Created</span><strong>{formatDate(job.createdAt)}</strong></div>
+          {canManageJobs && <label>Job owner<select className="input-control" value={job.ownerId} onChange={(event) => onOwnerChange(event.target.value)}>{teamMembers.map((member) => <option key={member.id} value={member.id}>{member.name} · {member.teamRole.toLowerCase()}</option>)}</select></label>}
         </div>
         {job.description && <div className="job-description"><span>Description</span><p>{job.description}</p></div>}
       </section>
@@ -543,7 +581,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
             <div className="milestone-item" key={activity.id}>
               <div className="milestone-content">
                 <strong>{activity.action.replaceAll('_', ' ').toLowerCase()}</strong>
-                <small>{activity.actorName} · {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(activity.createdAt))}{activity.details?.fromStatus && activity.details.toStatus ? ` · ${activity.details.fromStatus} → ${activity.details.toStatus}` : ''}{activity.details?.title ? ` · ${activity.details.title}` : ''}{activity.details?.amount !== undefined ? ` · ${formatMoney(activity.details.amount, activity.details.currency ?? currency)}` : ''}</small>
+                <small>{activity.actorName} · {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(activity.createdAt))}{activity.details?.fromStatus && activity.details.toStatus ? ` · ${activity.details.fromStatus} → ${activity.details.toStatus}` : ''}{activity.details?.toOwnerName ? ` · Assigned to ${activity.details.toOwnerName}` : ''}{activity.details?.title ? ` · ${activity.details.title}` : ''}{activity.details?.amount !== undefined ? ` · ${formatMoney(activity.details.amount, activity.details.currency ?? currency)}` : ''}</small>
               </div>
             </div>
           )) : <div className="panel-empty"><p>No history recorded.</p></div>}
@@ -620,7 +658,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
                       <td><strong>{cost.description}</strong></td>
                       <td>{cost.category ?? '—'}</td>
                       <td>{formatDate(cost.incurredAt)}</td>
-                      <td>{formatMoney(Number(cost.amount), currency)}</td>
+                      <td>{formatMoney(Number(cost.amount), cost.currency || currency)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -632,14 +670,14 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
           <form className="cost-add-form" onSubmit={(event) => void addCost(event)}>
             <input className="input-control" placeholder="Description" required value={costForm.description} onChange={(event) => setCostForm((current) => ({ ...current, description: event.target.value }))} />
             <input className="input-control" type="number" min="0" step="0.01" placeholder="Amount" required value={costForm.amount} onChange={(event) => setCostForm((current) => ({ ...current, amount: event.target.value }))} />
-            <input className="input-control" placeholder="Category" value={costForm.category} onChange={(event) => setCostForm((current) => ({ ...current, category: event.target.value }))} />
+            <select className="input-control" value={costForm.category} onChange={(event) => setCostForm((current) => ({ ...current, category: event.target.value }))}><option value="MATERIALS">Materials</option><option value="LABOR">Labor</option><option value="SUPPLIER">Supplier</option><option value="TRANSPORT">Transport</option><option value="OTHER">Other</option></select>
             <input className="input-control" type="date" value={costForm.incurredAt} onChange={(event) => setCostForm((current) => ({ ...current, incurredAt: event.target.value }))} />
             <button className="button button-primary" type="submit">Add cost</button>
           </form>
         )}
         <div className="cost-summary">
           <span>Total costs</span>
-          <strong>{formatMoney(totalCosts(costs), currency)}</strong>
+          <strong>{formatCostTotals(costs, currency)}</strong>
         </div>
       </section>
     </section>

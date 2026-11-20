@@ -495,4 +495,51 @@ export const emailSubjects = {
   quoteApproved: (docNumber: string) => `✓ ${docNumber} approved`,
   quoteDeclined: (docNumber: string) => `${docNumber} declined`,
   quoteDelivery: (businessName: string, docNumber: string) => `${businessName.slice(0, 40)} sent you ${docNumber}`,
+  receiptDelivery: (businessName: string, receiptNo: string) => `Receipt ${receiptNo} from ${businessName.slice(0, 40)}`,
+}
+
+export function receiptDeliveryEmailHtml(params: {
+  recipientName: string
+  businessName: string
+  receiptNumber: string
+  invoiceNumber: string
+  amount: number
+  currency: string
+  method: string
+  reference: string | null
+  paymentDate: string
+  customMessage?: string | null
+}): string {
+  const formattedAmount = formatCurrency(params.amount, params.currency)
+  const formattedDate = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium' }).format(new Date(params.paymentDate))
+  const content = `
+    <h1 style="margin:0 0 8px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:26px;font-weight:800;color:#0A1128;letter-spacing:-0.5px">
+      Payment Receipt
+    </h1>
+    <p style="margin:0 0 24px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:15px;line-height:1.6;color:#53647A">
+      Hi ${escapeText(params.recipientName.split(' ')[0] || 'there')}, ${escapeText(params.businessName)} has recorded your payment.
+    </p>
+
+    ${params.customMessage ? `
+      <div style="margin:0 0 24px;padding:16px 20px;background:#EBF3FF;border-left:3px solid #0052FF;border-radius:0 6px 6px 0">
+        <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;line-height:1.6;color:#0A1128">${escapeText(params.customMessage)}</p>
+      </div>
+    ` : ''}
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px">
+      <tr><td style="padding:10px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;color:#53647A;border-bottom:1px solid #E8EEF4">Receipt number</td><td style="padding:10px 0;font-family:'Montserrat',Arial,sans-serif;font-size:14px;font-weight:700;color:#0A1128;text-align:right;border-bottom:1px solid #E8EEF4">${escapeText(params.receiptNumber)}</td></tr>
+      <tr><td style="padding:10px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;color:#53647A;border-bottom:1px solid #E8EEF4">Invoice</td><td style="padding:10px 0;font-family:'Montserrat',Arial,sans-serif;font-size:14px;font-weight:700;color:#0A1128;text-align:right;border-bottom:1px solid #E8EEF4">${escapeText(params.invoiceNumber)}</td></tr>
+      <tr><td style="padding:10px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;color:#53647A;border-bottom:1px solid #E8EEF4">Payment method</td><td style="padding:10px 0;font-family:'Montserrat',Arial,sans-serif;font-size:14px;font-weight:700;color:#0A1128;text-align:right;border-bottom:1px solid #E8EEF4">${escapeText(params.method)}</td></tr>
+      <tr><td style="padding:10px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;color:#53647A;border-bottom:1px solid #E8EEF4">Date</td><td style="padding:10px 0;font-family:'Montserrat',Arial,sans-serif;font-size:14px;font-weight:700;color:#0A1128;text-align:right;border-bottom:1px solid #E8EEF4">${formattedDate}</td></tr>
+      ${params.reference ? `<tr><td style="padding:10px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;color:#53647A;border-bottom:1px solid #E8EEF4">Reference</td><td style="padding:10px 0;font-family:'Montserrat',Arial,sans-serif;font-size:14px;font-weight:700;color:#0A1128;text-align:right;border-bottom:1px solid #E8EEF4">${escapeText(params.reference)}</td></tr>` : ''}
+    </table>
+
+    <div style="margin:0 0 24px;padding:24px;background:#F4F8FD;border:1px solid #D8E4F2;border-radius:8px;text-align:center">
+      <p style="margin:0 0 6px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#53647A">Amount received</p>
+      <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:32px;font-weight:800;color:#0052FF">${formattedAmount}</p>
+    </div>
+
+    <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;color:#8A95A3">This receipt confirms payment recorded by ${escapeText(params.businessName)}. Please keep it for your records.</p>
+  `
+  return emailShell(content, { previewText: `Receipt ${params.receiptNumber} — ${formattedAmount}` })
 }

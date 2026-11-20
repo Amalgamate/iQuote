@@ -7,12 +7,13 @@ import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { generateSecret, generateURI, verifySync } from 'otplib'
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
 import { getIndustryPack } from './industry-packs.js'
 import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush } from './ncba-client.js'
-import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, emailSubjects } from './email-templates.js'
+import { initiateMerchantStkPush, NcbaMerchantRequestError, normalizeCustomerPhone, normalizeMerchantCode, queryMerchantStkPush, verifyNotificationHash } from './customer-mpesa.js'
+import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, receiptDeliveryEmailHtml, emailSubjects } from './email-templates.js'
 
 const prisma = new PrismaClient()
 const app = express()
@@ -188,6 +189,9 @@ app.use(
 const SAFE_METHODS = ['GET', 'HEAD', 'OPTIONS']
 app.use((req, res, next) => {
   if (SAFE_METHODS.includes(req.method)) return next()
+  // NCBA posts provider-signed payment notifications from its servers without a browser Origin.
+  // The callback handler validates its per-merchant credentials and signed hash before applying money.
+  if (req.method === 'POST' && req.path === '/api/webhooks/ncba/customer-payment') return next()
   const origin = req.headers.origin
   // If no Origin header, check Referer as fallback
   const referer = req.headers.referer
@@ -285,7 +289,7 @@ function toPublicUser(user: { id: string; name: string; email: string; role?: st
 }
 
 function getRequestUser(req: Request) {
-  return (req as Request & { user?: { id: string; name: string; email: string; role?: string } }).user
+  return (req as Request & { user?: { id: string; name: string; email: string; role?: string; teamRole?: string } }).user
 }
 
 async function writeSuperadminAudit(req: Request, actor: { id: string; email: string }, action: string, targetType: string, targetId: string | null, summary: string, metadata?: PrismaTypes.InputJsonValue, db: PrismaTypes.TransactionClient | typeof prisma = prisma) {
@@ -475,6 +479,78 @@ async function ensureIndustryDefaults(organisationId: string) {
 
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100
+}
+
+async function getNetInvoiceAllocations(db: any, invoiceId: string, organisationId: string) {
+  const [allocated, reversed] = await Promise.all([
+    db.paymentAllocation.aggregate({ where: { invoiceId, organisationId, eventType: 'ALLOCATE' }, _sum: { amount: true } }),
+    db.paymentAllocation.aggregate({ where: { invoiceId, organisationId, eventType: 'REVERSE' }, _sum: { amount: true } }),
+  ])
+  return roundMoney(Number(allocated._sum.amount ?? 0) - Number(reversed._sum.amount ?? 0))
+}
+
+async function updateInvoiceFromLedger(tx: any, invoice: any, organisationId: string) {
+  const [allocated, reversed, refunds] = await Promise.all([
+    tx.paymentAllocation.aggregate({ where: { invoiceId: invoice.id, organisationId, eventType: 'ALLOCATE' }, _sum: { amount: true } }),
+    tx.paymentAllocation.aggregate({ where: { invoiceId: invoice.id, organisationId, eventType: 'REVERSE' }, _sum: { amount: true } }),
+    tx.paymentRefund.aggregate({ where: { invoiceId: invoice.id, organisationId }, _sum: { amount: true } }),
+  ])
+  const netPaid = roundMoney(Number(allocated._sum.amount ?? 0) - Number(reversed._sum.amount ?? 0) - Number(refunds._sum.amount ?? 0))
+  const balanceDue = roundMoney(Number(invoice.total) - netPaid)
+  const status = invoice.status === 'CANCELLED' || invoice.status === 'DRAFT' ? invoice.status : balanceDue <= 0.001 ? 'PAID' : netPaid > 0 ? 'PARTIALLY_PAID' : invoice.dueDate && invoice.dueDate < new Date() ? 'OVERDUE' : 'SENT'
+  return tx.invoice.update({ where: { id: invoice.id }, data: { amountPaid: netPaid, balanceDue, status } })
+}
+
+async function listInvoiceAllocatedPayments(db: any, invoiceId: string, organisationId: string) {
+  const events = await db.paymentAllocation.findMany({
+    where: { invoiceId, organisationId },
+    orderBy: { createdAt: 'asc' },
+    include: { payment: { include: { invoice: { select: { invoiceNumber: true } } } } },
+  })
+  const byPayment = new Map<string, { amount: number; payment: any }>()
+  for (const event of events) {
+    const current = byPayment.get(event.paymentId) ?? { amount: 0, payment: event.payment }
+    current.amount += event.eventType === 'ALLOCATE' ? Number(event.amount) : -Number(event.amount)
+    byPayment.set(event.paymentId, current)
+  }
+  const entries = [...byPayment.values()].filter((entry) => entry.amount > 0.001)
+  if (!entries.length) return []
+  const paymentIds = entries.map((entry) => entry.payment.id)
+  const refunds = await db.paymentRefund.findMany({ where: { invoiceId, organisationId, paymentId: { in: paymentIds } }, orderBy: { createdAt: 'asc' } })
+  const deliveries = await db.receiptDelivery.findMany({ where: { paymentId: { in: paymentIds } }, orderBy: { createdAt: 'desc' } })
+  return entries.map(({ amount, payment }) => ({
+    id: payment.id,
+    receiptNumber: payment.receiptNumber || `RCP-${payment.id.toUpperCase()}`,
+    amount: roundMoney(amount),
+    sourceAmount: Number(payment.amount),
+    currency: payment.currency,
+    method: payment.method,
+    reference: payment.reference,
+    isDeposit: payment.isDeposit ?? false,
+    paymentDate: payment.paymentDate,
+    receivedBy: payment.receivedBy,
+    createdAt: payment.createdAt,
+    invoiceNumber: payment.invoice.invoiceNumber,
+    refunds: refunds.filter((refund: any) => refund.paymentId === payment.id).map((refund: any) => ({ ...refund, amount: Number(refund.amount) })),
+    receiptDeliveries: deliveries.filter((delivery: any) => delivery.paymentId === payment.id).map((delivery: any) => ({
+      id: delivery.id,
+      recipientEmail: delivery.recipientEmail,
+      recipientName: delivery.recipientName,
+      status: delivery.status,
+      errorMessage: delivery.errorMessage,
+      sentAt: delivery.sentAt,
+      createdAt: delivery.createdAt,
+    })),
+  }))
+}
+
+async function listInvoiceAllocationHistory(db: any, invoiceId: string, organisationId: string) {
+  const events = await db.paymentAllocation.findMany({
+    where: { invoiceId, organisationId },
+    orderBy: { createdAt: 'desc' },
+    include: { payment: { select: { receiptNumber: true } }, invoice: { select: { invoiceNumber: true } } },
+  })
+  return events.map((event: any) => ({ ...event, amount: Number(event.amount), receiptNumber: event.payment.receiptNumber || `RCP-${event.paymentId.toUpperCase()}`, invoiceNumber: event.invoice.invoiceNumber }))
 }
 
 function normalizeQuoteLines(input: unknown, defaultTaxRate: number) {
@@ -975,6 +1051,125 @@ app.put('/api/settings/email', requireAuth, async (req, res) => {
     },
   })
   res.json({ provider: next.provider, senderName: next.senderName ?? '', senderEmail: next.senderEmail ?? '', customDomain: next.customDomain ?? '', domainStatus: next.domainStatus, apiKeySet: Boolean(next.resendApiKeyCiphertext) })
+})
+
+function decryptPaymentSecret(value: string | null | undefined) {
+  if (!value) return null
+  return decryptEmailSecret(value)
+}
+
+app.get('/api/settings/payments', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  const organisationId = user ? await getOrganisationId(user.id) : null
+  if (!organisationId) return res.status(404).json({ message: 'Business workspace not found.' })
+  const settings = await prisma.tenantPaymentSettings.findUnique({ where: { organisationId } })
+  return res.json({
+    provider: settings?.provider ?? 'NCBA', merchantType: settings?.merchantType ?? 'TILL',
+    tillNumber: settings?.tillNumber ?? '', paybillNumber: settings?.paybillNumber ?? '', enabled: Boolean(settings?.enabled),
+    stkCredentialsSet: Boolean(settings?.stkUsernameCiphertext && settings.stkSecretCiphertext),
+    notificationCredentialsSet: Boolean(settings?.notificationUsernameCiphertext && settings.notificationPasswordCiphertext && settings.notificationSecretCiphertext),
+    encryptionReady: Boolean(emailEncryptionKey && emailEncryptionKey.length >= 32),
+  })
+})
+
+app.put('/api/settings/payments', requireTeamRole('OWNER'), async (req, res) => {
+  const user = getRequestUser(req)
+  const organisationId = user ? await getOrganisationId(user.id) : null
+  if (!organisationId) return res.status(404).json({ message: 'Business workspace not found.' })
+  if (!emailEncryptionKey || emailEncryptionKey.length < 32) return res.status(503).json({ message: 'Secure payment credential storage is not configured by the platform.' })
+  const merchantType = String(req.body?.merchantType ?? 'TILL').toUpperCase()
+  if (!['TILL', 'PAYBILL'].includes(merchantType)) return res.status(400).json({ message: 'Choose a Till or Paybill merchant account.' })
+  const tillNumber = normalizeMerchantCode(req.body?.tillNumber)
+  const paybillNumber = normalizeMerchantCode(req.body?.paybillNumber)
+  const stkUsername = String(req.body?.stkUsername ?? '').trim()
+  const stkSecret = String(req.body?.stkSecret ?? '').trim()
+  const notificationUsername = String(req.body?.notificationUsername ?? '').trim()
+  const notificationPassword = String(req.body?.notificationPassword ?? '').trim()
+  const notificationSecret = String(req.body?.notificationSecret ?? '').trim()
+  const requestedEnabled = Boolean(req.body?.enabled)
+  if (merchantType === 'TILL' && !tillNumber) return res.status(400).json({ message: 'Enter the NCBA Till number.' })
+  if (merchantType === 'PAYBILL' && !paybillNumber) return res.status(400).json({ message: 'Enter the Paybill number.' })
+  if ((notificationUsername || notificationPassword || notificationSecret) && !(notificationUsername && notificationPassword && notificationSecret)) return res.status(400).json({ message: 'Enter all three NCBA notification credentials, or leave them blank to use transaction-status checks.' })
+  const existing = await prisma.tenantPaymentSettings.findUnique({ where: { organisationId } })
+  const nextStkUsername = stkUsername ? encryptEmailSecret(stkUsername) : existing?.stkUsernameCiphertext ?? null
+  const nextStkSecret = stkSecret ? encryptEmailSecret(stkSecret) : existing?.stkSecretCiphertext ?? null
+  const enabled = requestedEnabled && Boolean(nextStkUsername && nextStkSecret)
+  if (requestedEnabled && !enabled) return res.status(400).json({ message: 'Enter and save the NCBA STK username and secret before enabling customer payments.' })
+  const next = await prisma.tenantPaymentSettings.upsert({
+    where: { organisationId },
+    create: {
+      organisationId, merchantType, tillNumber: merchantType === 'TILL' ? tillNumber : null,
+      paybillNumber: merchantType === 'PAYBILL' ? paybillNumber : null,
+      stkUsernameCiphertext: nextStkUsername, stkSecretCiphertext: nextStkSecret, enabled,
+      notificationUsernameCiphertext: notificationUsername ? encryptEmailSecret(notificationUsername) : existing?.notificationUsernameCiphertext ?? null,
+      notificationPasswordCiphertext: notificationPassword ? encryptEmailSecret(notificationPassword) : existing?.notificationPasswordCiphertext ?? null,
+      notificationSecretCiphertext: notificationSecret ? encryptEmailSecret(notificationSecret) : existing?.notificationSecretCiphertext ?? null,
+    },
+    update: {
+      merchantType, tillNumber: merchantType === 'TILL' ? tillNumber : null,
+      paybillNumber: merchantType === 'PAYBILL' ? paybillNumber : null,
+      stkUsernameCiphertext: nextStkUsername, stkSecretCiphertext: nextStkSecret, enabled,
+      notificationUsernameCiphertext: notificationUsername ? encryptEmailSecret(notificationUsername) : existing?.notificationUsernameCiphertext ?? null,
+      notificationPasswordCiphertext: notificationPassword ? encryptEmailSecret(notificationPassword) : existing?.notificationPasswordCiphertext ?? null,
+      notificationSecretCiphertext: notificationSecret ? encryptEmailSecret(notificationSecret) : existing?.notificationSecretCiphertext ?? null,
+    },
+  })
+  return res.json({ merchantType: next.merchantType, tillNumber: next.tillNumber ?? '', paybillNumber: next.paybillNumber ?? '', enabled: next.enabled, stkCredentialsSet: Boolean(next.stkUsernameCiphertext && next.stkSecretCiphertext), notificationCredentialsSet: Boolean(next.notificationUsernameCiphertext && next.notificationPasswordCiphertext && next.notificationSecretCiphertext), encryptionReady: true })
+})
+
+function safeSecretMatch(received: unknown, expected: string | null) {
+  if (typeof received !== 'string' || !expected) return false
+  const left = Buffer.from(received)
+  const right = Buffer.from(expected)
+  return left.length === right.length && timingSafeEqual(left, right)
+}
+
+function callbackField(payload: Record<string, unknown>, ...names: string[]) {
+  for (const name of names) if (payload[name] !== undefined && payload[name] !== null) return String(payload[name]).trim()
+  return ''
+}
+
+function parseNcbaXmlCallback(xml: string): Record<string, unknown> {
+  const payload: Record<string, unknown> = {}
+  for (const match of xml.matchAll(/<(?:\w+:)?([A-Za-z][\w.-]*)\b[^>]*>([^<>]*)<\/(?:\w+:)?\1\s*>/g)) {
+    const key = match[1]
+    const value = match[2].replace(/<[^>]+>/g, '').replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&apos;', "'").trim()
+    if (value) payload[key] = value
+  }
+  return payload
+}
+
+app.post('/api/webhooks/ncba/customer-payment', express.text({ type: ['application/xml', 'text/xml', 'application/soap+xml'], limit: '32kb' }), async (req, res) => {
+  const xmlRequest = typeof req.body === 'string' || String(req.header('content-type') ?? '').includes('xml')
+  const reply = (ok: boolean) => {
+    if (xmlRequest) return res.status(200).type('application/xml').send(`<Result>${ok ? 'OK' : 'FAIL'}</Result>`)
+    return res.status(ok ? 200 : 400).json({ ResultCode: ok ? '0' : '1', ResultDesc: ok ? 'Accepted' : 'Invalid payment notification' })
+  }
+  const payload = typeof req.body === 'string' ? parseNcbaXmlCallback(req.body) : req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {}
+  const transactionId = callbackField(payload, 'TransID', 'TransactionID')
+  if (!transactionId) return reply(false)
+  const attempt = await prisma.invoicePaymentAttempt.findUnique({ where: { transactionId } })
+  if (!attempt) return reply(false)
+  if (attempt.status === 'PAID') return reply(true)
+  const settings = await prisma.tenantPaymentSettings.findUnique({ where: { organisationId: attempt.organisationId } })
+  if (!settings?.notificationUsernameCiphertext || !settings.notificationPasswordCiphertext || !settings.notificationSecretCiphertext) return reply(false)
+  const username = decryptPaymentSecret(settings.notificationUsernameCiphertext)
+  const password = decryptPaymentSecret(settings.notificationPasswordCiphertext)
+  const secret = decryptPaymentSecret(settings.notificationSecretCiphertext)
+  if (!safeSecretMatch(callbackField(payload, 'Username', 'UserName'), username) || !safeSecretMatch(callbackField(payload, 'Password'), password) || !verifyNotificationHash(payload, secret ?? '')) return reply(false)
+  const amount = Number(callbackField(payload, 'TransAmount', 'amount'))
+  if (!Number.isFinite(amount) || Math.abs(amount - Number(attempt.amount)) > 0.001) return reply(false)
+  const transactionType = callbackField(payload, 'TransType').toUpperCase()
+  if (transactionType && !transactionType.includes('PAY')) return reply(false)
+  const shortcode = callbackField(payload, 'BusinessShortCode')
+  const receivingAccount = callbackField(payload, 'AccountNr', 'CreditAccount')
+  const billReference = callbackField(payload, 'BillRefNumber', 'Narrative')
+  const merchantMatches = attempt.merchantType === 'TILL'
+    ? shortcode === '880100' && [receivingAccount, billReference].some((value) => value.toUpperCase().includes(attempt.merchantCode.toUpperCase()))
+    : shortcode === attempt.merchantCode && billReference.toUpperCase() === attempt.invoiceNumber.toUpperCase()
+  if (!merchantMatches) return reply(false)
+  const result = await applyCustomerMpesaPayment(attempt.id, transactionId)
+  return reply(result.ok)
 })
 
 app.post('/api/auth/verification/verify', async (req, res) => {
@@ -3137,6 +3332,13 @@ app.post('/api/webhooks/resend', async (req, res) => {
 
 const VALID_JOB_STATUSES = ['PLANNED', 'IN_PROGRESS', 'COMPLETED', 'ON_HOLD', 'CANCELLED']
 const VALID_COST_CATEGORIES = ['MATERIALS', 'LABOR', 'SUPPLIER', 'TRANSPORT', 'OTHER']
+const VALID_JOB_STATUS_TRANSITIONS: Record<string, string[]> = {
+  PLANNED: ['IN_PROGRESS', 'ON_HOLD', 'CANCELLED'],
+  IN_PROGRESS: ['ON_HOLD', 'COMPLETED', 'CANCELLED'],
+  ON_HOLD: ['PLANNED', 'IN_PROGRESS', 'CANCELLED'],
+  COMPLETED: ['IN_PROGRESS'],
+  CANCELLED: ['PLANNED'],
+}
 const VALID_PAYMENT_METHODS = ['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY', 'CARD', 'OTHER']
 const VALID_INVOICE_STATUSES = ['DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED']
 
@@ -3185,11 +3387,15 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
   const description = String(req.body?.description ?? '').trim() || null
   const quoteId = String(req.body?.quoteId ?? '').trim() || null
   const status = String(req.body?.status ?? 'PLANNED').toUpperCase()
+  const requestedOwnerId = String(req.body?.ownerId ?? user.id)
   const startDate = req.body?.startDate ? new Date(req.body.startDate) : null
   const endDate = req.body?.endDate ? new Date(req.body.endDate) : null
 
   if (!title) return res.status(400).json({ message: 'Job title is required.' })
   if (!VALID_JOB_STATUSES.includes(status)) return res.status(400).json({ message: 'Invalid job status.' })
+  const assignedOwner = await prisma.user.findFirst({ where: { id: requestedOwnerId, organisationId }, select: { id: true, name: true } })
+  if (!assignedOwner) return res.status(400).json({ message: 'Choose a job owner from your workspace team.' })
+  if (requestedOwnerId !== user.id && !['OWNER', 'ADMIN'].includes(user.teamRole ?? '')) return res.status(403).json({ message: 'Only workspace owners and admins can assign jobs to another team member.' })
 
   const customer = await prisma.customer.findFirst({ where: { id: customerId, organisationId } })
   if (!customer) return res.status(400).json({ message: 'Choose a valid customer for this job.' })
@@ -3236,7 +3442,7 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
       data: {
         organisationId,
         quoteId: validatedQuoteId,
-        ownerId: user.id,
+        ownerId: requestedOwnerId,
         customerId,
         title,
         description,
@@ -3248,10 +3454,11 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
       },
       include: {
         customer: { select: { id: true, name: true, phone: true, email: true } },
+        owner: { select: { id: true, name: true, email: true } },
         milestones: { orderBy: { position: 'asc' } },
       },
     })
-    await recordJobActivity(created.id, user, 'JOB_CREATED', { title, status, quoteId: validatedQuoteId }, tx)
+    await recordJobActivity(created.id, user, 'JOB_CREATED', { title, status, quoteId: validatedQuoteId, ownerId: requestedOwnerId, ownerName: assignedOwner.name }, tx)
     return created
   })
 
@@ -3281,7 +3488,7 @@ app.get('/api/jobs', requireAuth, async (req, res) => {
       orderBy: { updatedAt: 'desc' },
       take: limit,
       skip: offset,
-      include: { customer: { select: { id: true, name: true } } },
+      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } } },
     }),
     prisma.job.count({ where: where as never }),
   ])
@@ -3299,6 +3506,7 @@ app.get('/api/jobs/:id', requireAuth, async (req, res) => {
     where: { id: String(req.params.id ?? ''), organisationId },
     include: {
       customer: { select: { id: true, name: true, phone: true, email: true } },
+      owner: { select: { id: true, name: true, email: true } },
       milestones: { orderBy: { position: 'asc' } },
       costs: { orderBy: { incurredAt: 'desc' } },
       activities: { orderBy: { createdAt: 'desc' }, take: 100 },
@@ -3433,13 +3641,28 @@ app.put('/api/jobs/:id', requireAuth, async (req, res) => {
   const status = req.body?.status !== undefined ? String(req.body.status).toUpperCase() : undefined
   const startDate = req.body?.startDate !== undefined ? (req.body.startDate ? new Date(req.body.startDate) : null) : undefined
   const endDate = req.body?.endDate !== undefined ? (req.body.endDate ? new Date(req.body.endDate) : null) : undefined
+  const requestedOwnerId = req.body?.ownerId !== undefined ? String(req.body.ownerId) : undefined
+  let requestedOwnerName: string | undefined
 
   if (status && !VALID_JOB_STATUSES.includes(status)) return res.status(400).json({ message: 'Invalid job status.' })
   if (title !== undefined && !title) return res.status(400).json({ message: 'Title cannot be empty.' })
+  if (status && status !== job.status && !VALID_JOB_STATUS_TRANSITIONS[job.status]?.includes(status)) {
+    return res.status(409).json({ message: `A job cannot move from ${job.status.toLowerCase().replaceAll('_', ' ')} to ${status.toLowerCase().replaceAll('_', ' ')}.` })
+  }
+  if (status && status !== job.status && ['COMPLETED', 'CANCELLED'].includes(job.status) && !['OWNER', 'ADMIN'].includes(user.teamRole ?? '')) {
+    return res.status(403).json({ message: 'Only workspace owners and admins can reopen a completed or cancelled job.' })
+  }
+  if (requestedOwnerId !== undefined) {
+    if (!['OWNER', 'ADMIN'].includes(user.teamRole ?? '')) return res.status(403).json({ message: 'Only workspace owners and admins can reassign jobs.' })
+    const assignee = await prisma.user.findFirst({ where: { id: requestedOwnerId, organisationId }, select: { id: true, name: true } })
+    if (!assignee) return res.status(400).json({ message: 'Choose a job owner from your workspace team.' })
+    requestedOwnerName = assignee.name
+  }
 
   const data: Record<string, unknown> = {}
   if (title !== undefined) data.title = title
   if (description !== undefined) data.description = description
+  if (requestedOwnerId !== undefined) data.ownerId = requestedOwnerId
   if (status !== undefined) data.status = status
   if (startDate !== undefined) data.startDate = startDate && !Number.isNaN(startDate.getTime()) ? startDate : null
   if (endDate !== undefined) data.endDate = endDate && !Number.isNaN(endDate.getTime()) ? endDate : null
@@ -3448,10 +3671,11 @@ app.put('/api/jobs/:id', requireAuth, async (req, res) => {
     const updated = await tx.job.update({
       where: { id: job.id },
       data: data as never,
-      include: { customer: { select: { id: true, name: true } } },
+      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } } },
     })
     await recordJobActivity(job.id, user, status && status !== job.status ? 'JOB_STATUS_CHANGED' : 'JOB_UPDATED', {
       fields: Object.keys(data),
+      ...(requestedOwnerId && requestedOwnerId !== job.ownerId ? { fromOwnerId: job.ownerId, toOwnerId: requestedOwnerId, toOwnerName: requestedOwnerName } : {}),
       ...(status && status !== job.status ? { fromStatus: job.status, toStatus: status } : {}),
     }, tx)
     return updated
@@ -3623,6 +3847,7 @@ app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) =>
   const taxTotal = Number(req.body?.taxTotal ?? 0)
   const notes = String(req.body?.notes ?? '').trim() || null
   const dueDate = req.body?.dueDate ? new Date(req.body.dueDate) : null
+  const depositRequired = req.body?.depositRequired !== undefined && req.body?.depositRequired !== null ? Number(req.body.depositRequired) : null
 
   const customer = await prisma.customer.findFirst({ where: { id: customerId, organisationId } })
   if (!customer) return res.status(400).json({ message: 'Choose a valid customer for this invoice.' })
@@ -3639,6 +3864,10 @@ app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) =>
 
   if (!Number.isFinite(subtotal) || subtotal < 0) return res.status(400).json({ message: 'Subtotal must be a non-negative number.' })
   if (!Number.isFinite(taxTotal) || taxTotal < 0) return res.status(400).json({ message: 'Tax total must be a non-negative number.' })
+  if (depositRequired !== null) {
+    if (!Number.isFinite(depositRequired) || depositRequired < 0) return res.status(400).json({ message: 'Deposit required must be a non-negative number.' })
+    if (depositRequired > roundMoney(subtotal + taxTotal)) return res.status(400).json({ message: 'Deposit required cannot exceed the invoice total.' })
+  }
 
   const total = roundMoney(subtotal + taxTotal)
   const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { quotePrefix: true } })
@@ -3656,6 +3885,7 @@ app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) =>
       taxTotal,
       total,
       balanceDue: total,
+      depositRequired: depositRequired !== null ? depositRequired : undefined,
       dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null,
       notes,
     },
@@ -3665,7 +3895,7 @@ app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) =>
     },
   })
 
-  res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue) } })
+  res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) } })
 })
 
 app.get('/api/invoices', requireAuth, async (req, res) => {
@@ -3675,11 +3905,13 @@ app.get('/api/invoices', requireAuth, async (req, res) => {
   if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
 
   const statusFilter = req.query?.status ? String(req.query.status).toUpperCase().split(',') : undefined
+  const customerFilter = req.query?.customerId ? String(req.query.customerId) : undefined
   const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 200)
   const offset = Math.max(Number(req.query?.offset ?? 0), 0)
 
   const where: Record<string, unknown> = { organisationId }
   if (statusFilter && statusFilter.every((s) => VALID_INVOICE_STATUSES.includes(s))) where.status = { in: statusFilter }
+  if (customerFilter) where.customerId = customerFilter
 
   const [invoices, totalCount] = await Promise.all([
     prisma.invoice.findMany({
@@ -3700,6 +3932,8 @@ app.get('/api/invoices', requireAuth, async (req, res) => {
       total: Number(inv.total),
       amountPaid: Number(inv.amountPaid),
       balanceDue: Number(inv.balanceDue),
+      depositRequired: inv.depositRequired ? Number(inv.depositRequired) : null,
+      depositPaid: Number(inv.depositPaid),
     })),
     totalCount,
     hasMore: offset + limit < totalCount,
@@ -3717,11 +3951,12 @@ app.get('/api/invoices/:id', requireAuth, async (req, res) => {
     include: {
       customer: { select: { id: true, name: true, phone: true, email: true } },
       job: { select: { id: true, title: true } },
-      payments: { orderBy: { paymentDate: 'desc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, paymentDate: true, receivedBy: true, createdAt: true } },
       reconciliations: { orderBy: { createdAt: 'desc' }, take: 50 },
     },
   })
   if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+  const payments = await listInvoiceAllocatedPayments(prisma, invoice.id, organisationId)
+  const allocationHistory = await listInvoiceAllocationHistory(prisma, invoice.id, organisationId)
 
   res.json({
     invoice: {
@@ -3731,7 +3966,10 @@ app.get('/api/invoices/:id', requireAuth, async (req, res) => {
       total: Number(invoice.total),
       amountPaid: Number(invoice.amountPaid),
       balanceDue: Number(invoice.balanceDue),
-      payments: invoice.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+      depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null,
+      depositPaid: Number(invoice.depositPaid),
+      payments,
+      allocationHistory,
     },
   })
 })
@@ -3750,8 +3988,9 @@ app.post('/api/invoices/:id/reconcile', requireTeamRole('OWNER', 'ADMIN'), async
     await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${invoice.id} FOR UPDATE`
     const current = await tx.invoice.findUnique({ where: { id: invoice.id } })
     if (!current || current.organisationId !== organisationId) return { error: 'Invoice not found.' as const }
-    const paymentTotals = await tx.payment.aggregate({ where: { invoiceId: current.id }, _sum: { amount: true } })
-    const correctedAmountPaid = roundMoney(Number(paymentTotals._sum.amount ?? 0))
+    const allocationNet = await getNetInvoiceAllocations(tx, current.id, organisationId)
+    const refundTotals = await tx.paymentRefund.aggregate({ where: { invoiceId: current.id, organisationId }, _sum: { amount: true } })
+    const correctedAmountPaid = roundMoney(allocationNet - Number(refundTotals._sum.amount ?? 0))
     const correctedBalanceDue = roundMoney(Number(current.total) - correctedAmountPaid)
     const correctedStatus = current.status === 'CANCELLED'
       ? 'CANCELLED'
@@ -3776,9 +4015,11 @@ app.post('/api/invoices/:id/reconcile', requireTeamRole('OWNER', 'ADMIN'), async
     return { invoice: updated, reconciled: true }
   })
   if ('error' in result) return res.status(404).json({ message: result.error })
-  const fullInvoice = await prisma.invoice.findFirst({ where: { id: invoice.id, organisationId }, include: { customer: { select: { id: true, name: true } }, job: { select: { id: true, title: true } }, payments: { orderBy: { paymentDate: 'desc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, paymentDate: true, receivedBy: true, createdAt: true } }, reconciliations: { orderBy: { createdAt: 'desc' }, take: 50 } } })
+  const fullInvoice = await prisma.invoice.findFirst({ where: { id: invoice.id, organisationId }, include: { customer: { select: { id: true, name: true } }, job: { select: { id: true, title: true } }, reconciliations: { orderBy: { createdAt: 'desc' }, take: 50 } } })
   if (!fullInvoice) return res.status(404).json({ message: 'Invoice not found.' })
-  return res.json({ reconciled: result.reconciled, invoice: { ...fullInvoice, subtotal: Number(fullInvoice.subtotal), taxTotal: Number(fullInvoice.taxTotal), total: Number(fullInvoice.total), amountPaid: Number(fullInvoice.amountPaid), balanceDue: Number(fullInvoice.balanceDue), payments: fullInvoice.payments.map((payment) => ({ ...payment, amount: Number(payment.amount) })) } })
+  const payments = await listInvoiceAllocatedPayments(prisma, invoice.id, organisationId)
+  const allocationHistory = await listInvoiceAllocationHistory(prisma, invoice.id, organisationId)
+  return res.json({ reconciled: result.reconciled, invoice: { ...fullInvoice, subtotal: Number(fullInvoice.subtotal), taxTotal: Number(fullInvoice.taxTotal), total: Number(fullInvoice.total), amountPaid: Number(fullInvoice.amountPaid), balanceDue: Number(fullInvoice.balanceDue), payments, allocationHistory } })
 })
 
 app.put('/api/invoices/:id', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
@@ -3796,6 +4037,7 @@ app.put('/api/invoices/:id', requireTeamRole('OWNER', 'ADMIN'), async (req, res)
   const notes = req.body?.notes !== undefined ? (String(req.body.notes).trim() || null) : undefined
   const dueDate = req.body?.dueDate !== undefined ? (req.body.dueDate ? new Date(req.body.dueDate) : null) : undefined
   const status = req.body?.status !== undefined ? String(req.body.status).toUpperCase() : undefined
+  const depositRequired = req.body?.depositRequired !== undefined ? (req.body.depositRequired === null ? null : Number(req.body.depositRequired)) : undefined
 
   const data: Record<string, unknown> = {}
   if (subtotal !== undefined) {
@@ -3814,8 +4056,17 @@ app.put('/api/invoices/:id', requireTeamRole('OWNER', 'ADMIN'), async (req, res)
   }
   if (notes !== undefined) data.notes = notes
   if (dueDate !== undefined) data.dueDate = dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null
+  if (depositRequired !== undefined) {
+    if (depositRequired !== null) {
+      if (!Number.isFinite(depositRequired) || depositRequired < 0) return res.status(400).json({ message: 'Deposit required must be non-negative.' })
+      const invTotal = Number(data.total ?? invoice.total)
+      if (depositRequired > invTotal) return res.status(400).json({ message: 'Deposit required cannot exceed the invoice total.' })
+    }
+    data.depositRequired = depositRequired
+  }
   if (status && VALID_INVOICE_STATUSES.includes(status) && status !== 'DRAFT') {
     data.status = status
+    if (status === 'SENT' && !invoice.sentAt) data.sentAt = new Date()
   }
 
   const updated = await prisma.invoice.update({
@@ -3831,6 +4082,8 @@ app.put('/api/invoices/:id', requireTeamRole('OWNER', 'ADMIN'), async (req, res)
       total: Number(updated.total),
       amountPaid: Number(updated.amountPaid),
       balanceDue: Number(updated.balanceDue),
+      depositRequired: updated.depositRequired ? Number(updated.depositRequired) : null,
+      depositPaid: Number(updated.depositPaid),
     },
   })
 })
@@ -3844,22 +4097,29 @@ app.post('/api/invoices/:id/payments', requireTeamRole('OWNER', 'ADMIN'), async 
   const invoice = await prisma.invoice.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
   if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
   if (invoice.status === 'CANCELLED') return res.status(409).json({ message: 'Cannot record payments on a cancelled invoice.' })
+  if (invoice.status === 'DRAFT') return res.status(409).json({ message: 'Send the invoice before recording a payment.' })
 
   const amount = Number(req.body?.amount ?? 0)
   const method = String(req.body?.method ?? '').toUpperCase()
   const reference = req.body?.reference ? String(req.body.reference).trim() : null
   const idempotencyKey = String(req.body?.idempotencyKey ?? '').trim()
   const paymentDate = req.body?.paymentDate ? new Date(req.body.paymentDate) : new Date()
+  const isDeposit = Boolean(req.body?.isDeposit)
 
   if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'Payment amount must be a positive number.' })
   if (!VALID_PAYMENT_METHODS.includes(method)) return res.status(400).json({ message: 'Invalid payment method.' })
   if (!/^[A-Za-z0-9._:-]{16,100}$/.test(idempotencyKey)) return res.status(400).json({ message: 'A valid idempotency key is required.' })
   if (paymentDate && Number.isNaN(paymentDate.getTime())) return res.status(400).json({ message: 'Invalid payment date.' })
 
+  // Deposit validation: if flagged as deposit and invoice has depositRequired, amount must not exceed deposit requirement
+  if (isDeposit && invoice.depositRequired && amount > Number(invoice.depositRequired) + 0.001) {
+    return res.status(400).json({ message: 'Deposit payment cannot exceed the required deposit amount.' })
+  }
+
   // Repeated submissions return the first durable payment row for this exact user action.
   const existingPayment = await prisma.payment.findUnique({ where: { idempotencyKey } })
   if (existingPayment) {
-    if (existingPayment.organisationId !== organisationId || existingPayment.invoiceId !== invoice.id) return res.status(409).json({ message: 'This idempotency key has already been used for another payment.' })
+    if (existingPayment.organisationId !== organisationId || existingPayment.invoiceId !== invoice.id || Number(existingPayment.amount) !== roundMoney(amount) || existingPayment.method !== method || existingPayment.reference !== reference) return res.status(409).json({ message: 'This idempotency key has already been used for a different payment.' })
     return res.json({ payment: { ...existingPayment, amount: Number(existingPayment.amount) }, replayed: true })
   }
 
@@ -3867,19 +4127,23 @@ app.post('/api/invoices/:id/payments', requireTeamRole('OWNER', 'ADMIN'), async 
   const result = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${invoice.id} FOR UPDATE`
     const lockedInvoice = await tx.invoice.findUnique({ where: { id: invoice.id } })
-    if (!lockedInvoice || lockedInvoice.organisationId !== organisationId || lockedInvoice.status === 'CANCELLED') return { conflict: 'Invoice is no longer available for payments.' as const }
+    if (!lockedInvoice || lockedInvoice.organisationId !== organisationId || lockedInvoice.status === 'CANCELLED' || lockedInvoice.status === 'DRAFT') return { conflict: 'Invoice is no longer available for payments.' as const }
     const repeated = await tx.payment.findUnique({ where: { idempotencyKey } })
     if (repeated) {
-      if (repeated.organisationId !== organisationId || repeated.invoiceId !== lockedInvoice.id) return { conflict: 'This idempotency key has already been used for another payment.' as const }
+      if (repeated.organisationId !== organisationId || repeated.invoiceId !== lockedInvoice.id || Number(repeated.amount) !== roundMoney(amount) || repeated.method !== method || repeated.reference !== reference) return { conflict: 'This idempotency key has already been used for a different payment.' as const }
       return { payment: repeated, replayed: true as const }
     }
-    const paidBefore = await tx.payment.aggregate({ where: { invoiceId: lockedInvoice.id }, _sum: { amount: true } })
-    const currentPaid = Number(paidBefore._sum.amount ?? 0)
+    const allocationNet = await getNetInvoiceAllocations(tx, lockedInvoice.id, organisationId)
+    const refundedBefore = await tx.paymentRefund.aggregate({ where: { invoiceId: lockedInvoice.id, organisationId }, _sum: { amount: true } })
+    const currentPaid = roundMoney(allocationNet - Number(refundedBefore._sum.amount ?? 0))
     const dueBefore = roundMoney(Number(lockedInvoice.total) - currentPaid)
     if (amount > dueBefore + 0.001) return { conflict: 'Payment amount exceeds the remaining invoice balance.' as const }
 
+    const paymentId = `pay_${randomBytes(12).toString('hex')}`
     const payment = await tx.payment.create({
       data: {
+        id: paymentId,
+        receiptNumber: `RCP-${paymentId.toUpperCase()}`,
         invoiceId: invoice.id,
         organisationId,
         idempotencyKey,
@@ -3887,13 +4151,14 @@ app.post('/api/invoices/:id/payments', requireTeamRole('OWNER', 'ADMIN'), async 
         currency: invoice.currency,
         method,
         reference,
+        isDeposit,
         paymentDate: paymentDate && !Number.isNaN(paymentDate.getTime()) ? paymentDate : new Date(),
         receivedBy: user.id,
       },
     })
+    await tx.paymentAllocation.create({ data: { organisationId, invoiceId: invoice.id, paymentId: payment.id, eventType: 'ALLOCATE', amount, currency: invoice.currency, idempotencyKey: `opening-payment:${payment.id}`, reason: isDeposit ? 'Deposit payment recorded on invoice' : 'Payment recorded on invoice', actorId: user.id, actorName: user.name } })
 
-    const allPayments = await tx.payment.aggregate({ where: { invoiceId: invoice.id }, _sum: { amount: true } })
-    const totalPaid = Number(allPayments._sum.amount ?? 0)
+    const totalPaid = roundMoney(currentPaid + amount)
     const invoiceTotal = Number(lockedInvoice.total)
     const balanceDue = roundMoney(invoiceTotal - totalPaid)
 
@@ -3906,12 +4171,20 @@ app.post('/api/invoices/:id/payments', requireTeamRole('OWNER', 'ADMIN'), async 
       nextStatus = invoice.status
     }
 
+    // Update depositPaid if this is a deposit payment
+    const depositUpdate: Record<string, unknown> = {}
+    if (isDeposit && lockedInvoice.depositRequired) {
+      const existingDeposits = await tx.payment.aggregate({ where: { invoiceId: lockedInvoice.id, isDeposit: true, id: { not: paymentId } }, _sum: { amount: true } })
+      depositUpdate.depositPaid = roundMoney(Number(existingDeposits._sum.amount ?? 0) + amount)
+    }
+
     await tx.invoice.update({
       where: { id: invoice.id },
       data: {
         amountPaid: totalPaid,
         balanceDue,
         status: nextStatus as never,
+        ...depositUpdate,
       },
     })
 
@@ -3920,7 +4193,273 @@ app.post('/api/invoices/:id/payments', requireTeamRole('OWNER', 'ADMIN'), async 
 
   if ('conflict' in result) return res.status(409).json({ message: result.conflict })
   const { idempotencyKey: _idempotencyKey, ...safePayment } = result.payment
-  res.status(result.replayed ? 200 : 201).json({ payment: { ...safePayment, amount: Number(result.payment.amount) }, replayed: result.replayed })
+  res.status(result.replayed ? 200 : 201).json({ payment: { ...safePayment, receiptNumber: `RCP-${result.payment.id.toUpperCase()}`, amount: Number(result.payment.amount) }, replayed: result.replayed })
+})
+
+app.post('/api/payments/:paymentId/reallocate', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const paymentId = String(req.params.paymentId ?? '')
+  const fromInvoiceId = String(req.body?.fromInvoiceId ?? '')
+  const toInvoiceId = String(req.body?.toInvoiceId ?? '')
+  const amount = roundMoney(Number(req.body?.amount))
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  const requestKey = String(req.body?.idempotencyKey ?? '').trim()
+  if (!fromInvoiceId || !toInvoiceId || fromInvoiceId === toInvoiceId) return res.status(400).json({ message: 'Choose two different invoices.' })
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'Reallocation amount must be positive.' })
+  if (!reason) return res.status(400).json({ message: 'Provide a reason for the reallocation.' })
+  if (!/^[A-Za-z0-9._:-]{16,100}$/.test(requestKey)) return res.status(400).json({ message: 'A valid idempotency key is required.' })
+
+  const replay = await prisma.paymentAllocation.findUnique({ where: { idempotencyKey: `${requestKey}:allocate` } })
+  if (replay) {
+    const reversal = await prisma.paymentAllocation.findUnique({ where: { idempotencyKey: `${requestKey}:reverse` } })
+    if (replay.organisationId !== organisationId || replay.paymentId !== paymentId || replay.invoiceId !== toInvoiceId || Number(replay.amount) !== roundMoney(amount) || replay.reason !== reason || !reversal || reversal.invoiceId !== fromInvoiceId || Number(reversal.amount) !== roundMoney(amount)) return res.status(409).json({ message: 'This request key has already been used for a different reallocation.' })
+    return res.json({ reallocated: true, replayed: true })
+  }
+  const result = await prisma.$transaction(async (tx) => {
+    const ids = [fromInvoiceId, toInvoiceId].sort()
+    await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${ids[0]} OR "id" = ${ids[1]} ORDER BY "id" FOR UPDATE`
+    await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE`
+    const [payment, source, target] = await Promise.all([
+      tx.payment.findFirst({ where: { id: paymentId, organisationId } }),
+      tx.invoice.findFirst({ where: { id: fromInvoiceId, organisationId } }),
+      tx.invoice.findFirst({ where: { id: toInvoiceId, organisationId } }),
+    ])
+    if (!payment || !source || !target) return { error: 'Payment or invoice not found.' as const }
+    const existing = await tx.paymentAllocation.findUnique({ where: { idempotencyKey: `${requestKey}:allocate` } })
+    if (existing) {
+      const reversal = await tx.paymentAllocation.findUnique({ where: { idempotencyKey: `${requestKey}:reverse` } })
+      if (existing.organisationId !== organisationId || existing.paymentId !== paymentId || existing.invoiceId !== toInvoiceId || Number(existing.amount) !== roundMoney(amount) || existing.reason !== reason || !reversal || reversal.invoiceId !== fromInvoiceId || Number(reversal.amount) !== roundMoney(amount)) return { error: 'This request key has already been used for a different reallocation.' as const }
+      return { replayed: true as const }
+    }
+    if (source.status === 'CANCELLED' || source.status === 'DRAFT' || target.status === 'CANCELLED' || target.status === 'DRAFT') return { error: 'Both invoices must be active sent invoices.' as const }
+    if (source.customerId !== target.customerId || source.currency !== target.currency || source.currency !== payment.currency) return { error: 'Payments can only move between invoices for the same customer and currency.' as const }
+    const [refunds, sourceAllocated, sourceReversed, targetPaid, targetReversed, targetRefunds] = await Promise.all([
+      tx.paymentRefund.aggregate({ where: { organisationId, paymentId }, _sum: { amount: true } }),
+      tx.paymentAllocation.aggregate({ where: { organisationId, invoiceId: source.id, paymentId, eventType: 'ALLOCATE' }, _sum: { amount: true } }),
+      tx.paymentAllocation.aggregate({ where: { organisationId, invoiceId: source.id, paymentId, eventType: 'REVERSE' }, _sum: { amount: true } }),
+      tx.paymentAllocation.aggregate({ where: { organisationId, invoiceId: target.id, eventType: 'ALLOCATE' }, _sum: { amount: true } }),
+      tx.paymentAllocation.aggregate({ where: { organisationId, invoiceId: target.id, eventType: 'REVERSE' }, _sum: { amount: true } }),
+      tx.paymentRefund.aggregate({ where: { organisationId, invoiceId: target.id }, _sum: { amount: true } }),
+    ])
+    if (Number(refunds._sum.amount ?? 0) > 0) return { error: 'A payment with a recorded refund cannot be reallocated.' as const }
+    const sourceAmount = roundMoney(Number(sourceAllocated._sum.amount ?? 0) - Number(sourceReversed._sum.amount ?? 0))
+    if (amount > sourceAmount + 0.001) return { error: 'Reallocation exceeds the amount currently assigned to the source invoice.' as const }
+    const targetNet = roundMoney(Number(targetPaid._sum.amount ?? 0) - Number(targetReversed._sum.amount ?? 0) - Number(targetRefunds._sum.amount ?? 0))
+    if (amount > Number(target.total) - targetNet + 0.001) return { error: 'Reallocation exceeds the target invoice balance.' as const }
+    await tx.paymentAllocation.create({ data: { organisationId, invoiceId: source.id, paymentId, eventType: 'REVERSE', amount, currency: payment.currency, idempotencyKey: `${requestKey}:reverse`, reason, actorId: user.id, actorName: user.name } })
+    await tx.paymentAllocation.create({ data: { organisationId, invoiceId: target.id, paymentId, eventType: 'ALLOCATE', amount, currency: payment.currency, idempotencyKey: `${requestKey}:allocate`, reason, actorId: user.id, actorName: user.name } })
+    await Promise.all([updateInvoiceFromLedger(tx, source, organisationId), updateInvoiceFromLedger(tx, target, organisationId)])
+    return { replayed: false as const }
+  })
+  if ('error' in result) return res.status(409).json({ message: result.error })
+  return res.status(result.replayed ? 200 : 201).json({ reallocated: true, replayed: result.replayed })
+})
+
+app.post('/api/invoices/:id/refunds', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const invoice = await prisma.invoice.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+  if (invoice.status === 'CANCELLED') return res.status(409).json({ message: 'A cancelled invoice cannot be refunded.' })
+  if (invoice.status === 'DRAFT') return res.status(409).json({ message: 'A draft invoice cannot have recorded refunds.' })
+  if (req.body?.confirmedExternally !== true) return res.status(400).json({ message: 'Complete the refund outside iQuote first, then confirm it here.' })
+
+  const paymentId = String(req.body?.paymentId ?? '').trim()
+  const idempotencyKey = String(req.body?.idempotencyKey ?? '').trim()
+  const amount = roundMoney(Number(req.body?.amount))
+  const method = String(req.body?.method ?? '').toUpperCase()
+  const reference = String(req.body?.reference ?? '').trim() || null
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  const refundedAt = req.body?.refundedAt ? new Date(req.body.refundedAt) : new Date()
+  if (!paymentId) return res.status(400).json({ message: 'Choose the payment being refunded.' })
+  if (!/^[\w:-]{12,120}$/.test(idempotencyKey)) return res.status(400).json({ message: 'Refresh the refund form and try again.' })
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'Refund amount must be greater than zero.' })
+  if (!['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY', 'OTHER'].includes(method)) return res.status(400).json({ message: 'Choose how the refund was sent.' })
+  if (!reason) return res.status(400).json({ message: 'Enter a reason for the refund.' })
+  if (Number.isNaN(refundedAt.getTime())) return res.status(400).json({ message: 'Enter a valid refund date.' })
+
+  const repeated = await prisma.paymentRefund.findUnique({ where: { idempotencyKey } })
+  if (repeated) {
+    if (repeated.organisationId !== organisationId || repeated.invoiceId !== invoice.id || repeated.paymentId !== paymentId || Number(repeated.amount) !== amount || repeated.method !== method || repeated.reference !== reference || repeated.reason !== reason) return res.status(409).json({ message: 'This refund request key has already been used for a different refund.' })
+    return res.json({ refund: { ...repeated, amount: Number(repeated.amount) }, replayed: true })
+  }
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${invoice.id} FOR UPDATE`
+    const current = await tx.invoice.findUnique({ where: { id: invoice.id } })
+    if (!current || current.organisationId !== organisationId || current.status === 'CANCELLED' || current.status === 'DRAFT') return { conflict: 'Invoice is no longer available for refunds.' as const }
+    const priorRequest = await tx.paymentRefund.findUnique({ where: { idempotencyKey } })
+    if (priorRequest) {
+      if (priorRequest.organisationId !== organisationId || priorRequest.invoiceId !== current.id || priorRequest.paymentId !== paymentId || Number(priorRequest.amount) !== amount || priorRequest.method !== method || priorRequest.reference !== reference || priorRequest.reason !== reason) return { conflict: 'This refund request key has already been used for a different refund.' as const }
+      return { refund: priorRequest, replayed: true as const }
+    }
+    const payment = await tx.payment.findFirst({ where: { id: paymentId, organisationId } })
+    if (!payment) return { conflict: 'Choose a payment recorded in this workspace.' as const }
+    const [existingRefund, allocated, reversed] = await Promise.all([
+      tx.paymentRefund.aggregate({ where: { organisationId, paymentId: payment.id }, _sum: { amount: true } }),
+      tx.paymentAllocation.aggregate({ where: { organisationId, paymentId: payment.id, invoiceId: current.id, eventType: 'ALLOCATE' }, _sum: { amount: true } }),
+      tx.paymentAllocation.aggregate({ where: { organisationId, paymentId: payment.id, invoiceId: current.id, eventType: 'REVERSE' }, _sum: { amount: true } }),
+    ])
+    const refundable = roundMoney(Math.min(Number(payment.amount) - Number(existingRefund._sum.amount ?? 0), Number(allocated._sum.amount ?? 0) - Number(reversed._sum.amount ?? 0)))
+    if (amount > refundable + 0.001) return { conflict: 'Refund amount exceeds the unrefunded part of this payment.' as const }
+    const refund = await tx.paymentRefund.create({ data: { organisationId, invoiceId: current.id, paymentId: payment.id, idempotencyKey, amount, currency: payment.currency, method, reference, reason, refundedAt, recordedBy: user.id, recordedByName: user.name } })
+    await updateInvoiceFromLedger(tx, current, organisationId)
+    return { refund, replayed: false as const }
+  })
+  if ('conflict' in result) return res.status(409).json({ message: result.conflict })
+  return res.status(result.replayed ? 200 : 201).json({ refund: { ...result.refund, amount: Number(result.refund.amount) }, replayed: result.replayed })
+})
+
+async function applyCustomerMpesaPayment(attemptId: string, providerReference: string | null) {
+  return prisma.$transaction(async (tx) => {
+    const attempt = await tx.invoicePaymentAttempt.findUnique({ where: { id: attemptId } })
+    if (!attempt) return { ok: false as const, message: 'Payment request was not found.' }
+    if (attempt.status === 'PAID') return { ok: true as const, replayed: true }
+    if (!['PENDING', 'UNKNOWN'].includes(attempt.status)) return { ok: false as const, message: 'Payment request is no longer pending.' }
+    await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${attempt.invoiceId} FOR UPDATE`
+    const invoice = await tx.invoice.findUnique({ where: { id: attempt.invoiceId } })
+    if (!invoice || invoice.organisationId !== attempt.organisationId || invoice.status === 'CANCELLED' || invoice.status === 'DRAFT') {
+      await tx.invoicePaymentAttempt.update({ where: { id: attempt.id }, data: { status: 'FAILED', statusDescription: 'Invoice is no longer available.', completedAt: new Date() } })
+      return { ok: false as const, message: 'Invoice is no longer available.' }
+    }
+    const currentAttempt = await tx.invoicePaymentAttempt.findUnique({ where: { id: attempt.id } })
+    if (!currentAttempt || !['PENDING', 'UNKNOWN'].includes(currentAttempt.status)) return { ok: currentAttempt?.status === 'PAID', replayed: true as const }
+    const allocationNet = await getNetInvoiceAllocations(tx, invoice.id, attempt.organisationId)
+    const refundedBefore = await tx.paymentRefund.aggregate({ where: { invoiceId: invoice.id, organisationId: attempt.organisationId }, _sum: { amount: true } })
+    const amount = Number(attempt.amount)
+    const currentPaid = roundMoney(allocationNet - Number(refundedBefore._sum.amount ?? 0))
+    const totalPaid = roundMoney(currentPaid + amount)
+    const invoiceTotal = Number(invoice.total)
+    if (amount <= 0 || totalPaid > invoiceTotal + 0.001) {
+      await tx.invoicePaymentAttempt.update({ where: { id: attempt.id }, data: { status: 'REVIEW', statusDescription: 'Confirmed amount is above the remaining invoice balance. Review this transaction before reconciling.', completedAt: new Date() } })
+      return { ok: false as const, message: 'Payment needs manual review because the invoice balance changed.' }
+    }
+    const paymentId = `pay_${randomBytes(12).toString('hex')}`
+    await tx.payment.create({ data: {
+      id: paymentId, receiptNumber: `RCP-${paymentId.toUpperCase()}`,
+      invoiceId: invoice.id, organisationId: attempt.organisationId, idempotencyKey: `ncba-stk:${attempt.id}`,
+      amount, currency: attempt.currency, method: 'MOBILE_MONEY', reference: providerReference || attempt.transactionId,
+      paymentDate: new Date(), receivedBy: attempt.requestedBy,
+    } })
+    await tx.paymentAllocation.create({ data: { organisationId: attempt.organisationId, invoiceId: invoice.id, paymentId, eventType: 'ALLOCATE', amount, currency: attempt.currency, idempotencyKey: `opening-mpesa:${attempt.id}`, reason: 'NCBA M-Pesa payment applied to invoice', actorId: attempt.requestedBy, actorName: 'M-Pesa settlement' } })
+    const balanceDue = roundMoney(invoiceTotal - totalPaid)
+    await tx.invoice.update({ where: { id: invoice.id }, data: { amountPaid: totalPaid, balanceDue, status: balanceDue <= 0 ? 'PAID' : 'PARTIALLY_PAID' } })
+    await tx.invoicePaymentAttempt.update({ where: { id: attempt.id }, data: { status: 'PAID', statusDescription: 'Payment confirmed by NCBA.', providerReference: providerReference || attempt.providerReference, completedAt: new Date() } })
+    return { ok: true as const, replayed: false }
+  })
+}
+
+async function refreshCustomerMpesaAttempt(attempt: Awaited<ReturnType<typeof prisma.invoicePaymentAttempt.findFirst>>) {
+  if (!attempt || !['PENDING', 'UNKNOWN'].includes(attempt.status) || !attempt.transactionId || Date.now() - attempt.updatedAt.getTime() < 5_000) return attempt
+  try {
+    const credentials = { username: decryptEmailSecret(attempt.gatewayUsernameCiphertext), secretKey: decryptEmailSecret(attempt.gatewaySecretCiphertext) }
+    const result = await queryMerchantStkPush(attempt.transactionId, credentials)
+    const status = String(result.status ?? result.Status ?? result.TransactionStatus ?? 'PENDING').toUpperCase()
+    if (status === 'SUCCESS') {
+      await applyCustomerMpesaPayment(attempt.id, attempt.providerReference)
+    } else if (status === 'FAILED' || status === 'CANCELLED') {
+      await prisma.invoicePaymentAttempt.updateMany({ where: { id: attempt.id, status: { in: ['PENDING', 'UNKNOWN'] } }, data: { status: 'FAILED', statusDescription: result.description ?? result.StatusDescription ?? 'Customer did not complete the M-Pesa payment.', completedAt: new Date() } })
+    } else if (result.description || result.StatusDescription) {
+      await prisma.invoicePaymentAttempt.updateMany({ where: { id: attempt.id, status: { in: ['PENDING', 'UNKNOWN'] } }, data: { statusDescription: result.description ?? result.StatusDescription } })
+    }
+    return prisma.invoicePaymentAttempt.findUnique({ where: { id: attempt.id } })
+  } catch {
+    return attempt
+  }
+}
+
+app.post('/api/invoices/:id/mpesa/stk', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const invoice = await prisma.invoice.findFirst({ where: { id: String(req.params.id ?? ''), organisationId }, include: { customer: { select: { phone: true } } } })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+  if (invoice.status === 'DRAFT' || invoice.status === 'CANCELLED' || invoice.status === 'PAID') return res.status(409).json({ message: 'Send the invoice first and make sure it has a balance due.' })
+  if (invoice.currency !== 'KES') return res.status(409).json({ message: 'NCBA M-Pesa collection currently supports KES invoices only.' })
+  const settings = await prisma.tenantPaymentSettings.findUnique({ where: { organisationId } })
+  if (!settings?.enabled || !settings.stkUsernameCiphertext || !settings.stkSecretCiphertext) return res.status(409).json({ message: 'Set up and enable your business M-Pesa collection in Settings first.' })
+  const phone = normalizeCustomerPhone(req.body?.phone ?? invoice.customer.phone)
+  const amount = Number(req.body?.amount ?? invoice.balanceDue)
+  const idempotencyKey = String(req.header('Idempotency-Key') ?? '').trim()
+  const balanceDue = Number(invoice.balanceDue)
+  if (!phone) return res.status(400).json({ message: 'Enter a valid Kenyan M-Pesa number.' })
+  if (!Number.isFinite(amount) || amount <= 0 || amount > balanceDue + 0.001) return res.status(400).json({ message: 'Enter an amount up to the remaining invoice balance.' })
+  if (!/^[\w:-]{12,120}$/.test(idempotencyKey)) return res.status(400).json({ message: 'Refresh the payment form and try again.' })
+  const repeated = await prisma.invoicePaymentAttempt.findUnique({ where: { idempotencyKey } })
+  if (repeated) {
+    if (repeated.organisationId !== organisationId || repeated.invoiceId !== invoice.id || Number(repeated.amount) !== roundMoney(amount) || repeated.phone !== phone) return res.status(409).json({ message: 'This payment request key has already been used for a different customer payment.' })
+    return res.json({ payment: { id: repeated.id, amount: Number(repeated.amount), currency: repeated.currency, status: repeated.status, statusDescription: repeated.statusDescription, queryable: Boolean(repeated.transactionId), phone: `${repeated.phone.slice(0, 5)}••••${repeated.phone.slice(-2)}` }, replayed: true })
+  }
+  const openedAttempt = await prisma.invoicePaymentAttempt.findFirst({ where: { invoiceId: invoice.id, status: { in: ['PENDING', 'UNKNOWN', 'REVIEW'] } } })
+  if (openedAttempt) return res.status(409).json({ message: 'An M-Pesa request still needs a confirmed result for this invoice. Check its status before sending another.' })
+  const merchantCode = settings.merchantType === 'TILL' ? settings.tillNumber : settings.paybillNumber
+  if (!merchantCode) return res.status(409).json({ message: 'The configured Till or Paybill number is missing.' })
+  const credentials = { username: decryptEmailSecret(settings.stkUsernameCiphertext), secretKey: decryptEmailSecret(settings.stkSecretCiphertext) }
+  let attempt: Awaited<ReturnType<typeof prisma.invoicePaymentAttempt.create>>
+  try {
+    attempt = await prisma.invoicePaymentAttempt.create({ data: {
+      organisationId, invoiceId: invoice.id, requestedBy: user.id, idempotencyKey, merchantType: settings.merchantType,
+      merchantCode, invoiceNumber: invoice.invoiceNumber, phone, amount, currency: invoice.currency,
+      gatewayUsernameCiphertext: settings.stkUsernameCiphertext, gatewaySecretCiphertext: settings.stkSecretCiphertext,
+      statusDescription: 'Starting the secure M-Pesa prompt.',
+    } })
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return res.status(409).json({ message: 'An M-Pesa request is already being started for this invoice. Refresh its payment history before retrying.' })
+    throw error
+  }
+  try {
+    // NCBA Till merchants route through bank Paybill 880100, with their Till as AccountNo.
+    // A Paybill merchant routes to its shortcode and uses the invoice number as BillRef.
+    const provider = await initiateMerchantStkPush({ credentials, telephone: phone, amount,
+      paybillNumber: settings.merchantType === 'TILL' ? '880100' : merchantCode,
+      accountNo: settings.merchantType === 'TILL' ? merchantCode : invoice.invoiceNumber,
+    })
+    const updated = await prisma.invoicePaymentAttempt.update({ where: { id: attempt.id }, data: { transactionId: provider.TransactionID, providerReference: provider.ReferenceID, statusDescription: provider.StatusDescription || 'Approve the M-Pesa prompt on the customer’s phone.' } })
+    return res.status(201).json({ payment: { id: updated.id, amount: Number(updated.amount), currency: updated.currency, status: updated.status, statusDescription: updated.statusDescription, queryable: Boolean(updated.transactionId), phone: `${updated.phone.slice(0, 5)}••••${updated.phone.slice(-2)}` } })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'NCBA could not start this payment.'
+    const ambiguous = error instanceof NcbaMerchantRequestError && error.ambiguous
+    await prisma.invoicePaymentAttempt.update({ where: { id: attempt.id }, data: { status: ambiguous ? 'UNKNOWN' : 'FAILED', statusDescription: message, completedAt: ambiguous ? null : new Date() } })
+    return res.status(ambiguous ? 202 : 502).json({ message, ...(ambiguous ? { payment: { id: attempt.id, amount: Number(attempt.amount), currency: attempt.currency, status: 'UNKNOWN', statusDescription: message, queryable: false, phone: `${attempt.phone.slice(0, 5)}••••${attempt.phone.slice(-2)}` } } : {}) })
+  }
+})
+
+app.get('/api/invoices/:id/mpesa/attempts', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const invoice = await prisma.invoice.findFirst({ where: { id: String(req.params.id ?? ''), organisationId }, select: { id: true } })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+  let attempts = await prisma.invoicePaymentAttempt.findMany({
+    where: { invoiceId: invoice.id, organisationId }, orderBy: { createdAt: 'desc' }, take: 20,
+    select: { id: true, merchantType: true, phone: true, amount: true, currency: true, status: true, statusDescription: true, transactionId: true, providerReference: true, createdAt: true, completedAt: true },
+  })
+  const unresolved = attempts.find((attempt) => ['PENDING', 'UNKNOWN'].includes(attempt.status))
+  if (unresolved) {
+    await refreshCustomerMpesaAttempt(await prisma.invoicePaymentAttempt.findUnique({ where: { id: unresolved.id } }))
+    attempts = await prisma.invoicePaymentAttempt.findMany({
+      where: { invoiceId: invoice.id, organisationId }, orderBy: { createdAt: 'desc' }, take: 20,
+      select: { id: true, merchantType: true, phone: true, amount: true, currency: true, status: true, statusDescription: true, transactionId: true, providerReference: true, createdAt: true, completedAt: true },
+    })
+  }
+  return res.json({ attempts: attempts.map((attempt) => ({ ...attempt, phone: `${attempt.phone.slice(0, 5)}••••${attempt.phone.slice(-2)}`, amount: Number(attempt.amount) })) })
+})
+
+app.get('/api/invoices/:id/mpesa/attempts/:attemptId', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(404).json({ message: 'Payment request was not found.' })
+  const attempt = await prisma.invoicePaymentAttempt.findFirst({ where: { id: String(req.params.attemptId), invoiceId: String(req.params.id), organisationId } })
+  if (!attempt) return res.status(404).json({ message: 'Payment request was not found.' })
+  const updated = await refreshCustomerMpesaAttempt(attempt)
+  return res.json({ payment: { id: updated?.id, status: updated?.status, statusDescription: updated?.statusDescription, amount: Number(updated?.amount ?? 0), currency: updated?.currency ?? 'KES', paidAt: updated?.completedAt, queryable: Boolean(updated?.transactionId), phone: `${attempt.phone.slice(0, 5)}••••${attempt.phone.slice(-2)}` } })
 })
 
 app.get('/api/invoices/:id/payments', requireAuth, async (req, res) => {
@@ -3932,12 +4471,117 @@ app.get('/api/invoices/:id/payments', requireAuth, async (req, res) => {
   const invoice = await prisma.invoice.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
   if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
 
-  const payments = await prisma.payment.findMany({
-    where: { invoiceId: invoice.id },
-    orderBy: { paymentDate: 'desc' },
-    select: { id: true, amount: true, currency: true, method: true, reference: true, paymentDate: true, receivedBy: true, createdAt: true },
+  const payments = await listInvoiceAllocatedPayments(prisma, invoice.id, organisationId)
+  res.json({ payments })
+})
+
+// ---- Receipt delivery: email a payment receipt to the customer ----
+
+app.post('/api/payments/:paymentId/send-receipt', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const paymentId = String(req.params.paymentId ?? '')
+  const recipientEmail = String(req.body?.recipientEmail ?? '').trim().toLowerCase()
+  const recipientName = String(req.body?.recipientName ?? '').trim() || null
+  const customMessage = req.body?.message ? String(req.body.message).trim() : null
+
+  if (!recipientEmail) return res.status(400).json({ message: 'Recipient email is required.' })
+  if (!isValidEmail(recipientEmail)) return res.status(400).json({ message: 'Enter a valid email address.' })
+
+  const payment = await prisma.payment.findFirst({
+    where: { id: paymentId, organisationId },
+    include: {
+      invoice: { select: { invoiceNumber: true, customer: { select: { id: true, name: true, email: true, phone: true } } } },
+      organisation: { select: { id: true, name: true, currency: true } },
+    },
   })
-  res.json({ payments: payments.map((p) => ({ ...p, amount: Number(p.amount) })) })
+  if (!payment) return res.status(404).json({ message: 'Payment not found.' })
+
+  // Create delivery record
+  const delivery = await prisma.receiptDelivery.create({
+    data: {
+      paymentId: payment.id,
+      organisationId,
+      recipientEmail,
+      recipientName,
+      status: 'PENDING',
+    },
+  })
+
+  try {
+    const result = await sendEmail(
+      recipientEmail,
+      emailSubjects.receiptDelivery(payment.organisation.name ?? 'iQuote', payment.receiptNumber),
+      receiptDeliveryEmailHtml({
+        recipientName: recipientName ?? payment.invoice.customer.name,
+        businessName: payment.organisation.name ?? 'iQuote',
+        receiptNumber: payment.receiptNumber,
+        invoiceNumber: payment.invoice.invoiceNumber,
+        amount: Number(payment.amount),
+        currency: payment.currency,
+        method: payment.method,
+        reference: payment.reference,
+        paymentDate: payment.paymentDate.toISOString(),
+        customMessage,
+      }),
+      `receipt-delivery/${delivery.id}`,
+      payment.organisationId,
+    )
+
+    const now = new Date()
+    await prisma.receiptDelivery.update({
+      where: { id: delivery.id },
+      data: {
+        status: result !== false ? 'SENT' : 'FAILED',
+        providerMessageId: result !== false ? (result.messageId ?? null) : null,
+        sentAt: result !== false ? now : null,
+        errorMessage: result === false ? 'Email provider is not configured. Set RESEND_API_KEY and a verified sender address.' : null,
+      },
+    })
+
+    if (result === false) {
+      return res.status(502).json({ message: 'Email provider is not configured. Set RESEND_API_KEY and a verified sender address to send receipts by email.', deliveryId: delivery.id })
+    }
+
+    res.json({
+      delivery: {
+        id: delivery.id,
+        recipientEmail,
+        recipientName,
+        status: 'SENT',
+        providerMessageId: result.messageId ?? null,
+        sentAt: now.toISOString(),
+      },
+    })
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Receipt delivery failed.'
+    await prisma.receiptDelivery.update({
+      where: { id: delivery.id },
+      data: { status: 'FAILED', errorMessage },
+    })
+    res.status(502).json({ message: errorMessage, deliveryId: delivery.id })
+  }
+})
+
+app.get('/api/payments/:paymentId/deliveries', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const paymentId = String(req.params.paymentId ?? '')
+  const payment = await prisma.payment.findFirst({ where: { id: paymentId, organisationId }, select: { id: true } })
+  if (!payment) return res.status(404).json({ message: 'Payment not found.' })
+
+  const deliveries = await prisma.receiptDelivery.findMany({
+    where: { paymentId },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, recipientEmail: true, recipientName: true, status: true, providerMessageId: true, errorMessage: true, sentAt: true, createdAt: true },
+  })
+  res.json({ deliveries })
 })
 
 app.get('/api/export/workspace.json', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
@@ -3946,13 +4590,14 @@ app.get('/api/export/workspace.json', requireTeamRole('OWNER', 'ADMIN'), async (
   const organisationId = await getOrganisationId(user.id)
   if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
 
-  const [organisation, members, customers, quotes, jobs, invoices, serviceItems, quoteTemplates, subscription, emailSettings] = await Promise.all([
+  const [organisation, members, customers, quotes, jobs, invoices, paymentAttempts, serviceItems, quoteTemplates, subscription, emailSettings] = await Promise.all([
     prisma.organisation.findUnique({ where: { id: organisationId }, select: { id: true, name: true, email: true, phone: true, country: true, businessType: true, currency: true, defaultTaxRate: true, quotePrefix: true, logoUrl: true, website: true, paymentInstructions: true, terms: true, createdAt: true, updatedAt: true } }),
     prisma.user.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, email: true, role: true, teamRole: true, emailVerifiedAt: true, createdAt: true } }),
     prisma.customer.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, phone: true, email: true, archivedAt: true, createdAt: true, updatedAt: true } }),
     prisma.quote.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, documentNumber: true, status: true, currency: true, validUntil: true, notes: true, terms: true, subtotal: true, taxTotal: true, total: true, viewedAt: true, decisionComment: true, decidedAt: true, tokenRevokedAt: true, version: true, parentQuoteId: true, createdAt: true, updatedAt: true, customerId: true, lines: { orderBy: { position: 'asc' }, select: { id: true, description: true, quantity: true, unit: true, unitPrice: true, taxRate: true, position: true } } } }),
-    prisma.job.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, quoteId: true, ownerId: true, customerId: true, title: true, description: true, status: true, currency: true, startDate: true, endDate: true, acceptedQuoteSnapshot: true, createdAt: true, updatedAt: true, milestones: { orderBy: { position: 'asc' }, select: { id: true, title: true, description: true, dueDate: true, completedAt: true, position: true, customerVisible: true, createdAt: true } }, costs: { orderBy: { incurredAt: 'asc' }, select: { id: true, category: true, description: true, amount: true, currency: true, incurredBy: true, incurredAt: true, createdAt: true } }, activities: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, action: true, details: true, createdAt: true } }, attachments: { orderBy: { createdAt: 'asc' }, select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true, uploadedBy: true, uploaderName: true, createdAt: true } } } }),
-    prisma.invoice.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, jobId: true, customerId: true, invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, issueDate: true, dueDate: true, notes: true, createdAt: true, updatedAt: true, payments: { orderBy: { paymentDate: 'asc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, paymentDate: true, receivedBy: true, createdAt: true } }, reconciliations: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, reason: true, previousAmountPaid: true, previousBalanceDue: true, correctedAmountPaid: true, correctedBalanceDue: true, createdAt: true } } } }),
+    prisma.job.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, quoteId: true, ownerId: true, owner: { select: { id: true, name: true, email: true } }, customerId: true, title: true, description: true, status: true, currency: true, startDate: true, endDate: true, acceptedQuoteSnapshot: true, createdAt: true, updatedAt: true, milestones: { orderBy: { position: 'asc' }, select: { id: true, title: true, description: true, dueDate: true, completedAt: true, position: true, customerVisible: true, createdAt: true } }, costs: { orderBy: { incurredAt: 'asc' }, select: { id: true, category: true, description: true, amount: true, currency: true, incurredBy: true, incurredAt: true, createdAt: true } }, activities: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, action: true, details: true, createdAt: true } }, attachments: { orderBy: { createdAt: 'asc' }, select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true, uploadedBy: true, uploaderName: true, createdAt: true } } } }),
+    prisma.invoice.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, jobId: true, customerId: true, invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, depositRequired: true, depositPaid: true, sentAt: true, issueDate: true, dueDate: true, notes: true, createdAt: true, updatedAt: true, payments: { orderBy: { paymentDate: 'asc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, isDeposit: true, paymentDate: true, receivedBy: true, createdAt: true, refunds: { select: { id: true, amount: true, currency: true, method: true, reference: true, reason: true, refundedAt: true, recordedByName: true, createdAt: true } }, receiptDeliveries: { orderBy: { createdAt: 'asc' }, select: { id: true, recipientEmail: true, recipientName: true, status: true, providerMessageId: true, errorMessage: true, sentAt: true, createdAt: true } } } }, paymentAllocations: { orderBy: { createdAt: 'asc' }, select: { id: true, paymentId: true, eventType: true, amount: true, currency: true, idempotencyKey: true, reason: true, actorId: true, actorName: true, createdAt: true } }, reconciliations: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, reason: true, previousAmountPaid: true, previousBalanceDue: true, correctedAmountPaid: true, correctedBalanceDue: true, createdAt: true } } } }),
+    prisma.invoicePaymentAttempt.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, invoiceId: true, requestedBy: true, provider: true, merchantType: true, merchantCode: true, invoiceNumber: true, transactionId: true, providerReference: true, phone: true, amount: true, currency: true, status: true, statusDescription: true, createdAt: true, updatedAt: true, completedAt: true } }),
     prisma.serviceItem.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, category: true, kind: true, description: true, unit: true, defaultPrice: true, defaultTaxRate: true, active: true, isStarter: true, createdAt: true, updatedAt: true } }),
     prisma.quoteTemplate.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, description: true, workflow: true, lineItems: true, defaultNotes: true, defaultTerms: true, isStarter: true, version: true, createdAt: true, updatedAt: true } }),
     prisma.subscription.findUnique({ where: { organisationId }, select: { plan: true, status: true, billingInterval: true, trialStartedAt: true, trialEndsAt: true, simulated: true, createdAt: true, updatedAt: true } }),
@@ -3961,7 +4606,117 @@ app.get('/api/export/workspace.json', requireTeamRole('OWNER', 'ADMIN'), async (
 
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.setHeader('Content-Disposition', `attachment; filename="iquote-workspace-export-${new Date().toISOString().slice(0, 10)}.json"`)
-  return res.json({ exportedAt: new Date().toISOString(), formatVersion: 1, organisation, members, customers, quotes, jobs, invoices, serviceItems, quoteTemplates, subscription, emailSettings })
+  return res.json({ exportedAt: new Date().toISOString(), formatVersion: 2, organisation, members, customers, quotes, jobs, invoices: invoices.map((invoice) => ({ ...invoice, depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid), subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), payments: invoice.payments.map((payment) => ({ ...payment, receiptNumber: `RCP-${payment.id.toUpperCase()}`, amount: Number(payment.amount), isDeposit: payment.isDeposit ?? false, refunds: payment.refunds.map((refund) => ({ ...refund, amount: Number(refund.amount) })), receiptDeliveries: payment.receiptDeliveries ?? [] })), paymentAllocations: invoice.paymentAllocations.map((allocation) => ({ ...allocation, amount: Number(allocation.amount) })) })), paymentAttempts: paymentAttempts.map((attempt) => ({ ...attempt, amount: Number(attempt.amount) })), serviceItems, quoteTemplates, subscription, emailSettings })
+})
+
+// ---- Retention policy: workspace data deletion (owner-only, irreversible) ----
+// Retention policy: workspace data is retained for the lifetime of the workspace.
+// An owner may export all data (GET /api/export/workspace.json) before requesting deletion.
+// Deletion is irreversible and removes all customers, quotes, jobs, invoices, payments,
+// and financial records. The workspace itself and user accounts are preserved so the
+// owner can reconfigure. This endpoint requires a typed confirmation string.
+
+app.delete('/api/export/workspace.json', requireTeamRole('OWNER'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const confirmation = String(req.body?.confirmation ?? '').trim()
+  if (confirmation !== 'DELETE ALL DATA') {
+    return res.status(400).json({ message: 'Type "DELETE ALL DATA" to confirm. This action is irreversible.' })
+  }
+
+  const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { name: true } })
+  if (!org) return res.status(404).json({ message: 'Workspace not found.' })
+
+  // Delete in dependency order to respect FK constraints
+  // Payment allocations, refunds, receipt deliveries, reconciliation records first,
+  // then payments, invoice payment attempts, invoices, job costs/activities/attachments/milestones,
+  // jobs, quote deliveries/messages, quote lines, quotes, customers, service items, templates
+  await prisma.$transaction(async (tx) => {
+    // Financial records
+    await tx.paymentAllocation.deleteMany({ where: { organisationId } })
+    await tx.paymentRefund.deleteMany({ where: { organisationId } })
+    await tx.receiptDelivery.deleteMany({ where: { organisationId } })
+    await tx.invoiceReconciliation.deleteMany({ where: { organisationId } })
+    await tx.invoicePaymentAttempt.deleteMany({ where: { organisationId } })
+    // Payments reference invoices, invoices reference jobs/customers
+    const invoiceIds = await tx.invoice.findMany({ where: { organisationId }, select: { id: true } })
+    if (invoiceIds.length) {
+      await tx.payment.deleteMany({ where: { invoiceId: { in: invoiceIds.map((i) => i.id) } } })
+    }
+    await tx.invoice.deleteMany({ where: { organisationId } })
+    // Job-related records
+    const jobIds = await tx.job.findMany({ where: { organisationId }, select: { id: true } })
+    if (jobIds.length) {
+      const jobIdList = jobIds.map((j) => j.id)
+      await tx.jobCost.deleteMany({ where: { jobId: { in: jobIdList } } })
+      await tx.jobActivity.deleteMany({ where: { jobId: { in: jobIdList } } })
+      await tx.jobAttachment.deleteMany({ where: { jobId: { in: jobIdList } } })
+      await tx.jobMilestone.deleteMany({ where: { jobId: { in: jobIdList } } })
+    }
+    await tx.job.deleteMany({ where: { organisationId } })
+    // Quote-related records
+    const quoteIds = await tx.quote.findMany({ where: { organisationId }, select: { id: true } })
+    if (quoteIds.length) {
+      const quoteIdList = quoteIds.map((q) => q.id)
+      await tx.quoteDelivery.deleteMany({ where: { quoteId: { in: quoteIdList } } })
+      await tx.quoteMessage.deleteMany({ where: { quoteId: { in: quoteIdList } } })
+      await tx.quoteLine.deleteMany({ where: { quoteId: { in: quoteIdList } } })
+      await tx.notification.deleteMany({ where: { quoteId: { in: quoteIdList } } })
+    }
+    await tx.notification.deleteMany({ where: { organisationId } })
+    await tx.quoteMessage.deleteMany({ where: { organisationId } })
+    await tx.quote.deleteMany({ where: { organisationId } })
+    await tx.customer.deleteMany({ where: { organisationId } })
+    await tx.serviceItem.deleteMany({ where: { organisationId } })
+    await tx.quoteTemplate.deleteMany({ where: { organisationId } })
+    await tx.teamInvitation.deleteMany({ where: { organisationId } })
+    // Reset subscription to trial state
+    await tx.subscription.updateMany({ where: { organisationId }, data: { status: 'TRIALING', simulated: true, currentPeriodEndsAt: null } })
+  })
+
+  // Record audit event
+  await prisma.superadminAuditEvent.create({
+    data: {
+      actorEmail: user.email,
+      action: 'WORKSPACE_DATA_DELETED',
+      targetType: 'Organisation',
+      targetId: organisationId,
+      summary: `Owner ${user.email} deleted all business data for workspace "${org.name}".`,
+      metadata: { confirmation } as never,
+    },
+  }).catch(() => {})
+
+  res.json({ deleted: true, message: 'All workspace business data has been deleted. User accounts and workspace settings are preserved.' })
+})
+
+// ---- Retention policy info ----
+app.get('/api/settings/retention', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const [customerCount, quoteCount, jobCount, invoiceCount, paymentCount] = await Promise.all([
+    prisma.customer.count({ where: { organisationId } }),
+    prisma.quote.count({ where: { organisationId } }),
+    prisma.job.count({ where: { organisationId } }),
+    prisma.invoice.count({ where: { organisationId } }),
+    prisma.payment.count({ where: { organisationId } }),
+  ])
+
+  res.json({
+    policy: {
+      retentionPeriod: 'Lifetime of workspace',
+      description: 'Business data is retained for as long as the workspace is active. Owners can export all data at any time via the export endpoint and request complete deletion of business records. User accounts and workspace configuration are preserved after deletion.',
+      exportAvailable: true,
+      deletionAvailable: true,
+      deletionRequiresConfirmation: 'DELETE ALL DATA',
+    },
+    recordCounts: { customers: customerCount, quotes: quoteCount, jobs: jobCount, invoices: invoiceCount, payments: paymentCount },
+  })
 })
 
 // ---- Stage 15: Team membership and invitations ----
@@ -4141,7 +4896,7 @@ app.get('/api/reports', requireAuth, async (req, res) => {
   const [allQuotes, allCustomers, allJobs, allInvoices] = await Promise.all([
     prisma.quote.findMany({ where: { organisationId }, include: { customer: { select: { id: true, name: true } }, deliveries: { select: { status: true } } } }),
     prisma.customer.findMany({ where: { organisationId, archivedAt: null }, select: { id: true, name: true, createdAt: true } }),
-    prisma.job.findMany({ where: { organisationId }, include: { costs: true, quote: { select: { total: true } }, invoices: { select: { total: true, amountPaid: true } } } }),
+    prisma.job.findMany({ where: { organisationId }, include: { costs: true, quote: { select: { total: true, currency: true } }, invoices: { select: { total: true, amountPaid: true, currency: true } } } }),
     prisma.invoice.findMany({ where: { organisationId }, select: { status: true, total: true, amountPaid: true, balanceDue: true, currency: true } }),
   ])
 
@@ -4176,20 +4931,18 @@ app.get('/api/reports', requireAuth, async (req, res) => {
   }
 
   // Job profitability
-  const jobProfitability = allJobs.map((job) => {
-    const estimated = job.quote?.total ? Number(job.quote.total) : 0
-    const actualCosts = job.costs.reduce((sum, cost) => sum + Number(cost.amount), 0)
-    const invoiced = job.invoices.reduce((sum, inv) => sum + Number(inv.total), 0)
-    const collected = job.invoices.reduce((sum, inv) => sum + Number(inv.amountPaid), 0)
-    return {
-      id: job.id,
-      title: job.title,
-      estimated,
-      actualCosts,
-      invoiced,
-      collected,
-      margin: roundMoney(estimated - actualCosts),
-    }
+  const jobProfitability = allJobs.flatMap((job) => {
+    const quoteCurrency = job.quote?.currency ?? job.currency
+    const currencies = new Set([job.currency, quoteCurrency, ...job.costs.map((cost) => cost.currency), ...job.invoices.map((invoice) => invoice.currency)])
+    const costsUseQuoteCurrency = job.costs.every((cost) => cost.currency === quoteCurrency)
+    return [...currencies].map((currency) => {
+      const estimated = currency === quoteCurrency && job.quote?.total ? Number(job.quote.total) : 0
+      const actualCosts = job.costs.filter((cost) => cost.currency === currency).reduce((sum, cost) => sum + Number(cost.amount), 0)
+      const invoiced = job.invoices.filter((invoice) => invoice.currency === currency).reduce((sum, invoice) => sum + Number(invoice.total), 0)
+      const collected = job.invoices.filter((invoice) => invoice.currency === currency).reduce((sum, invoice) => sum + Number(invoice.amountPaid), 0)
+      const margin = currency === quoteCurrency && Boolean(job.quote) && costsUseQuoteCurrency ? roundMoney(estimated - actualCosts) : null
+      return { id: `${job.id}:${currency}`, title: job.title, currency, estimated, actualCosts, invoiced, collected, margin }
+    })
   })
 
   res.json({

@@ -85,9 +85,14 @@ model Organisation {
   subscription        Subscription?
   billingPayments     BillingPayment[]
   emailSettings       TenantEmailSettings?
+  paymentSettings     TenantPaymentSettings?
+  paymentAttempts     InvoicePaymentAttempt[]
   jobs                Job[]
   invoices            Invoice[]
   payments            Payment[]
+  refunds              PaymentRefund[]
+  paymentAllocations PaymentAllocation[]
+  receiptDeliveries ReceiptDelivery[]
   invitations         TeamInvitation[]
   notifications       Notification[]
   quoteMessages       QuoteMessage[]
@@ -107,6 +112,24 @@ model TenantEmailSettings {
   verifiedAt             DateTime?
   createdAt              DateTime     @default(now())
   updatedAt              DateTime     @updatedAt
+}
+
+model TenantPaymentSettings {
+  id                             String       @id @default(cuid())
+  organisationId                 String       @unique
+  organisation                   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  provider                       String       @default("NCBA")
+  merchantType                   String       @default("TILL")
+  tillNumber                     String?
+  paybillNumber                  String?
+  stkUsernameCiphertext          String?
+  stkSecretCiphertext            String?
+  notificationUsernameCiphertext String?
+  notificationPasswordCiphertext String?
+  notificationSecretCiphertext   String?
+  enabled                        Boolean      @default(false)
+  createdAt                      DateTime     @default(now())
+  updatedAt                      DateTime     @updatedAt
 }
 
 model SignupVerification {
@@ -500,29 +523,35 @@ enum InvoiceStatus {
 }
 
 model Invoice {
-  id             String        @id @default(cuid())
-  organisationId String
-  organisation   Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  jobId          String?
-  job            Job?          @relation(fields: [jobId], references: [id], onDelete: SetNull)
-  customerId     String
-  customer       Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  invoiceNumber  String
-  status         InvoiceStatus @default(DRAFT)
-  currency       String
-  subtotal       Decimal       @default(0) @db.Decimal(14, 2)
-  taxTotal       Decimal       @default(0) @db.Decimal(14, 2)
-  total          Decimal       @default(0) @db.Decimal(14, 2)
-  amountPaid     Decimal       @default(0) @db.Decimal(14, 2)
-  balanceDue     Decimal       @default(0) @db.Decimal(14, 2)
-  issueDate      DateTime      @default(now())
-  dueDate        DateTime?
-  notes          String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  id              String        @id @default(cuid())
+  organisationId  String
+  organisation    Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  jobId           String?
+  job             Job?          @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  customerId      String
+  customer        Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  invoiceNumber   String
+  status          InvoiceStatus @default(DRAFT)
+  currency        String
+  subtotal        Decimal       @default(0) @db.Decimal(14, 2)
+  taxTotal        Decimal       @default(0) @db.Decimal(14, 2)
+  total           Decimal       @default(0) @db.Decimal(14, 2)
+  amountPaid      Decimal       @default(0) @db.Decimal(14, 2)
+  balanceDue      Decimal       @default(0) @db.Decimal(14, 2)
+  depositRequired Decimal?      @db.Decimal(14, 2)
+  depositPaid     Decimal       @default(0) @db.Decimal(14, 2)
+  issueDate       DateTime      @default(now())
+  dueDate         DateTime?
+  sentAt          DateTime?
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   payments        Payment[]
   reconciliations InvoiceReconciliation[]
+  paymentAttempts InvoicePaymentAttempt[]
+  refunds         PaymentRefund[]
+  paymentAllocations PaymentAllocation[]
 
   @@unique([organisationId, invoiceNumber])
   @@index([organisationId, status])
@@ -531,21 +560,121 @@ model Invoice {
 
 model Payment {
   id             String       @id @default(cuid())
+  receiptNumber  String       @unique
   idempotencyKey String?      @unique
   invoiceId      String
   invoice        Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   organisationId String
   organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  refunds        PaymentRefund[]
+  allocations    PaymentAllocation[]
+  receiptDeliveries ReceiptDelivery[]
   amount         Decimal      @db.Decimal(14, 2)
   currency       String
   method         String
   reference      String?
+  isDeposit      Boolean      @default(false)
   paymentDate    DateTime     @default(now())
   receivedBy     String
   createdAt      DateTime     @default(now())
 
   @@index([invoiceId])
   @@index([organisationId, paymentDate])
+}
+
+model InvoicePaymentAttempt {
+  id                        String       @id @default(cuid())
+  organisationId            String
+  organisation              Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  invoiceId                 String
+  invoice                   Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  requestedBy               String
+  idempotencyKey            String       @unique
+  provider                  String       @default("NCBA")
+  merchantType              String       @default("TILL")
+  merchantCode              String
+  invoiceNumber             String
+  transactionId             String?      @unique
+  providerReference          String?
+  phone                     String
+  amount                    Decimal      @db.Decimal(14, 2)
+  currency                  String       @default("KES")
+  status                    String       @default("PENDING")
+  statusDescription         String?
+  gatewayUsernameCiphertext String
+  gatewaySecretCiphertext   String
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+  completedAt               DateTime?
+
+  @@index([organisationId, status, createdAt])
+  @@index([invoiceId, createdAt])
+}
+
+model PaymentRefund {
+  id             String       @id @default(cuid())
+  organisationId String
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  invoiceId      String
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  paymentId      String
+  payment        Payment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  idempotencyKey String       @unique
+  amount         Decimal      @db.Decimal(14, 2)
+  currency       String
+  method         String
+  reference      String?
+  reason         String
+  refundedAt     DateTime
+  recordedBy     String
+  recordedByName String
+  createdAt      DateTime     @default(now())
+
+  @@index([invoiceId, createdAt])
+  @@index([paymentId, createdAt])
+  @@index([organisationId, refundedAt])
+}
+
+model PaymentAllocation {
+  id             String       @id @default(cuid())
+  organisationId String
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  invoiceId      String
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  paymentId      String
+  payment        Payment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  eventType      String
+  amount         Decimal      @db.Decimal(14, 2)
+  currency       String
+  idempotencyKey String       @unique
+  reason         String
+  actorId        String
+  actorName      String
+  createdAt      DateTime     @default(now())
+
+  @@index([invoiceId, createdAt])
+  @@index([paymentId, createdAt])
+  @@index([organisationId, createdAt])
+}
+
+model ReceiptDelivery {
+  id                String    @id @default(cuid())
+  paymentId         String
+  payment           Payment   @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  organisationId    String
+  organisation      Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  recipientEmail    String
+  recipientName     String?
+  providerMessageId String?
+  status            String    @default("PENDING")
+  errorMessage      String?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@index([paymentId, createdAt])
+  @@index([status])
+  @@index([organisationId, createdAt])
 }
 
 model InvoiceReconciliation {

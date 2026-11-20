@@ -58,6 +58,8 @@ type ChartRange = '7D' | '30D' | '90D' | '1Y'
 type CustomerForm = { id: string; name: string; phone: string; email: string }
 type EmailSettings = { provider: 'PLATFORM' | 'CUSTOM'; senderName: string; senderEmail: string; customDomain: string; domainStatus: string; domainRecords: unknown[] | null; apiKeySet: boolean; encryptionReady: boolean; platformSenderAvailable: boolean }
 type EmailSettingsForm = { provider: 'PLATFORM' | 'CUSTOM'; senderName: string; senderEmail: string; customDomain: string; apiKey: string }
+type PaymentSettings = { merchantType: 'TILL' | 'PAYBILL'; tillNumber: string; paybillNumber: string; enabled: boolean; stkCredentialsSet: boolean; notificationCredentialsSet: boolean; encryptionReady: boolean }
+type PaymentSettingsForm = { merchantType: 'TILL' | 'PAYBILL'; tillNumber: string; paybillNumber: string; stkUsername: string; stkSecret: string; notificationUsername: string; notificationPassword: string; notificationSecret: string; enabled: boolean }
 type DeliveryStatus = 'PENDING' | 'SENT' | 'DELIVERED' | 'BOUNCED' | 'FAILED'
 type QuoteDelivery = {
   id: string
@@ -422,6 +424,10 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [emailSettingsForm, setEmailSettingsForm] = useState<EmailSettingsForm>({ provider: 'PLATFORM', senderName: '', senderEmail: '', customDomain: '', apiKey: '' })
   const [emailSettingsSaving, setEmailSettingsSaving] = useState(false)
   const [emailSettingsMessage, setEmailSettingsMessage] = useState('')
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings | null>(null)
+  const [paymentSettingsForm, setPaymentSettingsForm] = useState<PaymentSettingsForm>({ merchantType: 'TILL', tillNumber: '', paybillNumber: '', stkUsername: '', stkSecret: '', notificationUsername: '', notificationPassword: '', notificationSecret: '', enabled: false })
+  const [paymentSettingsSaving, setPaymentSettingsSaving] = useState(false)
+  const [paymentSettingsMessage, setPaymentSettingsMessage] = useState('')
   const [chartRange, setChartRange] = useState<ChartRange>('30D')
   const [showSendModal, setShowSendModal] = useState(false)
   const [sendEmail, setSendEmail] = useState('')
@@ -454,6 +460,11 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
       setEmailSettings(emailResponse)
       setEmailSettingsForm({ provider: emailResponse.provider, senderName: emailResponse.senderName, senderEmail: emailResponse.senderEmail, customDomain: emailResponse.customDomain, apiKey: '' })
     } catch { /* workspace remains usable when the email settings table is not migrated yet */ }
+    try {
+      const response = await apiRequest<PaymentSettings>('/api/settings/payments')
+      setPaymentSettings(response)
+      setPaymentSettingsForm((current) => ({ ...current, merchantType: response.merchantType, tillNumber: response.tillNumber, paybillNumber: response.paybillNumber, enabled: response.enabled }))
+    } catch { /* payment setup remains optional until its database migration is applied */ }
   }
 
   const loadCustomers = async (page: number, query: string, archived: boolean) => {
@@ -826,6 +837,22 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     }
   }
 
+  const savePaymentSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setPaymentSettingsSaving(true)
+    setPaymentSettingsMessage('')
+    try {
+      const response = await apiRequest<PaymentSettings>('/api/settings/payments', { method: 'PUT', body: JSON.stringify(paymentSettingsForm) })
+      setPaymentSettings(response)
+      setPaymentSettingsForm((current) => ({ ...current, stkUsername: '', stkSecret: '', notificationUsername: '', notificationPassword: '', notificationSecret: '' }))
+      setPaymentSettingsMessage('M-Pesa collection settings saved securely.')
+    } catch (requestError) {
+      setPaymentSettingsMessage(requestError instanceof Error ? requestError.message : 'Could not save M-Pesa settings.')
+    } finally {
+      setPaymentSettingsSaving(false)
+    }
+  }
+
   const setupEmailDomain = async () => {
     setEmailSettingsSaving(true)
     setEmailSettingsMessage('')
@@ -1171,15 +1198,30 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
                 <div className="settings-footer email-settings-footer"><button className="button button-secondary" type="button" onClick={() => void setupEmailDomain()} disabled={emailSettingsSaving || emailSettingsForm.provider !== 'CUSTOM' || !emailSettingsForm.customDomain}>Set up domain</button><button className="button button-secondary" type="button" onClick={() => void checkEmailDomain()} disabled={emailSettingsSaving || !emailSettings?.customDomain}>Check status</button><button className="button button-primary" type="submit" disabled={emailSettingsSaving}>{emailSettingsSaving ? 'Saving…' : 'Save email settings'}</button></div>
               </div>
             </form>
+            {user.teamRole === 'OWNER' && <form className="workspace-panel settings-form" onSubmit={(event) => void savePaymentSettings(event)}>
+              <div className="settings-section"><h3>Customer M-Pesa payments</h3><p>Send an STK Push from your NCBA enabled Till or Paybill to collect an invoice balance. Your merchant credentials remain encrypted in this workspace.</p>
+                <div className="settings-grid">
+                  <label>Merchant account<select className="input-control" value={paymentSettingsForm.merchantType} onChange={(event) => setPaymentSettingsForm((current) => ({ ...current, merchantType: event.target.value as 'TILL' | 'PAYBILL' }))}><option value="TILL">NCBA Till</option><option value="PAYBILL">NCBA Paybill</option></select></label>
+                  {paymentSettingsForm.merchantType === 'TILL' ? <label>Till number<input className="input-control" required value={paymentSettingsForm.tillNumber} onChange={(event) => setPaymentSettingsForm((current) => ({ ...current, tillNumber: event.target.value }))} /></label> : <label>Paybill number<input className="input-control" required value={paymentSettingsForm.paybillNumber} onChange={(event) => setPaymentSettingsForm((current) => ({ ...current, paybillNumber: event.target.value }))} /></label>}
+                  <label>NCBA STK username<input className="input-control" type="password" autoComplete="new-password" value={paymentSettingsForm.stkUsername} onChange={(event) => setPaymentSettingsForm((current) => ({ ...current, stkUsername: event.target.value }))} placeholder={paymentSettings?.stkCredentialsSet ? 'Saved · enter to replace' : 'Provided by NCBA'} /></label>
+                  <label>NCBA STK secret<input className="input-control" type="password" autoComplete="new-password" value={paymentSettingsForm.stkSecret} onChange={(event) => setPaymentSettingsForm((current) => ({ ...current, stkSecret: event.target.value }))} placeholder={paymentSettings?.stkCredentialsSet ? 'Saved · enter to replace' : 'Provided by NCBA'} /></label>
+                  <label className="span-two"><span><input type="checkbox" checked={paymentSettingsForm.enabled} onChange={(event) => setPaymentSettingsForm((current) => ({ ...current, enabled: event.target.checked }))} /> Enable customer STK Push</span></label>
+                </div>
+                <details className="payment-callback-details"><summary>Optional: NCBA payment notification credentials</summary><p>Use these if NCBA has activated Paybill push notifications for your merchant. Transaction status checks are also available.</p><div className="settings-grid"><label>Callback username<input className="input-control" type="password" autoComplete="new-password" value={paymentSettingsForm.notificationUsername} onChange={(event) => setPaymentSettingsForm((current) => ({ ...current, notificationUsername: event.target.value }))} placeholder={paymentSettings?.notificationCredentialsSet ? 'Saved · enter to replace' : 'Provided by NCBA'} /></label><label>Callback password<input className="input-control" type="password" autoComplete="new-password" value={paymentSettingsForm.notificationPassword} onChange={(event) => setPaymentSettingsForm((current) => ({ ...current, notificationPassword: event.target.value }))} placeholder={paymentSettings?.notificationCredentialsSet ? 'Saved · enter to replace' : 'Provided by NCBA'} /></label><label className="span-two">Callback secret key<input className="input-control" type="password" autoComplete="new-password" value={paymentSettingsForm.notificationSecret} onChange={(event) => setPaymentSettingsForm((current) => ({ ...current, notificationSecret: event.target.value }))} placeholder={paymentSettings?.notificationCredentialsSet ? 'Saved · enter to replace' : 'Provided by NCBA'} /></label><small className="field-hint span-two">Give NCBA this callback URL: {window.location.origin}/api/webhooks/ncba/customer-payment</small></div></details>
+                <div className="email-settings-status"><span>{paymentSettings?.stkCredentialsSet ? 'STK credentials saved' : 'STK credentials not configured'}</span><span>{paymentSettings?.notificationCredentialsSet ? 'Push callback configured' : 'Status-query fallback'}</span><span>{paymentSettings?.encryptionReady ? 'Encrypted storage ready' : 'Platform encryption key required'}</span></div>
+                {paymentSettingsMessage && <p className="save-feedback" role="status">{paymentSettingsMessage}</p>}
+                <div className="settings-footer"><span className="save-feedback" /> <button className="button button-primary" type="submit" disabled={paymentSettingsSaving || !paymentSettings?.encryptionReady}>{paymentSettingsSaving ? 'Saving…' : 'Save M-Pesa settings'}</button></div>
+              </div>
+            </form>}
             {user.teamRole !== 'MEMBER' && <section className="workspace-panel settings-form"><div className="settings-section"><h3>Workspace data</h3><p>Download a JSON copy of your business data, including customers, quotations, jobs, costs, invoices, payment records, team, and settings. Only owners and admins can export.</p><a className="button button-secondary" href="/api/export/workspace.json">Download workspace export</a></div></section>}
           </section>
         )}
 
-        {page === 'jobs' && business && <JobsPanel business={business} customers={customers} currency={business.currency} />}
+        {page === 'jobs' && business && <JobsPanel business={business} customers={customers} currency={business.currency} canManageJobs={user.teamRole === 'OWNER' || user.teamRole === 'ADMIN'} />}
 
         {page === 'invoices' && business && <InvoicesPanel business={business} customers={customers} currency={business.currency} canManageFinancials={user.teamRole !== 'MEMBER'} />}
 
-        {page === 'reports' && business && <ReportsPanel business={business} currency={business.currency} />}
+        {page === 'reports' && business && <ReportsPanel />}
 
         {page === 'team' && business && <TeamPanel business={business} />}
 

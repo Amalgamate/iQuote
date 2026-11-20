@@ -1,16 +1,14 @@
 import { useEffect, useState } from 'react'
 import { apiRequest, formatMoney } from './api'
 
-type Business = { id: string; name: string; currency: string }
-
 type ReportData = {
   funnel: { sent: number; viewed: number; approved: number; declined: number }
   repeatCustomers: Array<{ id: string; name: string; approvedQuotes: number }>
   revenueByCurrency: Record<string, { totalInvoiced: number; totalPaid: number; totalDue: number }>
-  jobProfitability: Array<{ id: string; title: string; estimated: number; actualCosts: number; invoiced: number; collected: number; margin: number }>
+  jobProfitability: Array<{ id: string; title: string; currency: string; estimated: number; actualCosts: number; invoiced: number; collected: number; margin: number | null }>
 }
 
-export default function ReportsPanel({ currency }: { business: Business; currency: string }) {
+export default function ReportsPanel() {
   const [data, setData] = useState<ReportData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -150,24 +148,25 @@ export default function ReportsPanel({ currency }: { business: Business; currenc
         <div className="panel-heading">
           <div>
             <h2>Job profitability</h2>
-            <p>Estimated value vs actual costs and collected revenue</p>
+            <p>Amounts stay grouped by currency. Margin is shown only when an estimate exists and all job costs use its currency.</p>
           </div>
         </div>
         {data.jobProfitability.length > 0 ? (
           <div className="table-scroll">
             <table className="data-table">
               <thead>
-                <tr><th>Job</th><th>Estimated</th><th>Actual costs</th><th>Invoiced</th><th>Collected</th><th>Margin</th></tr>
+                <tr><th>Job</th><th>Currency</th><th>Estimated</th><th>Actual costs</th><th>Invoiced</th><th>Collected</th><th>Margin</th></tr>
               </thead>
               <tbody>
                 {data.jobProfitability.map((job) => (
                   <tr key={job.id}>
                     <td><strong>{job.title}</strong></td>
-                    <td>{formatMoney(job.estimated, currency)}</td>
-                    <td>{formatMoney(job.actualCosts, currency)}</td>
-                    <td>{formatMoney(job.invoiced, currency)}</td>
-                    <td>{formatMoney(job.collected, currency)}</td>
-                    <td className={job.margin >= 0 ? 'amount-positive' : 'amount-negative'}>{formatMoney(job.margin, currency)}</td>
+                    <td>{job.currency}</td>
+                    <td>{job.estimated ? formatMoney(job.estimated, job.currency) : '—'}</td>
+                    <td>{formatMoney(job.actualCosts, job.currency)}</td>
+                    <td>{formatMoney(job.invoiced, job.currency)}</td>
+                    <td>{formatMoney(job.collected, job.currency)}</td>
+                    <td className={job.margin === null ? '' : job.margin >= 0 ? 'amount-positive' : 'amount-negative'}>{job.margin === null ? '—' : formatMoney(job.margin, job.currency)}</td>
                   </tr>
                 ))}
               </tbody>
