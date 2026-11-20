@@ -65,7 +65,7 @@ type Job = {
   customerId: string
   customer: { id: string; name: string }
   quoteId: string | null
-  quote?: { id: string; documentNumber: string; status: string } | null
+  quote?: { id: string; documentNumber: string; status: string; publicToken?: string | null } | null
   invoices?: Array<{ id: string; invoiceNumber: string; status: string; sourceQuoteId: string | null }>
   milestones: Milestone[]
   costs: Cost[]
@@ -75,6 +75,8 @@ type Job = {
   createdAt: string
   updatedAt: string
 }
+
+type ApprovedQuote = { id: string; documentNumber: string; total: number; currency: string; customer: Customer; lines: Array<{ description: string }>; jobs?: Array<{ id: string }> }
 
 type JobListResponse = { jobs: Job[]; totalCount: number; hasMore: boolean }
 type JobResponse = { job: Job }
@@ -108,6 +110,7 @@ const jobStatusClasses: Record<JobStatus, string> = {
 
 type JobForm = {
   title: string
+  quoteId: string
   customerId: string
   ownerId: string
   description: string
@@ -118,6 +121,7 @@ type JobForm = {
 
 const blankJobForm: JobForm = {
   title: '',
+  quoteId: '',
   customerId: '',
   ownerId: '',
   description: '',
@@ -160,6 +164,7 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
   const [jobError, setJobError] = useState('')
   const [saving, setSaving] = useState(false)
   const [teamMembers, setTeamMembers] = useState<JobAssignee[]>([])
+  const [approvedQuotes, setApprovedQuotes] = useState<ApprovedQuote[]>([])
   const [invoiceDraftBusy, setInvoiceDraftBusy] = useState(false)
 
   useEffect(() => {
@@ -171,8 +176,12 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
     setLoading(true)
     setError('')
     try {
-      const response = await apiRequest<JobListResponse>('/api/jobs')
+      const [response, quoteResponse] = await Promise.all([
+        apiRequest<JobListResponse>('/api/jobs'),
+        apiRequest<{ quotes: ApprovedQuote[] }>('/api/quotes?status=APPROVED&limit=200'),
+      ])
       setJobs(response.jobs)
+      setApprovedQuotes(quoteResponse.quotes.filter((quote) => !quote.jobs?.length))
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to load jobs.')
     } finally {
@@ -200,7 +209,12 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
       setError('Add a customer first before creating a job.')
       return
     }
-    setJobForm({ ...blankJobForm, customerId: customers[0].id, ownerId: teamMembers.find((member) => member.teamRole === 'OWNER')?.id ?? '' })
+    if (!approvedQuotes.length) {
+      setError('Approve a quote first. Each new job must track work from an accepted quote.')
+      return
+    }
+    const firstQuote = approvedQuotes[0]
+    setJobForm({ ...blankJobForm, quoteId: firstQuote.id, title: firstQuote.lines[0]?.description || firstQuote.documentNumber, customerId: firstQuote.customer.id, ownerId: teamMembers.find((member) => member.teamRole === 'OWNER')?.id ?? '' })
     setJobError('')
     setJobModal(true)
   }
@@ -212,6 +226,7 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
     try {
       const payload = {
         title: jobForm.title,
+        quoteId: jobForm.quoteId,
         customerId: jobForm.customerId,
         description: jobForm.description || undefined,
         status: jobForm.status,
@@ -221,6 +236,7 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
       }
       const response = await apiRequest<JobResponse>('/api/jobs', { method: 'POST', body: JSON.stringify(payload) })
       setJobs((current) => [response.job, ...current])
+      setApprovedQuotes((current) => current.filter((quote) => quote.id !== jobForm.quoteId))
       setJobModal(false)
       setJobForm(blankJobForm)
     } catch (requestError) {
@@ -250,6 +266,17 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
     }
   }
 
+  const linkQuoteToJob = async (job: Job, quoteId: string) => {
+    try {
+      const response = await apiRequest<JobResponse>(`/api/jobs/${encodeURIComponent(job.id)}`, { method: 'PUT', body: JSON.stringify({ quoteId }) })
+      setJobs((current) => current.map((item) => item.id === response.job.id ? response.job : item))
+      setSelectedJob(response.job)
+      setApprovedQuotes((current) => current.filter((quote) => quote.id !== quoteId))
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to link the accepted quote to this job.')
+    }
+  }
+
   const prepareInvoiceFromJob = async (job: Job) => {
     setInvoiceDraftBusy(true)
     setError('')
@@ -274,6 +301,9 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
         canManageJobs={canManageJobs}
         onOwnerChange={(ownerId) => void updateJobOwner(selectedJob, ownerId)}
         onPrepareInvoice={() => void prepareInvoiceFromJob(selectedJob)}
+        onOpenInvoices={onInvoiceCreated}
+        approvedQuotes={approvedQuotes.filter((quote) => quote.customer.id === selectedJob.customerId)}
+        onLinkQuote={(quoteId) => linkQuoteToJob(selectedJob, quoteId)}
         invoiceDraftBusy={invoiceDraftBusy}
         setError={setError}
       />
@@ -287,7 +317,7 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
           <p className="workspace-eyebrow">Deliver work</p>
           <h2>Jobs</h2>
         </div>
-        <button className="button button-primary" type="button" onClick={openJobModal}>New job</button>
+        <button className="button button-primary" type="button" onClick={() => jobModal ? setJobModal(false) : openJobModal()}>{jobModal ? 'Cancel' : 'New job'}</button>
       </div>
 
       {error && <div className="workspace-alert" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
@@ -309,6 +339,8 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
                 <tr>
                   <th>Job</th>
                   <th>Customer</th>
+                  <th>Quote</th>
+                  <th>Invoice</th>
                   <th>Status</th>
                   <th>Start</th>
                   <th>End</th>
@@ -321,6 +353,8 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
                   <tr key={job.id} onClick={() => void openJobDetail(job)}>
                     <td><strong>{job.title}</strong><small>{job.owner?.name ? `Owner: ${job.owner.name} · ` : ''}{formatDate(job.createdAt)}</small></td>
                     <td>{job.customer?.name ?? '—'}</td>
+                    <td>{job.quote?.documentNumber ?? '—'}</td>
+                    <td>{job.invoices?.[0] ? <><strong>{job.invoices[0].invoiceNumber}</strong><small>{job.invoices[0].status.toLowerCase().replaceAll('_', ' ')}</small></> : job.quoteId ? 'Not created' : 'No linked quote'}</td>
                     <td><span className={jobStatusClasses[job.status]}>{jobStatusNames[job.status]}</span></td>
                     <td>{formatDate(job.startDate)}</td>
                     <td>{formatDate(job.endDate)}</td>
@@ -334,24 +368,18 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
         ) : (
           <div className="panel-empty">
             <h3>{jobs.length === 0 ? 'No jobs yet' : 'No jobs match this filter'}</h3>
-            <p>{jobs.length === 0 ? 'Create a job to track milestones and costs for your work.' : 'Try a different status filter.'}</p>
+            <p>{jobs.length === 0 ? 'Start each project from an approved quote. The invoice and customer updates stay linked to that work.' : 'Try a different status filter.'}</p>
             {jobs.length === 0 && <button className="button button-primary" type="button" onClick={openJobModal}>Create your first job</button>}
           </div>
         )}
       </section>
 
-      {jobModal && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setJobModal(false) }}>
-          <form className="customer-modal" onSubmit={(event) => void submitJob(event)}>
-            <div className="modal-heading">
-              <div>
-                <p className="workspace-eyebrow">Deliver work</p>
-                <h2>New job</h2>
-              </div>
-              <button className="quiet-button" type="button" onClick={() => setJobModal(false)} aria-label="Close">×</button>
-            </div>
-            <label className="field-label">Title<input className="input-control" required value={jobForm.title} onChange={(event) => setJobForm((current) => ({ ...current, title: event.target.value }))} placeholder="e.g. Bathroom renovation" /></label>
-            <label className="field-label">Customer<select className="input-control" required value={jobForm.customerId} onChange={(event) => setJobForm((current) => ({ ...current, customerId: event.target.value }))}>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
+      {jobModal && <section className="workspace-panel job-create-panel">
+          <div className="panel-heading"><div><p className="workspace-eyebrow">Deliver work</p><h2>Start a job from an approved quote</h2><p>Job ownership, project tracking, and invoicing stay connected to the accepted quote.</p></div></div>
+          <form className="job-create-form" onSubmit={(event) => void submitJob(event)}>
+            <label className="field-label">Approved quote<select className="input-control" required value={jobForm.quoteId} onChange={(event) => { const quote = approvedQuotes.find((item) => item.id === event.target.value); setJobForm((current) => ({ ...current, quoteId: event.target.value, ...(quote ? { customerId: quote.customer.id, title: quote.lines[0]?.description || quote.documentNumber } : {}) })) }}><option value="">Choose an approved quote</option>{approvedQuotes.map((quote) => <option key={quote.id} value={quote.id}>{quote.documentNumber} · {quote.customer.name} · {formatMoney(quote.total, quote.currency)}</option>)}</select><small className="field-hint">The customer and invoice source are taken from this accepted quote.</small></label>
+            <label className="field-label">Job title<input className="input-control" required value={jobForm.title} onChange={(event) => setJobForm((current) => ({ ...current, title: event.target.value }))} placeholder="e.g. Bathroom renovation" /></label>
+            <label className="field-label">Customer<select className="input-control" required disabled value={jobForm.customerId} onChange={(event) => setJobForm((current) => ({ ...current, customerId: event.target.value }))}>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
             {canManageJobs && teamMembers.length > 0 && <label className="field-label">Job owner<select className="input-control" value={jobForm.ownerId} onChange={(event) => setJobForm((current) => ({ ...current, ownerId: event.target.value }))}>{teamMembers.map((member) => <option key={member.id} value={member.id}>{member.name} · {member.teamRole.toLowerCase()}</option>)}</select></label>}
             <label className="field-label">Description<textarea className="input-control" rows={3} value={jobForm.description} onChange={(event) => setJobForm((current) => ({ ...current, description: event.target.value }))} placeholder="Brief scope of work" /></label>
             <div className="settings-grid">
@@ -360,18 +388,17 @@ export default function JobsPanel({ customers, currency, canManageJobs, onInvoic
               <label className="field-label">End date<input className="input-control" type="date" value={jobForm.endDate} onChange={(event) => setJobForm((current) => ({ ...current, endDate: event.target.value }))} /></label>
             </div>
             {jobError && <p className="form-error" role="alert">{jobError}</p>}
-            <div className="modal-actions">
+            <div className="table-action-group job-create-actions">
               <button type="button" className="button button-secondary" onClick={() => setJobModal(false)}>Cancel</button>
               <button type="submit" className="button button-primary" disabled={saving}>{saving ? 'Creating…' : 'Create job'}</button>
             </div>
           </form>
-        </div>
-      )}
+        </section>}
     </section>
   )
 }
 
-function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpdate, setError, teamMembers, canManageJobs, onOwnerChange, onPrepareInvoice, invoiceDraftBusy }: {
+function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpdate, setError, teamMembers, canManageJobs, onOwnerChange, onPrepareInvoice, onOpenInvoices, approvedQuotes, onLinkQuote, invoiceDraftBusy }: {
   job: Job
   currency: string
   customers: Customer[]
@@ -383,6 +410,9 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
   canManageJobs: boolean
   onOwnerChange: (ownerId: string) => void
   onPrepareInvoice: () => void
+  onOpenInvoices: () => void
+  approvedQuotes: ApprovedQuote[]
+  onLinkQuote: (quoteId: string) => Promise<void>
   invoiceDraftBusy: boolean
 }) {
   const [milestoneForm, setMilestoneForm] = useState<MilestoneForm>(blankMilestoneForm)
@@ -393,6 +423,8 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
   const [activities, setActivities] = useState<JobActivity[]>(job.activities ?? [])
   const [progressUrl, setProgressUrl] = useState<string | null>(null)
   const [attachmentUploading, setAttachmentUploading] = useState(false)
+  const [quoteToLink, setQuoteToLink] = useState(approvedQuotes[0]?.id ?? '')
+  const [quoteLinkSaving, setQuoteLinkSaving] = useState(false)
 
   const customer = customers.find((c) => c.id === job.customerId)
 
@@ -549,6 +581,8 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
 
   const costs = job.costs ?? []
   const milestones = job.milestones ?? []
+  const quoteProjectUrl = job.quote?.publicToken ? `${window.location.origin}/quote/${encodeURIComponent(job.quote.publicToken)}` : null
+  const customerProjectUrl = quoteProjectUrl || progressUrl
 
   return (
     <section className="workspace-content">
@@ -581,20 +615,28 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
         {job.description && <div className="job-description"><span>Description</span><p>{job.description}</p></div>}
       </section>
 
+      {!job.quoteId && canManageJobs && <section className="workspace-panel job-link-quote-panel">
+        <div className="panel-heading"><div><h2>Link an accepted quote</h2><p>Connect this existing job to its approved quote so the invoice and customer project link stay together.</p></div></div>
+        {approvedQuotes.length ? <form className="job-link-quote-form" onSubmit={async (event) => { event.preventDefault(); if (!quoteToLink) return; setQuoteLinkSaving(true); try { await onLinkQuote(quoteToLink) } finally { setQuoteLinkSaving(false) } }}>
+          <label className="field-label">Approved quote<select className="input-control" required value={quoteToLink} onChange={(event) => setQuoteToLink(event.target.value)}><option value="">Choose a quote</option>{approvedQuotes.map((quote) => <option key={quote.id} value={quote.id}>{quote.documentNumber} · {formatMoney(quote.total, quote.currency)}</option>)}</select></label>
+          <button className="button button-primary" type="submit" disabled={!quoteToLink || quoteLinkSaving}>{quoteLinkSaving ? 'Linking…' : 'Link quote'}</button>
+        </form> : <div className="panel-empty"><p>No approved, unlinked quotes are available for this customer.</p></div>}
+      </section>}
+
       {job.quoteId && <section className="workspace-panel" style={{ padding: 18 }}>
         <div className="panel-heading" style={{ padding: 0, borderBottom: 0 }}><div><h2>Invoice</h2><p>{job.invoices?.length ? `Invoice ${job.invoices[0].invoiceNumber} · ${job.invoices[0].status.toLowerCase().replaceAll('_', ' ')}` : job.status === 'COMPLETED' ? 'Prepare a draft from the accepted quote, then review it in Invoices before sending.' : 'A draft can be prepared once the job is complete.'}</p></div>
-          {canManageJobs && job.status === 'COMPLETED' && !job.invoices?.length && <button className="button button-primary" type="button" disabled={invoiceDraftBusy} onClick={onPrepareInvoice}>{invoiceDraftBusy ? 'Preparing…' : 'Prepare invoice draft'}</button>}
+          {job.invoices?.length ? <button className="button button-secondary" type="button" onClick={onOpenInvoices}>View invoice</button> : canManageJobs && job.status === 'COMPLETED' && <button className="button button-primary" type="button" disabled={invoiceDraftBusy} onClick={onPrepareInvoice}>{invoiceDraftBusy ? 'Preparing…' : 'Prepare invoice draft'}</button>}
         </div>
       </section>}
 
       <section className="workspace-panel">
-        <div className="panel-heading"><div><h2>Customer progress link</h2><p>Only milestones explicitly marked visible are shown. The link can be revoked at any time.</p></div></div>
+        <div className="panel-heading"><div><h2>Customer project link</h2><p>Use the quote link the customer already received when available. Otherwise, create a project link. Both show visible milestones, the sent invoice, and the same conversation.</p></div></div>
         <div className="job-info-grid">
-          <div><span>Link status</span><strong>{job.progressEnabled ? 'Active' : 'Off'}</strong></div>
-          <div><button className="button button-secondary" type="button" onClick={() => void createProgressLink()}>{job.progressEnabled ? 'Rotate link' : 'Create link'}</button></div>
-          {job.progressEnabled && <div><button className="quiet-button danger-button" type="button" onClick={() => void revokeProgressLink()}>Revoke link</button></div>}
+          <div><span>Link status</span><strong>{quoteProjectUrl ? 'Using the quote link' : job.progressEnabled ? 'Project link active' : 'Off'}</strong></div>
+          {quoteProjectUrl ? <div><button className="button button-secondary" type="button" onClick={() => void navigator.clipboard?.writeText(quoteProjectUrl)}>Copy customer link</button></div> : canManageJobs ? <div><button className="button button-secondary" type="button" onClick={() => void createProgressLink()}>{job.progressEnabled ? 'Rotate project link' : 'Create project link'}</button></div> : <small className="field-hint">An owner or admin can create the customer project link.</small>}
+          {!quoteProjectUrl && canManageJobs && job.progressEnabled && <div><button className="quiet-button danger-button" type="button" onClick={() => void revokeProgressLink()}>Revoke link</button></div>}
         </div>
-        {progressUrl && <div className="field-row"><input className="input-control" readOnly value={progressUrl} aria-label="Customer progress link" /><button className="quiet-button" type="button" onClick={() => void navigator.clipboard?.writeText(progressUrl)}>Copy link</button></div>}
+        {customerProjectUrl && <div className="field-row"><input className="input-control" readOnly value={customerProjectUrl} aria-label="Customer project link" /><button className="quiet-button" type="button" onClick={() => void navigator.clipboard?.writeText(customerProjectUrl)}>Copy link</button></div>}
       </section>
 
       <section className="workspace-panel">

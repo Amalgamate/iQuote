@@ -1808,7 +1808,7 @@ app.get('/api/quotes', requireAuth, async (req, res) => {
   const [quotes, totalCount] = await Promise.all([
     prisma.quote.findMany({
       where,
-      include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } }, invoice: { select: { id: true, invoiceNumber: true, status: true } } },
+      include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } }, invoice: { select: { id: true, invoiceNumber: true, status: true } }, jobs: { select: { id: true } } },
       orderBy: { updatedAt: 'desc' },
       skip: offset,
       take: limit,
@@ -2409,6 +2409,8 @@ app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
       customer: { select: { name: true } },
       organisation: { select: { name: true, email: true, phone: true, country: true, currency: true, logoUrl: true, website: true, paymentInstructions: true } },
       lines: { orderBy: { position: 'asc' } },
+      jobs: { orderBy: { createdAt: 'desc' }, take: 1, select: { title: true, status: true, updatedAt: true, milestones: { where: { customerVisible: true }, orderBy: { position: 'asc' }, select: { id: true, title: true, dueDate: true, completedAt: true } } } },
+      invoice: { select: { invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, issueDate: true, dueDate: true, lineItems: true } },
     },
   })
   if (!quote || quote.status === 'DRAFT') return res.status(404).json({ message: 'This quote link is not available.' })
@@ -2443,6 +2445,8 @@ app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
       lines: quote.lines.map((line) => ({ description: line.description, quantity: Number(line.quantity), unit: line.unit, unitPrice: Number(line.unitPrice), taxRate: line.taxRate === null ? null : Number(line.taxRate) })),
       customer: quote.customer,
       organisation: quote.organisation,
+      project: quote.jobs[0] ?? null,
+      invoice: serializePublicInvoice(quote.invoice),
     },
   })
 })
@@ -3465,6 +3469,25 @@ const VALID_JOB_STATUS_TRANSITIONS: Record<string, string[]> = {
 }
 const VALID_PAYMENT_METHODS = ['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY', 'CARD', 'OTHER']
 const VALID_INVOICE_STATUSES = ['DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED']
+const PUBLIC_INVOICE_STATUSES = ['SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE']
+
+function serializePublicInvoice(invoice: any) {
+  if (!invoice || !PUBLIC_INVOICE_STATUSES.includes(invoice.status)) return null
+  const lines = Array.isArray(invoice.lineItems) ? invoice.lineItems : []
+  return {
+    invoiceNumber: invoice.invoiceNumber,
+    status: invoice.status,
+    currency: invoice.currency,
+    subtotal: Number(invoice.subtotal),
+    taxTotal: Number(invoice.taxTotal),
+    total: Number(invoice.total),
+    amountPaid: Number(invoice.amountPaid),
+    balanceDue: Number(invoice.balanceDue),
+    issueDate: invoice.issueDate,
+    dueDate: invoice.dueDate,
+    lineItems: lines.map((line: any) => ({ description: String(line.description ?? ''), quantity: Number(line.quantity ?? 0), unit: String(line.unit ?? 'unit'), unitPrice: Number(line.unitPrice ?? 0), taxRate: line.taxRate === null || line.taxRate === undefined ? null : Number(line.taxRate) })),
+  }
+}
 
 app.get('/api/public/jobs/:token', publicRateLimit, async (req, res) => {
   const token = String(req.params.token ?? '')
@@ -3475,10 +3498,39 @@ app.get('/api/public/jobs/:token', publicRateLimit, async (req, res) => {
       title: true, status: true, updatedAt: true,
       organisation: { select: { name: true } },
       milestones: { where: { customerVisible: true }, orderBy: { position: 'asc' }, select: { id: true, title: true, dueDate: true, completedAt: true } },
+      quote: { select: { id: true, documentNumber: true, status: true, publicToken: true } },
+      invoices: { where: { status: { in: PUBLIC_INVOICE_STATUSES as never[] } }, orderBy: { updatedAt: 'desc' }, take: 1, select: { invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, issueDate: true, dueDate: true, lineItems: true } },
     },
   })
-  if (!job || job.milestones.length === 0) return res.status(404).json({ message: 'Progress page not found.' })
-  return res.json({ job })
+  if (!job) return res.status(404).json({ message: 'Progress page not found.' })
+  return res.json({ job: { ...job, quote: job.quote ? { documentNumber: job.quote.documentNumber } : null, quoteStatus: job.quote?.status ?? null, conversationAvailable: Boolean(job.quote), invoice: serializePublicInvoice(job.invoices[0]) } })
+})
+
+app.get('/api/public/jobs/:token/messages', publicRateLimit, async (req, res) => {
+  const token = String(req.params.token ?? '')
+  if (token.length < 32 || token.length > 128) return res.status(404).json({ message: 'Conversation is not available.' })
+  const job = await prisma.job.findUnique({ where: { progressTokenHash: hashToken(token) }, select: { quoteId: true } })
+  if (!job?.quoteId) return res.status(404).json({ message: 'Conversation is not available.' })
+  const messages = await prisma.quoteMessage.findMany({ where: { quoteId: job.quoteId }, orderBy: { createdAt: 'asc' }, take: 100 })
+  return res.json({ messages })
+})
+
+app.post('/api/public/jobs/:token/messages', publicRateLimit, async (req, res) => {
+  const token = String(req.params.token ?? '')
+  if (token.length < 32 || token.length > 128) return res.status(404).json({ message: 'Conversation is not available.' })
+  const content = String(req.body?.content ?? '').trim()
+  if (!content || content.length > 4000) return res.status(400).json({ message: 'Write a message up to 4,000 characters.' })
+  const job = await prisma.job.findUnique({ where: { progressTokenHash: hashToken(token) }, select: { quoteId: true, organisationId: true, customer: { select: { name: true } } } })
+  if (!job?.quoteId) return res.status(404).json({ message: 'Conversation is not available.' })
+  const quote = await prisma.quote.findFirst({ where: { id: job.quoteId, organisationId: job.organisationId }, select: { id: true, ownerId: true, status: true } })
+  if (!quote) return res.status(404).json({ message: 'Conversation is not available.' })
+  if (quote.status === 'EXPIRED') return res.status(409).json({ message: 'This conversation is read-only because the quote has expired.' })
+  const created = await prisma.$transaction(async (tx) => {
+    const message = await tx.quoteMessage.create({ data: { quoteId: quote.id, organisationId: job.organisationId, authorType: 'CUSTOMER', authorName: job.customer.name, content } })
+    await tx.notification.create({ data: { recipientUserId: quote.ownerId, organisationId: job.organisationId, quoteId: quote.id, quoteMessageId: message.id, type: 'QUOTE_MESSAGE', title: 'New project message', body: `${job.customer.name} sent a message about the project.`, sourceKey: `quote-message:${message.id}` } })
+    return message
+  })
+  return res.status(201).json({ message: created })
 })
 
 function serializeJob(job: any) {
@@ -3529,7 +3581,9 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
 
   let acceptedQuoteSnapshot: unknown = null
   let validatedQuoteId: string | null = null
+  let acceptedQuoteCurrency = currency
 
+  if (!quoteId) return res.status(400).json({ message: 'Select an approved quote to create a job.' })
   if (quoteId) {
     const quote = await prisma.quote.findFirst({
       where: { id: quoteId, organisationId },
@@ -3538,6 +3592,10 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
     if (!quote) return res.status(404).json({ message: 'Quote not found.' })
     if (quote.status !== 'APPROVED') return res.status(409).json({ message: 'Only approved quotes can be converted to jobs.' })
     if (quote.customerId !== customerId) return res.status(400).json({ message: 'The job customer must match the customer on the accepted quote.' })
+    const existingJob = await prisma.job.findFirst({ where: { organisationId, quoteId: quote.id }, select: { id: true, title: true } })
+    if (existingJob) return res.status(409).json({ message: `Quote ${quote.documentNumber} already has a job (${existingJob.title}). Open that job to continue tracking it.` })
+    const existingQuoteInvoice = await prisma.invoice.findUnique({ where: { sourceQuoteId: quote.id }, select: { jobId: true, invoiceNumber: true } })
+    if (existingQuoteInvoice?.jobId) return res.status(409).json({ message: `Invoice ${existingQuoteInvoice.invoiceNumber} is already linked to a job. Open that job instead of creating another.` })
 
     // Build immutable snapshot
     acceptedQuoteSnapshot = {
@@ -3560,6 +3618,7 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
       snapshotTakenAt: new Date().toISOString(),
     }
     validatedQuoteId = quoteId
+    acceptedQuoteCurrency = quote.currency
   }
 
   const job = await prisma.$transaction(async (tx) => {
@@ -3572,7 +3631,7 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
         title,
         description,
         status: status as never,
-        currency,
+        currency: acceptedQuoteCurrency,
         startDate: startDate && !Number.isNaN(startDate.getTime()) ? startDate : null,
         endDate: endDate && !Number.isNaN(endDate.getTime()) ? endDate : null,
         acceptedQuoteSnapshot: acceptedQuoteSnapshot as never,
@@ -3581,10 +3640,13 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
         customer: { select: { id: true, name: true, phone: true, email: true } },
         owner: { select: { id: true, name: true, email: true } },
         milestones: { orderBy: { position: 'asc' } },
+        quote: { select: { id: true, documentNumber: true, status: true } },
+        invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } },
       },
     })
+    await tx.invoice.updateMany({ where: { organisationId, sourceQuoteId: validatedQuoteId }, data: { jobId: created.id } })
     await recordJobActivity(created.id, user, 'JOB_CREATED', { title, status, quoteId: validatedQuoteId, ownerId: requestedOwnerId, ownerName: assignedOwner.name }, tx)
-    return created
+    return tx.job.findUniqueOrThrow({ where: { id: created.id }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, owner: { select: { id: true, name: true, email: true } }, milestones: { orderBy: { position: 'asc' } }, quote: { select: { id: true, documentNumber: true, status: true } }, invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } } } })
   })
 
   const activities = await prisma.jobActivity.findMany({ where: { jobId: job.id }, orderBy: { createdAt: 'desc' }, take: 100 })
@@ -3613,7 +3675,7 @@ app.get('/api/jobs', requireAuth, async (req, res) => {
       orderBy: { updatedAt: 'desc' },
       take: limit,
       skip: offset,
-      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } }, invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } } },
+      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } }, quote: { select: { id: true, documentNumber: true, status: true } }, invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } } },
     }),
     prisma.job.count({ where: where as never }),
   ])
@@ -3636,7 +3698,7 @@ app.get('/api/jobs/:id', requireAuth, async (req, res) => {
       costs: { orderBy: { incurredAt: 'desc' } },
       activities: { orderBy: { createdAt: 'desc' }, take: 100 },
       attachments: { orderBy: { createdAt: 'desc' }, select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true, uploadedBy: true, uploaderName: true, createdAt: true } },
-      quote: { select: { id: true, documentNumber: true, status: true } },
+      quote: { select: { id: true, documentNumber: true, status: true, publicToken: true } },
       invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } },
     },
   })
@@ -3659,7 +3721,6 @@ app.post('/api/jobs/:id/progress-link', requireTeamRole('OWNER', 'ADMIN'), async
   if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
   const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId }, select: { id: true, milestones: { where: { customerVisible: true }, select: { id: true } } } })
   if (!job) return res.status(404).json({ message: 'Job not found.' })
-  if (!job.milestones.length) return res.status(409).json({ message: 'Mark at least one milestone visible to the customer before creating a progress link.' })
   const token = randomBytes(32).toString('base64url')
   await prisma.$transaction(async (tx) => {
     await tx.job.update({ where: { id: job.id }, data: { progressTokenHash: hashToken(token), progressEnabledAt: new Date() } })
@@ -3768,6 +3829,7 @@ app.put('/api/jobs/:id', requireAuth, async (req, res) => {
   const startDate = req.body?.startDate !== undefined ? (req.body.startDate ? new Date(req.body.startDate) : null) : undefined
   const endDate = req.body?.endDate !== undefined ? (req.body.endDate ? new Date(req.body.endDate) : null) : undefined
   const requestedOwnerId = req.body?.ownerId !== undefined ? String(req.body.ownerId) : undefined
+  const requestedQuoteId = req.body?.quoteId !== undefined ? String(req.body.quoteId).trim() : undefined
   let requestedOwnerName: string | undefined
 
   if (status && !VALID_JOB_STATUSES.includes(status)) return res.status(400).json({ message: 'Invalid job status.' })
@@ -3785,6 +3847,40 @@ app.put('/api/jobs/:id', requireAuth, async (req, res) => {
     requestedOwnerName = assignee.name
   }
 
+  let acceptedQuoteSnapshot: Record<string, unknown> | undefined
+  let linkedQuoteId: string | undefined
+  let linkedQuoteCurrency: string | undefined
+  if (requestedQuoteId !== undefined) {
+    if (!['OWNER', 'ADMIN'].includes(user.teamRole ?? '')) return res.status(403).json({ message: 'Only workspace owners and admins can link an accepted quote to a job.' })
+    if (!requestedQuoteId) return res.status(400).json({ message: 'Choose an approved quote.' })
+    if (job.quoteId && job.quoteId !== requestedQuoteId) return res.status(409).json({ message: 'This job is already linked to an accepted quote.' })
+    const quote = await prisma.quote.findFirst({ where: { id: requestedQuoteId, organisationId }, include: { lines: { orderBy: { position: 'asc' } }, customer: { select: { name: true } } } })
+    if (!quote) return res.status(404).json({ message: 'Quote not found.' })
+    if (quote.status !== 'APPROVED') return res.status(409).json({ message: 'Only approved quotes can be linked to a job.' })
+    if (quote.customerId !== job.customerId) return res.status(400).json({ message: 'The job customer must match the customer on the accepted quote.' })
+    const existingJob = await prisma.job.findFirst({ where: { organisationId, quoteId: quote.id, id: { not: job.id } }, select: { id: true, title: true } })
+    if (existingJob) return res.status(409).json({ message: `Quote ${quote.documentNumber} is already linked to job ${existingJob.title}.` })
+    const legacyInvoice = await prisma.invoice.findFirst({ where: { organisationId, jobId: job.id, sourceQuoteId: null }, select: { invoiceNumber: true } })
+    if (legacyInvoice) return res.status(409).json({ message: `Job invoice ${legacyInvoice.invoiceNumber} was created outside the quote flow. Review and reconcile it before linking a quote.` })
+    const quoteInvoice = await prisma.invoice.findUnique({ where: { sourceQuoteId: quote.id }, select: { jobId: true, invoiceNumber: true } })
+    if (quoteInvoice?.jobId && quoteInvoice.jobId !== job.id) return res.status(409).json({ message: `Invoice ${quoteInvoice.invoiceNumber} is already linked to another job.` })
+    acceptedQuoteSnapshot = {
+      id: quote.id,
+      documentNumber: quote.documentNumber,
+      currency: quote.currency,
+      subtotal: Number(quote.subtotal),
+      taxTotal: Number(quote.taxTotal),
+      total: Number(quote.total),
+      notes: quote.notes,
+      terms: quote.terms,
+      lines: quote.lines.map((line) => ({ description: line.description, quantity: Number(line.quantity), unit: line.unit, unitPrice: Number(line.unitPrice), taxRate: line.taxRate === null ? null : Number(line.taxRate) })),
+      customerName: quote.customer.name,
+      snapshotTakenAt: new Date().toISOString(),
+    }
+    linkedQuoteId = quote.id
+    linkedQuoteCurrency = quote.currency
+  }
+
   const data: Record<string, unknown> = {}
   if (title !== undefined) data.title = title
   if (description !== undefined) data.description = description
@@ -3792,15 +3888,22 @@ app.put('/api/jobs/:id', requireAuth, async (req, res) => {
   if (status !== undefined) data.status = status
   if (startDate !== undefined) data.startDate = startDate && !Number.isNaN(startDate.getTime()) ? startDate : null
   if (endDate !== undefined) data.endDate = endDate && !Number.isNaN(endDate.getTime()) ? endDate : null
+  if (linkedQuoteId && acceptedQuoteSnapshot) {
+    data.quoteId = linkedQuoteId
+    data.acceptedQuoteSnapshot = acceptedQuoteSnapshot as never
+    if (linkedQuoteCurrency) data.currency = linkedQuoteCurrency
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
     const updated = await tx.job.update({
       where: { id: job.id },
       data: data as never,
-      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } }, invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } } },
+      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } }, quote: { select: { id: true, documentNumber: true, status: true, publicToken: true } }, invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } } },
     })
-    await recordJobActivity(job.id, user, status && status !== job.status ? 'JOB_STATUS_CHANGED' : 'JOB_UPDATED', {
+    if (linkedQuoteId) await tx.invoice.updateMany({ where: { organisationId, sourceQuoteId: linkedQuoteId }, data: { jobId: job.id } })
+    await recordJobActivity(job.id, user, status && status !== job.status ? 'JOB_STATUS_CHANGED' : linkedQuoteId ? 'JOB_QUOTE_LINKED' : 'JOB_UPDATED', {
       fields: Object.keys(data),
+      ...(linkedQuoteId ? { quoteId: linkedQuoteId } : {}),
       ...(requestedOwnerId && requestedOwnerId !== job.ownerId ? { fromOwnerId: job.ownerId, toOwnerId: requestedOwnerId, toOwnerName: requestedOwnerName } : {}),
       ...(status && status !== job.status ? { fromStatus: job.status, toStatus: status } : {}),
     }, tx)
@@ -4023,8 +4126,12 @@ app.post('/api/jobs/:id/invoice-draft', requireTeamRole('OWNER', 'ADMIN'), async
   if (job.status !== 'COMPLETED') return res.status(409).json({ message: 'Mark the job complete before preparing its final invoice.' })
   if (!job.quoteId || !job.acceptedQuoteSnapshot) return res.status(409).json({ message: 'This job has no accepted quote to prepare an invoice from.' })
 
-  const existing = await prisma.invoice.findFirst({ where: { organisationId, OR: [{ sourceQuoteId: job.quoteId }, { jobId: job.id }] }, select: { id: true, invoiceNumber: true, status: true } })
-  if (existing) return res.status(409).json({ message: `An invoice already exists for this job or quote (${existing.invoiceNumber}). Open it to review the current balance.` })
+  const existing = await prisma.invoice.findFirst({ where: { organisationId, OR: [{ sourceQuoteId: job.quoteId }, { jobId: job.id }] }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
+  if (existing) {
+    if (existing.jobId && existing.jobId !== job.id) return res.status(409).json({ message: `This quote is already invoiced against another job (${existing.job?.title ?? existing.invoiceNumber}). Review that job before continuing.` })
+    const linked = existing.jobId ? existing : await prisma.invoice.update({ where: { id: existing.id }, data: { jobId: job.id }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
+    return res.json({ invoice: { ...linked, subtotal: Number(linked.subtotal), taxTotal: Number(linked.taxTotal), total: Number(linked.total), amountPaid: Number(linked.amountPaid), balanceDue: Number(linked.balanceDue), depositRequired: linked.depositRequired ? Number(linked.depositRequired) : null, depositPaid: Number(linked.depositPaid) }, alreadyExists: true })
+  }
 
   const snapshot = job.acceptedQuoteSnapshot as { documentNumber?: unknown; currency?: unknown; subtotal?: unknown; taxTotal?: unknown; total?: unknown; notes?: unknown; terms?: unknown; lines?: unknown }
   const subtotal = Number(snapshot.subtotal)
@@ -4051,7 +4158,14 @@ app.post('/api/jobs/:id/invoice-draft', requireTeamRole('OWNER', 'ADMIN'), async
     })
     return res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) } })
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return res.status(409).json({ message: 'An invoice was just created from this quote. Refresh and review the existing invoice.' })
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      const raced = await prisma.invoice.findUnique({ where: { sourceQuoteId: job.quoteId }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
+      if (raced && (!raced.jobId || raced.jobId === job.id)) {
+        const linked = raced.jobId ? raced : await prisma.invoice.update({ where: { id: raced.id }, data: { jobId: job.id }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
+        return res.json({ invoice: { ...linked, subtotal: Number(linked.subtotal), taxTotal: Number(linked.taxTotal), total: Number(linked.total), amountPaid: Number(linked.amountPaid), balanceDue: Number(linked.balanceDue), depositRequired: linked.depositRequired ? Number(linked.depositRequired) : null, depositPaid: Number(linked.depositPaid) }, alreadyExists: true })
+      }
+      if (raced) return res.status(409).json({ message: `An invoice was just created against ${raced.job?.title ?? 'this quote'}. Refresh and review the existing invoice.` })
+    }
     throw error
   }
 })

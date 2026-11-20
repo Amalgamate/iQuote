@@ -428,6 +428,18 @@
 .panel-heading { display: flex; min-height: 66px; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 17px; border-bottom: 1px solid #e7e5e4; }
 .panel-heading h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
 .panel-heading p { margin: 0; color: #78716c; font-size: 12px; }
+.job-info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 16px 22px; padding: 18px 20px; border-bottom: 1px solid #edf1ed; }
+.job-info-grid > div,.job-info-grid > label { display: grid; min-width: 0; align-content: start; gap: 5px; }
+.job-info-grid > div > span,.job-info-grid > label { color: #77857c; font-size: 11px; }
+.job-info-grid strong { overflow-wrap: anywhere; color: #20362b; font-size: 13px; font-weight: 600; }
+.job-info-grid > label .input-control { margin-top: 1px; color: #20362b; }
+.cost-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 12px 18px; margin: 16px 20px; padding: 15px 16px; border: 1px solid #e2e9e3; border-radius: 9px; background: #f3f8f4; }
+.cost-summary > div { display: grid; min-width: 0; align-content: start; gap: 5px; }
+.cost-summary > div > span { color: #77857c; font-size: 11px; }
+.cost-summary strong { overflow-wrap: anywhere; color: #20362b; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.job-description { display: grid; gap: 6px; padding: 14px 20px 18px; }
+.job-description > span { color: #77857c; font-size: 11px; }
+.job-description p { margin: 0; color: #35483c; font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
 .panel-empty { display: grid; justify-items: center; gap: 9px; padding: 38px 18px; text-align: center; }
 .panel-empty h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .panel-empty p { max-width: 390px; color: #78716c; font-size: 13px; line-height: 1.55; }
@@ -763,6 +775,41 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
 .conversation-page { display: grid; align-content: start; gap: 15px; }
 .conversation-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .public-conversation { width: min(1052px, 100%); margin: 0 auto; }
+.public-project-portal { display: grid; width: min(1052px, 100%); gap: 14px; margin: 8px auto 24px; }
+.public-project-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; padding: 8px 2px 2px; }
+.public-project-heading h2 { margin: 4px 0; color: #20362b; font-size: 20px; }
+.public-project-heading > div > p:last-child,.public-project-updated { margin: 0; color: #77857c; font-size: 11px; line-height: 1.5; }
+.public-project-quote { color: #68776d; font-size: 11px; }
+.public-project-card { display: grid; gap: 13px; padding: 18px; border: 1px solid #e2e9e3; border-radius: 12px; background: #fff; box-shadow: 0 8px 28px rgb(23 44 34 / 5%); }
+.public-project-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.public-project-card-heading h3 { margin: 3px 0 0; color: #20362b; font-size: 16px; }
+.public-project-card-heading .workspace-eyebrow { margin: 0; }
+.public-project-milestones { display: grid; gap: 8px; }
+.public-project-milestone { display: grid; grid-template-columns: 22px minmax(0,1fr); align-items: start; gap: 10px; padding: 10px; border: 1px solid #edf1ed; border-radius: 9px; background: #fbfcfb; }
+.public-project-milestone > div { display: grid; gap: 4px; }
+.public-project-milestone strong { color: #35483c; font-size: 12px; font-weight: 600; }
+.public-project-milestone small { color: #849188; font-size: 10px; }
+.milestone-indicator { display: grid; width: 20px; height: 20px; place-items: center; border: 1px solid #bfcec2; border-radius: 50%; color: #176b4b; font-size: 11px; }
+.milestone-indicator.complete { border-color: #176b4b; background: #eaf5ee; }
+.public-project-empty { margin: 0; padding: 12px; border-radius: 8px; background: #f6f8f6; color: #77857c; font-size: 11px; line-height: 1.5; }
+.public-invoice-summary { display: flex; flex-wrap: wrap; gap: 20px 34px; padding: 12px; border-radius: 9px; background: #f3f8f4; }
+.public-invoice-summary > div { display: grid; gap: 4px; }
+.public-invoice-summary span { color: #7b8980; font-size: 10px; }
+.public-invoice-summary strong { color: #20362b; font-size: 13px; }
+.public-invoice-lines { width: 100%; }
+.public-invoice-lines .data-table th,.public-invoice-lines .data-table td { padding: 9px 10px; font-size: 10px; }
+.public-project-page .public-project-portal { margin-top: 26px; }
+.public-invoice-pending > div > p:last-child { margin: 5px 0 0; color: #77857c; font-size: 11px; line-height: 1.5; }
+.job-create-panel { overflow: visible; }
+.job-create-form { display: grid; gap: 14px; padding: 18px; }
+.job-create-actions { justify-content: flex-end; padding-top: 4px; }
+.job-link-quote-form { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 12px; padding: 16px 18px; }
+@media (max-width: 560px) {
+  .job-link-quote-form { grid-template-columns: 1fr; }
+  .job-info-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 15px; }
+  .cost-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px; padding: 13px; }
+  .job-description { padding: 12px 15px 15px; }
+}
 .pwa-help-backdrop { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; padding: 18px; background: #10251c70; }
 .pwa-help-dialog { position: relative; display: grid; width: min(390px, 100%); gap: 10px; padding: 24px; border: 1px solid #e3ebe4; border-radius: 14px; background: #fff; box-shadow: 0 25px 80px #11281b33; }
 .pwa-help-dialog h2 { margin: 0; color: #20362b; font-size: 19px; letter-spacing: -.03em; }
@@ -776,6 +823,9 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
   .quote-chatter { padding: 14px; }
   .chatter-message { width: 94%; }
   .conversation-actions { width: 100%; }
+  .public-project-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .public-project-card { padding: 13px; }
+  .public-invoice-summary { gap: 12px 18px; }
 }
 
 @media (max-width: 1120px) {

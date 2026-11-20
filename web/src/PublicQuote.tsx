@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { apiRequest } from './api'
 import QuoteDocument, { type QuoteDocumentData } from './QuoteDocument'
 import { QuotePdfDownloadLink } from './QuotePdf'
 import QuoteChatter from './QuoteChatter'
+import PublicProjectDetails, { type PublicInvoice, type PublicProject } from './PublicProjectDetails'
 
 type PublicQuoteRecord = QuoteDocumentData & {
   status: string
   viewedAt: string | null
   decisionComment: string | null
   decidedAt: string | null
+  project: PublicProject | null
+  invoice: PublicInvoice | null
 }
 
 const decisionLabel: Record<string, string> = {
@@ -26,7 +29,7 @@ export default function PublicQuote({ token }: { token: string }) {
   const [comment, setComment] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const loadQuote = async () => {
+  const loadQuote = useCallback(async () => {
     try {
       const response = await apiRequest<{ quote: PublicQuoteRecord }>(`/api/public/quotes/${encodeURIComponent(token)}`)
       setQuote(response.quote)
@@ -36,9 +39,14 @@ export default function PublicQuote({ token }: { token: string }) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [token])
 
-  useEffect(() => { void loadQuote() }, [token])
+  useEffect(() => { void loadQuote() }, [loadQuote])
+  useEffect(() => {
+    if (quote && ['DECLINED', 'EXPIRED'].includes(quote.status)) return
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void loadQuote() }, 30000)
+    return () => window.clearInterval(timer)
+  }, [quote?.status, loadQuote])
 
   const decide = async (decision: 'APPROVED' | 'DECLINED') => {
     setSubmitting(true)
@@ -96,6 +104,7 @@ export default function PublicQuote({ token }: { token: string }) {
           <p className="decision-caption">Questions? Use the conversation below or contact {quote.organisation.email || quote.organisation.phone || quote.organisation.name}.</p>
         </aside>
       </div>
+      <PublicProjectDetails project={quote.project} invoice={quote.invoice} quoteNumber={quote.documentNumber} />
       <div className="public-conversation no-print"><QuoteChatter token={token} mode="customer" readOnly={quote.status === 'EXPIRED'} /></div>
     </main>
   )

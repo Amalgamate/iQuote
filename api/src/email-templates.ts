@@ -1,8 +1,8 @@
 /**
  * iQuote email templates — branded onboarding emails.
  *
- * Design system aligned with DESIGN.md:
- * - Navy dark header (#081120), electric blue accents (#0052FF)
+ * Design system aligned with the iQuote website:
+ * - Deep green header (#176b4b), green accents (#13795b)
  * - Geometric sans-serif (Poppins/Montserrat with Arial fallback for email clients)
  * - Solid surfaces, no gradients, crisp 1px borders
  * - Platform logo + header banner image
@@ -15,25 +15,25 @@
 const PLATFORM_NAME = process.env.PLATFORM_NAME ?? 'iQuote'
 const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:5174'
 const PLATFORM_LOGO_URL = process.env.PLATFORM_LOGO_URL ?? '' // e.g. https://your-host/uploads/logo-platform.png
-const PLATFORM_HEADER_IMAGE = process.env.PLATFORM_HEADER_IMAGE ?? '' // optional banner image URL
+const PLATFORM_HEADER_IMAGE = `${PLATFORM_URL.replace(/\/$/, '')}/email/email%20cover.png`
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL ?? 'hello@iquote.app'
 
 /**
  * A compact SVG banner rendered as a data URI.
- * Used when PLATFORM_HEADER_IMAGE is not set — no external HTTP dependency.
- * Navy background with the iQuote brand mark and geometric accents.
+ * Kept as a safe fallback if a deployment has no public cover image configured.
+ * The artwork uses the current iQuote green brand palette.
  */
 const DEFAULT_HEADER_BANNER =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="600" height="180" viewBox="0 0 600 180">
-  <rect width="600" height="180" fill="#081120"/>
-  <rect x="0" y="0" width="600" height="6" fill="#0052FF"/>
-  <circle cx="540" cy="120" r="50" fill="#0E1A2F" opacity="0.6"/>
-  <circle cx="540" cy="120" r="30" fill="#0052FF" opacity="0.15"/>
-  <circle cx="80" cy="140" r="35" fill="#0E1A2F" opacity="0.5"/>
+  <rect width="600" height="180" fill="#176b4b"/>
+  <rect x="0" y="0" width="600" height="6" fill="#13795b"/>
+  <circle cx="540" cy="120" r="50" fill="#124d38" opacity="0.6"/>
+  <circle cx="540" cy="120" r="30" fill="#13795b" opacity="0.35"/>
+  <circle cx="80" cy="140" r="35" fill="#124d38" opacity="0.5"/>
   <text x="40" y="90" font-family="Poppins, Montserrat, Arial, sans-serif" font-size="36" font-weight="800" fill="#FFFFFF">iQuote</text>
-  <text x="40" y="118" font-family="Poppins, Montserrat, Arial, sans-serif" font-size="15" font-weight="500" fill="#53647A">Quotes that close.</text>
-  <rect x="40" y="135" width="120" height="3" fill="#0052FF" rx="1.5"/>
+  <text x="40" y="118" font-family="Poppins, Montserrat, Arial, sans-serif" font-size="15" font-weight="500" fill="#dce8df">Thoughtful quoting for business.</text>
+  <rect x="40" y="135" width="120" height="3" fill="#13795b" rx="1.5"/>
 </svg>`)
 
 function headerImage(): string {
@@ -53,7 +53,7 @@ function logoHtml(): string {
  */
 function emailShell(contentHtml: string, opts?: { previewText: string }): string {
   const preview = opts?.previewText ?? ''
-  return `<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
@@ -159,6 +159,22 @@ function emailShell(contentHtml: string, opts?: { previewText: string }): string
   </table>
 </body>
 </html>`
+
+  // Keep every generated email on the current site palette, including the
+  // individual message templates that still contain legacy color literals.
+  return html
+    .replace(/#081120/gi, '#176b4b')
+    .replace(/#0052FF/gi, '#13795b')
+    .replace(/#003ECC/gi, '#176b4b')
+    .replace(/#0E1A2F/gi, '#124d38')
+    .replace(/#1a2640/gi, '#286e53')
+    .replace(/#0A1128/gi, '#20362b')
+    .replace(/#53647A/gi, '#64756b')
+    .replace(/#F4F8FD/gi, '#f3f8f4')
+    .replace(/#EBF3FF/gi, '#eaf5ee')
+    .replace(/#D8E4F2/gi, '#dce8df')
+    .replace(/#E8EEF4/gi, '#e2e9e3')
+    .replace(/#3a4a60/gi, '#b7cbbf')
 }
 
 /** A styled primary CTA button */
