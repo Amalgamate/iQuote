@@ -1265,8 +1265,18 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
               </section>
             )}
             {editorQuoteId && quotes.find((quote) => quote.id === editorQuoteId)?.status !== 'DRAFT' && <QuoteChatter quoteId={editorQuoteId} mode="business" readOnly={quotes.find((quote) => quote.id === editorQuoteId)?.status === 'EXPIRED'} />}
-            <div className="editor-layout">
-              <div className="editor-fields">
+            <details className="quote-business-accordion">
+              <summary>Business address and contact details, title, summary, and logo</summary>
+              <div className="quote-business-details">
+                {business.logoUrl && <img src={assetUrl(business.logoUrl) ?? undefined} alt="Business logo" />}
+                <div><strong>{business.name || 'Business name not set'}</strong><span>{[business.email, business.phone, business.country, business.website].filter(Boolean).join(' · ') || 'Add your business address and contact details in Settings.'}</span></div>
+                {business.paymentInstructions && <p><strong>Payment details</strong><span>{business.paymentInstructions}</span></p>}
+                <button className="quiet-button" type="button" onClick={() => changePage('settings')}>Edit business details</button>
+              </div>
+            </details>
+            <div className="editor-layout quote-composer-layout">
+              <div className="editor-fields quote-composer-sheet">
+                <div className="quote-composer-heading"><div className="quote-composer-heading-brand">{business.logoUrl ? <img src={assetUrl(business.logoUrl) ?? undefined} alt="" /> : <span className="quote-composer-logo-fallback">{business.name.slice(0, 1).toUpperCase() || 'iQ'}</span>}<div><p className="workspace-eyebrow">Quotation</p><h2>{editorNumber}</h2><span>Prepare a clear offer, then share it with your customer.</span></div></div><span className={statusClass(editorQuoteId ? quotes.find((quote) => quote.id === editorQuoteId)?.status ?? 'DRAFT' : 'DRAFT')}>{editorQuoteId ? statusNames[quotes.find((quote) => quote.id === editorQuoteId)?.status ?? 'DRAFT'] : 'Draft'}</span></div>
                 <section className="workspace-panel editor-section">
                   <div className="panel-heading">
                     <div>
@@ -1439,7 +1449,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
 
                 <section className="workspace-panel editor-section notes-section"><label className="field-label">Notes<textarea className="input-control" rows={3} value={editor.notes} onChange={(event) => updateEditor({ notes: event.target.value })} placeholder="Anything the customer should know" /></label><label className="field-label">Terms<textarea className="input-control" rows={3} value={editor.terms} onChange={(event) => updateEditor({ terms: event.target.value })} placeholder="Payment, delivery, and validity terms" /></label></section>
               </div>
-              <div className={`document-preview ${showMobilePreview ? 'mobile-preview-open' : ''}`}><div className="preview-label"><span>Live document preview</span><span>A4</span><button className="mobile-preview-close" type="button" onClick={() => setShowMobilePreview(false)} aria-label="Close preview">×</button></div><QuoteDocument quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /></div>
+              {showMobilePreview && <div className="document-preview preview-open"><div className="preview-label"><span>Document preview</span><span>A4</span><button className="mobile-preview-close" type="button" onClick={() => setShowMobilePreview(false)} aria-label="Close preview">×</button></div><QuoteDocument quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /></div>}
             </div>
           </section>
         )}
