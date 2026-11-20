@@ -115,6 +115,8 @@ export default function InvoicesPanel({ business, customers, currency, canManage
   const [error, setError] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null)
+  const [sendingInvoice, setSendingInvoice] = useState(false)
+  const [sendMessage, setSendMessage] = useState('')
 
   useEffect(() => {
     void loadInvoices()
@@ -148,13 +150,19 @@ export default function InvoicesPanel({ business, customers, currency, canManage
     }
   }
 
-  const sendInvoice = async (invoice: Invoice) => {
+  const sendInvoice = async (invoice: Invoice, recipientEmail: string) => {
+    setSendingInvoice(true)
+    setSendMessage('')
+    setError('')
     try {
-      const response = await apiRequest<InvoiceResponse>(`/api/invoices/${invoice.id}`, { method: 'PUT', body: JSON.stringify({ status: 'SENT' }) })
+      const response = await apiRequest<InvoiceResponse>(`/api/invoices/${invoice.id}/send`, { method: 'POST', body: JSON.stringify({ recipientEmail }) })
       setInvoices((current) => current.map((inv) => inv.id === response.invoice.id ? response.invoice : inv))
       if (selectedInvoice?.id === invoice.id) setSelectedInvoice(response.invoice)
+      setSendMessage(`Invoice emailed to ${recipientEmail}.`)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to send invoice.')
+    } finally {
+      setSendingInvoice(false)
     }
   }
 
@@ -165,8 +173,11 @@ export default function InvoicesPanel({ business, customers, currency, canManage
         business={business}
         currency={currency}
         customers={customers}
+        error={error}
+        sendMessage={sendMessage}
+        sendingInvoice={sendingInvoice}
         onBack={() => { setSelectedInvoice(null); void loadInvoices() }}
-        onSend={() => void sendInvoice(selectedInvoice)}
+        onSend={(recipientEmail) => void sendInvoice(selectedInvoice, recipientEmail)}
         onInvoiceUpdate={(updated) => setSelectedInvoice(updated)}
         onInvoicesRefresh={() => void loadInvoices()}
         setError={setError}
@@ -242,19 +253,23 @@ export default function InvoicesPanel({ business, customers, currency, canManage
   )
 }
 
-function InvoiceDetail({ invoice, business, customers, onBack, onSend, onInvoiceUpdate, onInvoicesRefresh, setError, canManageFinancials }: {
+function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendingInvoice, onBack, onSend, onInvoiceUpdate, onInvoicesRefresh, setError, canManageFinancials }: {
   invoice: Invoice
   business: Business
   currency: string
   customers: Customer[]
+  error: string
+  sendMessage: string
+  sendingInvoice: boolean
   onBack: () => void
-  onSend: () => void
+  onSend: (recipientEmail: string) => void
   onInvoiceUpdate: (invoice: Invoice) => void
   onInvoicesRefresh: () => void
   setError: (error: string) => void
   canManageFinancials: boolean
 }) {
   const [paymentForm, setPaymentForm] = useState<PaymentForm>(blankPaymentForm)
+  const [invoiceRecipientEmail, setInvoiceRecipientEmail] = useState(invoice.customer.email ?? '')
   const [showPaymentForm, setShowPaymentForm] = useState(false)
   const [refundTarget, setRefundTarget] = useState<Payment | null>(null)
   const [refundForm, setRefundForm] = useState<RefundForm>({ amount: '', method: 'BANK_TRANSFER', reference: '', reason: '', confirmedExternally: false })
@@ -464,13 +479,18 @@ function InvoiceDetail({ invoice, business, customers, onBack, onSend, onInvoice
 
   return (
     <section className="workspace-content">
+      {error && <div className="workspace-alert" role="alert"><span>{error}</span></div>}
+      {sendMessage && <div className="workspace-alert workspace-alert-success" role="status"><span>{sendMessage}</span></div>}
       <div className="list-toolbar">
         <div>
           <button className="link-button" type="button" onClick={onBack}>← All invoices</button>
           <p className="workspace-eyebrow">Invoice detail</p>
           <h2>{invoice.invoiceNumber}</h2>
         </div>
-        {canManageFinancials && invoice.status === 'DRAFT' && <button className="button button-primary" type="button" onClick={onSend}>Send invoice</button>}
+        {canManageFinancials && invoice.status === 'DRAFT' && <form className="invoice-send-form" onSubmit={(event) => { event.preventDefault(); onSend(invoiceRecipientEmail) }}>
+          <label>Send to<input className="input-control" type="email" required value={invoiceRecipientEmail} onChange={(event) => setInvoiceRecipientEmail(event.target.value)} placeholder="customer@example.com" /></label>
+          <button className="button button-primary" type="submit" disabled={sendingInvoice}>{sendingInvoice ? 'Sending…' : 'Send invoice'}</button>
+        </form>}
       </div>
 
       <section className="workspace-panel">

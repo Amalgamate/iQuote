@@ -641,7 +641,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
 
       <section className="workspace-panel">
         <div className="panel-heading"><div><h2>Job history</h2><p>Status, milestone, and cost changes with the team member and time.</p></div></div>
-        <div className="milestone-list">
+        <div className="milestone-list job-history-list">
           {activities.length ? activities.map((activity) => (
             <div className="milestone-item" key={activity.id}>
               <div className="milestone-content">
@@ -740,7 +740,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
             <button className="button button-primary" type="submit">Add cost</button>
           </form>
         )}
-        <div className="cost-summary">
+        <div className="cost-summary job-cost-summary">
           <span>Total costs</span>
           <strong>{formatCostTotals(costs, currency)}</strong>
         </div>

@@ -489,6 +489,61 @@ export function quoteDeliveryEmailHtml(params: {
   })
 }
 
+// ---- Invoice delivery email (sent to the customer) ----
+
+export function invoiceDeliveryEmailHtml(params: {
+  recipientName: string
+  businessName: string
+  invoiceNumber: string
+  quoteNumber: string
+  total: number
+  amountPaid: number
+  balanceDue: number
+  currency: string
+  issueDate: string
+  dueDate: string | null
+  lineItems: Array<{ description: string; quantity: number; unit: string; unitPrice: number; total: number }>
+  notes: string | null
+  invoiceUrl: string
+}): string {
+  const rowsHtml = params.lineItems.slice(0, 10).map((item) => `
+    <tr>
+      <td style="padding:8px 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;color:#20362b;border-bottom:1px solid #e2e9e3">${escapeText(item.description)}</td>
+      <td style="padding:8px 0;font-family:'Montserrat',Arial,sans-serif;font-size:13px;color:#64756b;text-align:right;white-space:nowrap;border-bottom:1px solid #e2e9e3">${item.quantity} ${escapeText(item.unit)}</td>
+      <td style="padding:8px 0;font-family:'Montserrat',Arial,sans-serif;font-size:13px;color:#20362b;font-weight:600;text-align:right;white-space:nowrap;border-bottom:1px solid #e2e9e3">${formatCurrency(item.total, params.currency)}</td>
+    </tr>
+  `).join('')
+  const moreCount = Math.max(0, params.lineItems.length - 10)
+  const content = `
+    <h1 style="margin:0 0 8px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:26px;font-weight:700;color:#20362b;letter-spacing:-0.5px">${escapeText(params.businessName)} sent you an invoice</h1>
+    <p style="margin:0 0 24px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:15px;line-height:1.6;color:#64756b">Hi ${escapeText(params.recipientName.split(' ')[0] || 'there')}, your invoice is ready to review.</p>
+    <div style="margin:0 0 20px;padding:20px;background:#f3f8f4;border:1px solid #dce8df;border-radius:8px">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tr><td style="padding:4px 0;color:#64756b;font-size:13px">Invoice</td><td style="padding:4px 0;color:#20362b;font-size:14px;font-weight:700;text-align:right">${escapeText(params.invoiceNumber)}</td></tr>
+        <tr><td style="padding:4px 0;color:#64756b;font-size:13px">From quote</td><td style="padding:4px 0;color:#20362b;font-size:13px;text-align:right">${escapeText(params.quoteNumber)}</td></tr>
+        <tr><td style="padding:4px 0;color:#64756b;font-size:13px">Issue date</td><td style="padding:4px 0;color:#20362b;font-size:13px;text-align:right">${escapeText(params.issueDate)}</td></tr>
+        ${params.dueDate ? `<tr><td style="padding:4px 0;color:#64756b;font-size:13px">Due date</td><td style="padding:4px 0;color:#20362b;font-size:13px;text-align:right">${escapeText(params.dueDate)}</td></tr>` : ''}
+      </table>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px">
+        <tr><td style="padding:5px 0;color:#64756b;font-size:11px;font-weight:700;text-transform:uppercase">Description</td><td style="padding:5px 0;color:#64756b;font-size:11px;font-weight:700;text-align:right;text-transform:uppercase">Qty</td><td style="padding:5px 0;color:#64756b;font-size:11px;font-weight:700;text-align:right;text-transform:uppercase">Amount</td></tr>
+        ${rowsHtml}
+      </table>
+      ${moreCount ? `<p style="margin:8px 0 0;color:#64756b;font-size:12px">+ ${moreCount} more line item${moreCount === 1 ? '' : 's'} on the invoice</p>` : ''}
+      <div style="margin-top:14px;padding-top:12px;border-top:2px solid #13795b">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          <tr><td style="padding:3px 0;color:#64756b;font-size:13px">Invoice total</td><td style="padding:3px 0;color:#20362b;font-size:14px;font-weight:700;text-align:right">${formatCurrency(params.total, params.currency)}</td></tr>
+          ${params.amountPaid > 0 ? `<tr><td style="padding:3px 0;color:#64756b;font-size:13px">Paid to date</td><td style="padding:3px 0;color:#20362b;font-size:13px;text-align:right">${formatCurrency(params.amountPaid, params.currency)}</td></tr>` : ''}
+          <tr><td style="padding:5px 0 0;color:#176b4b;font-size:15px;font-weight:700">Balance due</td><td style="padding:5px 0 0;color:#176b4b;font-size:18px;font-weight:800;text-align:right">${formatCurrency(params.balanceDue, params.currency)}</td></tr>
+        </table>
+      </div>
+    </div>
+    ${params.notes ? `<div style="margin:0 0 20px;padding:14px 16px;background:#eaf5ee;border-left:3px solid #13795b"><p style="margin:0;color:#20362b;font-size:13px;line-height:1.6">${escapeText(params.notes)}</p></div>` : ''}
+    ${button('Review invoice →', params.invoiceUrl)}
+    <p style="margin:16px 0 0;color:#64756b;font-size:13px;line-height:1.6">Use the secure link to review the invoice, see project updates, and continue the conversation.</p>
+  `
+  return emailShell(content, { previewText: `${escapeText(params.businessName)} sent invoice ${escapeText(params.invoiceNumber)} — ${formatCurrency(params.balanceDue, params.currency)} due` })
+}
+
 // ---- Helpers ----
 
 function escapeText(value: string): string {
@@ -511,6 +566,7 @@ export const emailSubjects = {
   quoteApproved: (docNumber: string) => `✓ ${docNumber} approved`,
   quoteDeclined: (docNumber: string) => `${docNumber} declined`,
   quoteDelivery: (businessName: string, docNumber: string) => `${businessName.slice(0, 40)} sent you ${docNumber}`,
+  invoiceDelivery: (businessName: string, invoiceNumber: string) => `Invoice ${invoiceNumber} from ${businessName.slice(0, 40)}`,
   receiptDelivery: (businessName: string, receiptNo: string) => `Receipt ${receiptNo} from ${businessName.slice(0, 40)}`,
 }
 

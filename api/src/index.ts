@@ -13,7 +13,7 @@ import { join, extname } from 'node:path'
 import { getIndustryPack } from './industry-packs.js'
 import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush, setPlatformNcbaConfig } from './ncba-client.js'
 import { initiateMerchantStkPush, NcbaMerchantRequestError, normalizeCustomerPhone, normalizeMerchantCode, queryMerchantStkPush, verifyNotificationHash } from './customer-mpesa.js'
-import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, receiptDeliveryEmailHtml, emailSubjects } from './email-templates.js'
+import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, invoiceDeliveryEmailHtml, receiptDeliveryEmailHtml, emailSubjects } from './email-templates.js'
 
 const prisma = new PrismaClient()
 const app = express()
@@ -4295,6 +4295,87 @@ app.post('/api/invoices/:id/reconcile', requireTeamRole('OWNER', 'ADMIN'), async
   return res.json({ reconciled: result.reconciled, invoice: { ...fullInvoice, subtotal: Number(fullInvoice.subtotal), taxTotal: Number(fullInvoice.taxTotal), total: Number(fullInvoice.total), amountPaid: Number(fullInvoice.amountPaid), balanceDue: Number(fullInvoice.balanceDue), payments, allocationHistory } })
 })
 
+app.post('/api/invoices/:id/send', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const invoice = await prisma.invoice.findFirst({
+    where: { id: String(req.params.id ?? ''), organisationId },
+    include: {
+      customer: { select: { id: true, name: true, email: true } },
+      organisation: { select: { id: true, name: true } },
+      sourceQuote: { select: { id: true, documentNumber: true, status: true, publicToken: true } },
+    },
+  })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+  if (invoice.status !== 'DRAFT') return res.status(409).json({ message: 'Only draft invoices can be sent.' })
+  if (!invoice.sourceQuote || invoice.sourceQuote.status !== 'APPROVED') return res.status(409).json({ message: 'Invoices can only be sent from an approved quote.' })
+
+  const recipientEmail = String(req.body?.recipientEmail ?? invoice.customer.email ?? '').trim().toLowerCase()
+  if (!recipientEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) return res.status(400).json({ message: 'Enter a valid customer email address before sending this invoice.' })
+
+  const publicToken = invoice.sourceQuote.publicToken ?? randomBytes(24).toString('base64url')
+  if (!invoice.sourceQuote.publicToken) {
+    await prisma.quote.update({ where: { id: invoice.sourceQuote.id }, data: { publicToken, tokenRevokedAt: null, tokenRevokedBy: null } })
+  }
+  const platformUrl = (process.env.PLATFORM_URL ?? 'http://localhost:5174').replace(/\/$/, '')
+  const invoiceUrl = `${platformUrl}/quote/${encodeURIComponent(publicToken)}`
+  const invoiceLines = Array.isArray(invoice.lineItems) ? invoice.lineItems as Array<Record<string, unknown>> : []
+  const lineItems = invoiceLines.map((line) => {
+    const quantity = Number(line.quantity ?? 0)
+    const unitPrice = Number(line.unitPrice ?? 0)
+    return {
+      description: String(line.description ?? 'Work item'),
+      quantity,
+      unit: String(line.unit ?? 'unit'),
+      unitPrice,
+      total: roundMoney(quantity * unitPrice),
+    }
+  })
+  const formatEmailDate = (date: Date | null) => date ? new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium' }).format(date) : null
+
+  try {
+    const result = await sendEmail(
+      recipientEmail,
+      emailSubjects.invoiceDelivery(invoice.organisation.name ?? 'iQuote', invoice.invoiceNumber),
+      invoiceDeliveryEmailHtml({
+        recipientName: invoice.customer.name,
+        businessName: invoice.organisation.name ?? 'iQuote',
+        invoiceNumber: invoice.invoiceNumber,
+        quoteNumber: invoice.sourceQuote.documentNumber,
+        total: Number(invoice.total),
+        amountPaid: Number(invoice.amountPaid),
+        balanceDue: Number(invoice.balanceDue),
+        currency: invoice.currency,
+        issueDate: formatEmailDate(invoice.issueDate) ?? '',
+        dueDate: formatEmailDate(invoice.dueDate),
+        lineItems,
+        notes: invoice.notes,
+        invoiceUrl,
+      }),
+      `invoice-delivery/${invoice.id}/${encodeURIComponent(recipientEmail)}`,
+      organisationId,
+    )
+    if (!result) return res.status(503).json({ message: 'Email provider is not configured. Set RESEND_API_KEY and a verified sender address before sending invoices.' })
+
+    const sentAt = new Date()
+    const sentStatus = Number(invoice.balanceDue) <= 0.001 ? 'PAID' : Number(invoice.amountPaid) > 0 ? 'PARTIALLY_PAID' : 'SENT'
+    const updatedCount = await prisma.invoice.updateMany({ where: { id: invoice.id, organisationId, status: 'DRAFT' }, data: { status: sentStatus, sentAt } })
+    if (!updatedCount.count) return res.status(409).json({ message: 'The invoice was sent, but its status changed at the same time. Refresh the invoice before continuing.' })
+    const updated = await prisma.invoice.findFirst({ where: { id: invoice.id, organisationId }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
+    if (!updated) return res.status(404).json({ message: 'The invoice was sent, but it could not be reloaded.' })
+    return res.json({
+      delivery: { recipientEmail, providerMessageId: result.messageId, sentAt: sentAt.toISOString() },
+      invoice: { ...updated, subtotal: Number(updated.subtotal), taxTotal: Number(updated.taxTotal), total: Number(updated.total), amountPaid: Number(updated.amountPaid), balanceDue: Number(updated.balanceDue), depositRequired: updated.depositRequired ? Number(updated.depositRequired) : null, depositPaid: Number(updated.depositPaid) },
+    })
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Invoice email delivery failed.'
+    return res.status(502).json({ message: errorMessage })
+  }
+})
+
 app.put('/api/invoices/:id', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
   const user = getRequestUser(req)
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
@@ -4338,8 +4419,8 @@ app.put('/api/invoices/:id', requireTeamRole('OWNER', 'ADMIN'), async (req, res)
     data.depositRequired = depositRequired
   }
   if (status && VALID_INVOICE_STATUSES.includes(status) && status !== 'DRAFT') {
+    if (status === 'SENT') return res.status(400).json({ message: 'Use the invoice send action so the customer receives the invoice by email.' })
     data.status = status
-    if (status === 'SENT' && !invoice.sentAt) data.sentAt = new Date()
   }
 
   const updated = await prisma.invoice.update({

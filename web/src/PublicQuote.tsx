@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { apiRequest } from './api'
+import { apiRequest, formatMoney } from './api'
 import QuoteDocument, { type QuoteDocumentData } from './QuoteDocument'
 import { QuotePdfDownloadLink } from './QuotePdf'
 import QuoteChatter from './QuoteChatter'
@@ -80,9 +80,19 @@ export default function PublicQuote({ token }: { token: string }) {
         </div>
       </div>
       <div className="public-quote-layout">
-        <QuoteDocument quote={quote} />
         <aside className="decision-panel no-print">
-          <p className="eyebrow">Your decision</p>
+          <section className="public-quote-rail-summary">
+            <p className="workspace-eyebrow">Quotation total</p>
+            <strong>{formatMoney(quote.total, quote.currency)}</strong>
+            <span>{quote.documentNumber}</span>
+          </section>
+          <nav className="public-quote-rail-nav" aria-label="Quotation sections">
+            <a href="#quote-document">Quotation details</a>
+            {quote.project || quote.invoice ? <a href="#project-details">Project &amp; invoice</a> : null}
+            <a href="#quote-conversation">Conversation</a>
+          </nav>
+          <section className="public-quote-decision">
+          <p className="workspace-eyebrow">Your decision</p>
           <h1>{canDecide ? 'Review this quotation' : decisionLabel[quote.status]}</h1>
           {quote.status === 'APPROVED' && <p>You approved this quotation. The business has been notified.</p>}
           {quote.status === 'DECLINED' && <p>You declined this quotation. The business has been notified.</p>}
@@ -93,19 +103,23 @@ export default function PublicQuote({ token }: { token: string }) {
             <form className="decision-form">
               <label htmlFor="decision-comment">Comment <span className="muted-text">(optional)</span></label>
               <textarea id="decision-comment" value={comment} onChange={(event) => setComment(event.target.value)} rows={4} placeholder="Add a note for the business" />
-              <button type="button" className="primary-button full-width" disabled={submitting} onClick={() => void decide('APPROVED')}>
+              <button type="button" className="button button-primary full-width" disabled={submitting} onClick={() => void decide('APPROVED')}>
                 {submitting ? 'Sending…' : 'Approve quotation'}
               </button>
-              <button type="button" className="secondary-button full-width" disabled={submitting} onClick={() => void decide('DECLINED')}>
+              <button type="button" className="button button-secondary full-width" disabled={submitting} onClick={() => void decide('DECLINED')}>
                 Decline quotation
               </button>
             </form>
           )}
-          <p className="decision-caption">Questions? Use the conversation below or contact {quote.organisation.email || quote.organisation.phone || quote.organisation.name}.</p>
+          <p className="decision-caption">Questions? Message the business below or contact {quote.organisation.email || quote.organisation.phone || quote.organisation.name}.</p>
+          </section>
         </aside>
+        <div className="public-quote-document" id="quote-document"><QuoteDocument quote={quote} /></div>
       </div>
-      <PublicProjectDetails project={quote.project} invoice={quote.invoice} quoteNumber={quote.documentNumber} />
-      <div className="public-conversation no-print"><QuoteChatter token={token} mode="customer" readOnly={quote.status === 'EXPIRED'} /></div>
+      <div className="public-quote-followup">
+        <div className="public-project-details-wrap" id="project-details"><PublicProjectDetails project={quote.project} invoice={quote.invoice} quoteNumber={quote.documentNumber} /></div>
+        <div className="public-conversation no-print" id="quote-conversation"><QuoteChatter token={token} mode="customer" readOnly={quote.status === 'EXPIRED'} /></div>
+      </div>
     </main>
   )
 }
