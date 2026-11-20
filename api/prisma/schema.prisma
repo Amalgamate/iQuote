@@ -306,6 +306,7 @@ model Quote {
   lines           QuoteLine[]
   deliveries      QuoteDelivery[]
   jobs            Job[]
+  invoice         Invoice?
   messages        QuoteMessage[]
   notifications   Notification[]
 
@@ -538,6 +539,9 @@ model Invoice {
   organisation    Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   jobId           String?
   job             Job?          @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  sourceQuoteId   String?       @unique
+  sourceQuote     Quote?        @relation(fields: [sourceQuoteId], references: [id], onDelete: SetNull)
+  lineItems       Json?
   customerId      String
   customer        Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
   invoiceNumber   String

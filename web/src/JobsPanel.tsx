@@ -66,6 +66,7 @@ type Job = {
   customer: { id: string; name: string }
   quoteId: string | null
   quote?: { id: string; documentNumber: string; status: string } | null
+  invoices?: Array<{ id: string; invoiceNumber: string; status: string; sourceQuoteId: string | null }>
   milestones: Milestone[]
   costs: Cost[]
   activities?: JobActivity[]
@@ -148,7 +149,7 @@ function formatCostTotals(costs: Cost[], fallbackCurrency: string): string {
 
 type JobAssignee = { id: string; name: string; email: string; teamRole: string }
 
-export default function JobsPanel({ customers, currency, canManageJobs }: { business: Business; customers: Customer[]; currency: string; canManageJobs: boolean }) {
+export default function JobsPanel({ customers, currency, canManageJobs, onInvoiceCreated }: { business: Business; customers: Customer[]; currency: string; canManageJobs: boolean; onInvoiceCreated: () => void }) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -159,6 +160,7 @@ export default function JobsPanel({ customers, currency, canManageJobs }: { busi
   const [jobError, setJobError] = useState('')
   const [saving, setSaving] = useState(false)
   const [teamMembers, setTeamMembers] = useState<JobAssignee[]>([])
+  const [invoiceDraftBusy, setInvoiceDraftBusy] = useState(false)
 
   useEffect(() => {
     void loadJobs()
@@ -248,6 +250,17 @@ export default function JobsPanel({ customers, currency, canManageJobs }: { busi
     }
   }
 
+  const prepareInvoiceFromJob = async (job: Job) => {
+    setInvoiceDraftBusy(true)
+    setError('')
+    try {
+      await apiRequest<{ invoice: { id: string } }>(`/api/jobs/${encodeURIComponent(job.id)}/invoice-draft`, { method: 'POST', body: JSON.stringify({}) })
+      onInvoiceCreated()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to prepare the invoice draft.')
+    } finally { setInvoiceDraftBusy(false) }
+  }
+
   if (selectedJob) {
     return (
       <JobDetail
@@ -260,6 +273,8 @@ export default function JobsPanel({ customers, currency, canManageJobs }: { busi
         teamMembers={teamMembers}
         canManageJobs={canManageJobs}
         onOwnerChange={(ownerId) => void updateJobOwner(selectedJob, ownerId)}
+        onPrepareInvoice={() => void prepareInvoiceFromJob(selectedJob)}
+        invoiceDraftBusy={invoiceDraftBusy}
         setError={setError}
       />
     )
@@ -356,7 +371,7 @@ export default function JobsPanel({ customers, currency, canManageJobs }: { busi
   )
 }
 
-function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpdate, setError, teamMembers, canManageJobs, onOwnerChange }: {
+function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpdate, setError, teamMembers, canManageJobs, onOwnerChange, onPrepareInvoice, invoiceDraftBusy }: {
   job: Job
   currency: string
   customers: Customer[]
@@ -367,6 +382,8 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
   teamMembers: JobAssignee[]
   canManageJobs: boolean
   onOwnerChange: (ownerId: string) => void
+  onPrepareInvoice: () => void
+  invoiceDraftBusy: boolean
 }) {
   const [milestoneForm, setMilestoneForm] = useState<MilestoneForm>(blankMilestoneForm)
   const [costForm, setCostForm] = useState<CostForm>(blankCostForm)
@@ -563,6 +580,12 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
         </div>
         {job.description && <div className="job-description"><span>Description</span><p>{job.description}</p></div>}
       </section>
+
+      {job.quoteId && <section className="workspace-panel" style={{ padding: 18 }}>
+        <div className="panel-heading" style={{ padding: 0, borderBottom: 0 }}><div><h2>Invoice</h2><p>{job.invoices?.length ? `Invoice ${job.invoices[0].invoiceNumber} · ${job.invoices[0].status.toLowerCase().replaceAll('_', ' ')}` : job.status === 'COMPLETED' ? 'Prepare a draft from the accepted quote, then review it in Invoices before sending.' : 'A draft can be prepared once the job is complete.'}</p></div>
+          {canManageJobs && job.status === 'COMPLETED' && !job.invoices?.length && <button className="button button-primary" type="button" disabled={invoiceDraftBusy} onClick={onPrepareInvoice}>{invoiceDraftBusy ? 'Preparing…' : 'Prepare invoice draft'}</button>}
+        </div>
+      </section>}
 
       <section className="workspace-panel">
         <div className="panel-heading"><div><h2>Customer progress link</h2><p>Only milestones explicitly marked visible are shown. The link can be revoked at any time.</p></div></div>

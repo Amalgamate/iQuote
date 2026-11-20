@@ -3485,6 +3485,7 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
     })
     if (!quote) return res.status(404).json({ message: 'Quote not found.' })
     if (quote.status !== 'APPROVED') return res.status(409).json({ message: 'Only approved quotes can be converted to jobs.' })
+    if (quote.customerId !== customerId) return res.status(400).json({ message: 'The job customer must match the customer on the accepted quote.' })
 
     // Build immutable snapshot
     acceptedQuoteSnapshot = {
@@ -3560,7 +3561,7 @@ app.get('/api/jobs', requireAuth, async (req, res) => {
       orderBy: { updatedAt: 'desc' },
       take: limit,
       skip: offset,
-      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } } },
+      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } }, invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } } },
     }),
     prisma.job.count({ where: where as never }),
   ])
@@ -3584,6 +3585,7 @@ app.get('/api/jobs/:id', requireAuth, async (req, res) => {
       activities: { orderBy: { createdAt: 'desc' }, take: 100 },
       attachments: { orderBy: { createdAt: 'desc' }, select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true, uploadedBy: true, uploaderName: true, createdAt: true } },
       quote: { select: { id: true, documentNumber: true, status: true } },
+      invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } },
     },
   })
   if (!job) return res.status(404).json({ message: 'Job not found.' })
@@ -3743,7 +3745,7 @@ app.put('/api/jobs/:id', requireAuth, async (req, res) => {
     const updated = await tx.job.update({
       where: { id: job.id },
       data: data as never,
-      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } } },
+      include: { customer: { select: { id: true, name: true } }, owner: { select: { id: true, name: true, email: true } }, invoices: { select: { id: true, invoiceNumber: true, status: true, sourceQuoteId: true } } },
     })
     await recordJobActivity(job.id, user, status && status !== job.status ? 'JOB_STATUS_CHANGED' : 'JOB_UPDATED', {
       fields: Object.keys(data),
@@ -3970,6 +3972,49 @@ app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) =>
   res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) } })
 })
 
+app.post('/api/jobs/:id/invoice-draft', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized.' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+  if (job.status !== 'COMPLETED') return res.status(409).json({ message: 'Mark the job complete before preparing its final invoice.' })
+  if (!job.quoteId || !job.acceptedQuoteSnapshot) return res.status(409).json({ message: 'This job has no accepted quote to prepare an invoice from.' })
+
+  const existing = await prisma.invoice.findFirst({ where: { organisationId, OR: [{ sourceQuoteId: job.quoteId }, { jobId: job.id }] }, select: { id: true, invoiceNumber: true, status: true } })
+  if (existing) return res.status(409).json({ message: `An invoice already exists for this job or quote (${existing.invoiceNumber}). Open it to review the current balance.` })
+
+  const snapshot = job.acceptedQuoteSnapshot as { documentNumber?: unknown; currency?: unknown; subtotal?: unknown; taxTotal?: unknown; total?: unknown; notes?: unknown; terms?: unknown; lines?: unknown }
+  const subtotal = Number(snapshot.subtotal)
+  const taxTotal = Number(snapshot.taxTotal)
+  const total = Number(snapshot.total)
+  if (![subtotal, taxTotal, total].every(Number.isFinite) || subtotal < 0 || taxTotal < 0 || Math.abs(roundMoney(subtotal + taxTotal) - roundMoney(total)) > 0.01 || !Array.isArray(snapshot.lines)) {
+    return res.status(409).json({ message: 'The saved accepted quote snapshot is incomplete. Create the invoice manually after reviewing the quote.' })
+  }
+  const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { quotePrefix: true } })
+  const invoiceNumber = await generateInvoiceNumber(organisationId, org?.quotePrefix ?? 'INV')
+  try {
+    const invoice = await prisma.$transaction(async (tx) => {
+      const created = await tx.invoice.create({
+        data: {
+          organisationId, jobId: job.id, sourceQuoteId: job.quoteId, customerId: job.customerId, invoiceNumber,
+          status: 'DRAFT', currency: typeof snapshot.currency === 'string' ? snapshot.currency : job.currency, subtotal, taxTotal, total, balanceDue: total,
+          lineItems: snapshot.lines as PrismaTypes.InputJsonValue,
+          notes: [typeof snapshot.notes === 'string' ? snapshot.notes : '', typeof snapshot.terms === 'string' ? snapshot.terms : ''].filter(Boolean).join('\n\n') || null,
+        },
+        include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } },
+      })
+      await recordJobActivity(job.id, user, 'INVOICE_DRAFT_PREPARED', { invoiceId: created.id, invoiceNumber: created.invoiceNumber, sourceQuoteId: job.quoteId }, tx)
+      return created
+    })
+    return res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) } })
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return res.status(409).json({ message: 'An invoice was just created from this quote. Refresh and review the existing invoice.' })
+    throw error
+  }
+})
+
 app.get('/api/invoices', requireAuth, async (req, res) => {
   const user = getRequestUser(req)
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
@@ -4023,6 +4068,7 @@ app.get('/api/invoices/:id', requireAuth, async (req, res) => {
     include: {
       customer: { select: { id: true, name: true, phone: true, email: true } },
       job: { select: { id: true, title: true } },
+      sourceQuote: { select: { id: true, documentNumber: true } },
       reconciliations: { orderBy: { createdAt: 'desc' }, take: 50 },
     },
   })
@@ -4668,7 +4714,7 @@ app.get('/api/export/workspace.json', requireTeamRole('OWNER', 'ADMIN'), async (
     prisma.customer.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, phone: true, email: true, archivedAt: true, createdAt: true, updatedAt: true } }),
     prisma.quote.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, documentNumber: true, status: true, currency: true, validUntil: true, notes: true, terms: true, subtotal: true, taxTotal: true, total: true, viewedAt: true, decisionComment: true, decidedAt: true, tokenRevokedAt: true, version: true, parentQuoteId: true, createdAt: true, updatedAt: true, customerId: true, lines: { orderBy: { position: 'asc' }, select: { id: true, description: true, quantity: true, unit: true, unitPrice: true, taxRate: true, position: true } } } }),
     prisma.job.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, quoteId: true, ownerId: true, owner: { select: { id: true, name: true, email: true } }, customerId: true, title: true, description: true, status: true, currency: true, startDate: true, endDate: true, acceptedQuoteSnapshot: true, createdAt: true, updatedAt: true, milestones: { orderBy: { position: 'asc' }, select: { id: true, title: true, description: true, dueDate: true, completedAt: true, position: true, customerVisible: true, createdAt: true } }, costs: { orderBy: { incurredAt: 'asc' }, select: { id: true, category: true, description: true, amount: true, currency: true, incurredBy: true, incurredAt: true, createdAt: true } }, activities: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, action: true, details: true, createdAt: true } }, attachments: { orderBy: { createdAt: 'asc' }, select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true, uploadedBy: true, uploaderName: true, createdAt: true } } } }),
-    prisma.invoice.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, jobId: true, customerId: true, invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, depositRequired: true, depositPaid: true, sentAt: true, issueDate: true, dueDate: true, notes: true, createdAt: true, updatedAt: true, payments: { orderBy: { paymentDate: 'asc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, isDeposit: true, paymentDate: true, receivedBy: true, createdAt: true, refunds: { select: { id: true, amount: true, currency: true, method: true, reference: true, reason: true, refundedAt: true, recordedByName: true, createdAt: true } }, receiptDeliveries: { orderBy: { createdAt: 'asc' }, select: { id: true, recipientEmail: true, recipientName: true, status: true, providerMessageId: true, errorMessage: true, sentAt: true, createdAt: true } } } }, paymentAllocations: { orderBy: { createdAt: 'asc' }, select: { id: true, paymentId: true, eventType: true, amount: true, currency: true, idempotencyKey: true, reason: true, actorId: true, actorName: true, createdAt: true } }, reconciliations: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, reason: true, previousAmountPaid: true, previousBalanceDue: true, correctedAmountPaid: true, correctedBalanceDue: true, createdAt: true } } } }),
+    prisma.invoice.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, jobId: true, sourceQuoteId: true, lineItems: true, customerId: true, invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, depositRequired: true, depositPaid: true, sentAt: true, issueDate: true, dueDate: true, notes: true, createdAt: true, updatedAt: true, payments: { orderBy: { paymentDate: 'asc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, isDeposit: true, paymentDate: true, receivedBy: true, createdAt: true, refunds: { select: { id: true, amount: true, currency: true, method: true, reference: true, reason: true, refundedAt: true, recordedByName: true, createdAt: true } }, receiptDeliveries: { orderBy: { createdAt: 'asc' }, select: { id: true, recipientEmail: true, recipientName: true, status: true, providerMessageId: true, errorMessage: true, sentAt: true, createdAt: true } } } }, paymentAllocations: { orderBy: { createdAt: 'asc' }, select: { id: true, paymentId: true, eventType: true, amount: true, currency: true, idempotencyKey: true, reason: true, actorId: true, actorName: true, createdAt: true } }, reconciliations: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, reason: true, previousAmountPaid: true, previousBalanceDue: true, correctedAmountPaid: true, correctedBalanceDue: true, createdAt: true } } } }),
     prisma.invoicePaymentAttempt.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, invoiceId: true, requestedBy: true, provider: true, merchantType: true, merchantCode: true, invoiceNumber: true, transactionId: true, providerReference: true, phone: true, amount: true, currency: true, status: true, statusDescription: true, createdAt: true, updatedAt: true, completedAt: true } }),
     prisma.serviceItem.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, category: true, kind: true, description: true, unit: true, defaultPrice: true, defaultTaxRate: true, active: true, isStarter: true, createdAt: true, updatedAt: true } }),
     prisma.quoteTemplate.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, description: true, workflow: true, lineItems: true, defaultNotes: true, defaultTerms: true, isStarter: true, version: true, createdAt: true, updatedAt: true } }),

@@ -1217,7 +1217,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           </section>
         )}
 
-        {page === 'jobs' && business && <JobsPanel business={business} customers={customers} currency={business.currency} canManageJobs={user.teamRole === 'OWNER' || user.teamRole === 'ADMIN'} />}
+        {page === 'jobs' && business && <JobsPanel business={business} customers={customers} currency={business.currency} canManageJobs={user.teamRole === 'OWNER' || user.teamRole === 'ADMIN'} onInvoiceCreated={() => setPage('invoices')} />}
 
         {page === 'invoices' && business && <InvoicesPanel business={business} customers={customers} currency={business.currency} canManageFinancials={user.teamRole !== 'MEMBER'} />}
 

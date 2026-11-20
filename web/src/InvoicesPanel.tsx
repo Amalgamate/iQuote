@@ -34,6 +34,9 @@ type Invoice = {
   customer: { id: string; name: string; phone?: string | null; email?: string | null }
   jobId: string | null
   job?: { id: string; title: string } | null
+  sourceQuoteId?: string | null
+  sourceQuote?: { id: string; documentNumber: string } | null
+  lineItems?: Array<{ description: string; quantity: number; unit: string; unitPrice: number; taxRate: number | null }> | null
   subtotal: number
   taxTotal: number
   total: number
@@ -555,7 +558,7 @@ function InvoiceDetail({ invoice, business, customers, onBack, onSend, onInvoice
         <div className="panel-heading">
           <div>
             <h2>Invoice information</h2>
-            <p>{customer?.name ?? '—'} · {invoice.job?.title ?? 'No linked job'}</p>
+            <p>{customer?.name ?? '—'} · {invoice.job?.title ?? 'No linked job'}{invoice.sourceQuote?.documentNumber ? ` · From ${invoice.sourceQuote.documentNumber}` : ''}</p>
           </div>
           <span className={invoiceStatusClasses[invoice.status]}>{invoiceStatusNames[invoice.status]}</span>
         </div>
@@ -578,6 +581,13 @@ function InvoiceDetail({ invoice, business, customers, onBack, onSend, onInvoice
         </div>
         {invoice.notes && <div className="job-description"><span>Notes</span><p>{invoice.notes}</p></div>}
       </section>
+
+      {invoice.lineItems?.length ? <section className="workspace-panel">
+        <div className="panel-heading"><div><h2>Quoted work</h2><p>Copied from the accepted quote. Review before sending the invoice.</p></div></div>
+        <div className="table-scroll"><table className="data-table"><thead><tr><th>Description</th><th>Quantity</th><th>Unit</th><th>Unit price</th><th>Tax</th><th>Line amount</th></tr></thead><tbody>
+          {invoice.lineItems.map((line, index) => <tr key={`${line.description}-${index}`}><td><strong>{line.description}</strong></td><td>{line.quantity}</td><td>{line.unit}</td><td>{formatMoney(line.unitPrice, invoice.currency)}</td><td>{line.taxRate === null ? '—' : `${line.taxRate}%`}</td><td>{formatMoney(line.quantity * line.unitPrice, invoice.currency)}</td></tr>)}
+        </tbody></table></div>
+      </section> : null}
 
       <section className="workspace-panel">
         <div className="panel-heading">
