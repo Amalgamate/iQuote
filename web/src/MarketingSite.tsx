@@ -19,6 +19,47 @@ const FACES = {
   personaConsultant: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?w=120&h=120&fit=crop&crop=face&auto=format',
 }
 
+const africanMarkets = [
+  { country: 'Kenya', currency: 'KES', name: 'Kenyan shilling' },
+  { country: 'Uganda', currency: 'UGX', name: 'Ugandan shilling' },
+  { country: 'Tanzania', currency: 'TZS', name: 'Tanzanian shilling' },
+  { country: 'Rwanda', currency: 'RWF', name: 'Rwandan franc' },
+  { country: 'Nigeria', currency: 'NGN', name: 'Nigerian naira' },
+  { country: 'Ghana', currency: 'GHS', name: 'Ghanaian cedi' },
+  { country: 'South Africa', currency: 'ZAR', name: 'South African rand' },
+  { country: 'Egypt', currency: 'EGP', name: 'Egyptian pound' },
+  { country: 'Morocco', currency: 'MAD', name: 'Moroccan dirham' },
+  { country: 'Ethiopia', currency: 'ETB', name: 'Ethiopian birr' },
+  { country: 'Algeria', currency: 'DZD', name: 'Algerian dinar' },
+  { country: 'Angola', currency: 'AOA', name: 'Angolan kwanza' },
+  { country: 'Botswana', currency: 'BWP', name: 'Botswana pula' },
+  { country: 'Zambia', currency: 'ZMW', name: 'Zambian kwacha' },
+  { country: 'Malawi', currency: 'MWK', name: 'Malawian kwacha' },
+  { country: 'Mozambique', currency: 'MZN', name: 'Mozambican metical' },
+  { country: 'Namibia', currency: 'NAD', name: 'Namibian dollar' },
+  { country: 'Mauritius', currency: 'MUR', name: 'Mauritian rupee' },
+  { country: 'Madagascar', currency: 'MGA', name: 'Malagasy ariary' },
+  { country: 'Senegal', currency: 'XOF', name: 'West African CFA franc' },
+  { country: 'Côte d’Ivoire', currency: 'XOF', name: 'West African CFA franc' },
+  { country: 'Cameroon', currency: 'XAF', name: 'Central African CFA franc' },
+  { country: 'DR Congo', currency: 'CDF', name: 'Congolese franc' },
+  { country: 'Tunisia', currency: 'TND', name: 'Tunisian dinar' },
+  { country: 'Zimbabwe', currency: 'ZWG', name: 'Zimbabwe Gold' },
+  { country: 'Eswatini', currency: 'SZL', name: 'Swazi lilangeni' },
+]
+
+const featuredAfricanMarkets = [
+  africanMarkets[0], // Kenya
+  africanMarkets[1], // Uganda
+  africanMarkets[2], // Tanzania
+  africanMarkets[3], // Rwanda
+  africanMarkets[6], // South Africa
+]
+
+const countryFlagCodes: Record<string, string> = {
+  Kenya: 'ke', Uganda: 'ug', Tanzania: 'tz', Rwanda: 'rw', 'South Africa': 'za',
+}
+
 const testimonials = [
   {
     quote: "Before iQuote I was sending PDFs that clients couldn't even open on their phones. Now they approve on the same day — sometimes within the hour.",
@@ -49,8 +90,8 @@ const planCards: Array<{ id: Plan; name: string; detail: string; features: strin
   { id: 'TEAM', name: 'Team', detail: 'For a team quoting together', features: ['Everything in Growth', 'Team members (coming soon)', 'Role controls (coming soon)'] },
 ]
 
-export default function MarketingSite() {
-  const [screen, setScreen] = useState<'landing' | 'signup' | 'login' | 'market'>(() => window.location.pathname === '/market' ? 'market' : 'landing')
+export default function MarketingSite({ initialScreen }: { initialScreen?: 'login' } = {}) {
+  const [screen, setScreen] = useState<'landing' | 'signup' | 'login' | 'market'>(() => initialScreen ?? (window.location.pathname === '/market' ? 'market' : 'landing'))
   const [step, setStep] = useState<Step>(1)
   const [resendWait, setResendWait] = useState(0)
   const [name, setName] = useState('')
@@ -69,6 +110,8 @@ export default function MarketingSite() {
   const [loginEmail, setLoginEmail] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
   const [loginMfaRequired, setLoginMfaRequired] = useState(false)
+  const [loginMfaSetupRequired, setLoginMfaSetupRequired] = useState(false)
+  const [loginMfaSecret, setLoginMfaSecret] = useState('')
   const [loginMfaCode, setLoginMfaCode] = useState('')
   const [stageView, setStageView] = useState<'paper' | 'mockup'>('paper')
   const [quoteApproved, setQuoteApproved] = useState(false)
@@ -175,9 +218,13 @@ export default function MarketingSite() {
     setBusy(true)
     setError('')
     try {
-      const result = await apiRequest<{ mfaRequired?: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: loginEmail, password: loginPassword }) })
+      const result = await apiRequest<{ mfaRequired?: boolean; mfaSetupRequired?: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: loginEmail, password: loginPassword }) })
       if (result.mfaRequired) setLoginMfaRequired(true)
-      else window.location.reload()
+      else if (result.mfaSetupRequired) {
+        const setup = await apiRequest<{ secret: string }>('/api/superadmin/mfa/setup')
+        setLoginMfaSecret(setup.secret)
+        setLoginMfaSetupRequired(true)
+      } else window.location.reload()
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to sign in.')
       setBusy(false)
@@ -189,7 +236,8 @@ export default function MarketingSite() {
     setBusy(true)
     setError('')
     try {
-      await apiRequest('/api/auth/superadmin-mfa/verify', { method: 'POST', body: JSON.stringify({ code: loginMfaCode }) })
+      if (loginMfaSetupRequired) await apiRequest('/api/superadmin/mfa/verify', { method: 'POST', body: JSON.stringify({ code: loginMfaCode }) })
+      else await apiRequest('/api/auth/superadmin-mfa/verify', { method: 'POST', body: JSON.stringify({ code: loginMfaCode }) })
       window.location.reload()
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to verify code.')
@@ -202,7 +250,7 @@ export default function MarketingSite() {
   if (screen === 'landing') {
     return <div className="site-page">
       <header className="site-header">
-        <a href="#top" className="site-brand" aria-label="iQuote home"><span className="site-brand-mark">iQ</span><span>iQuote<span className="site-brand-dot">.</span></span></a>
+        <a href="#top" className="site-brand" aria-label="iQuote home"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a>
         <nav className="site-nav"><a href="#how">How it works</a><a href="#features">Features</a><a href="/market">Market <span className="market-nav-badge">Preview</span></a><a href="#plans">Plans</a></nav>
         <div className="site-header-actions"><button className="site-login" onClick={() => { setScreen('login'); setError('') }}>Sign in</button><button className="site-cta site-cta-small" onClick={startSignup}>Start your trial <span>↗</span></button></div>
       </header>
@@ -262,7 +310,7 @@ export default function MarketingSite() {
                 <img src={heroMockup} alt="iQuote 3D preview on tablet" className="hero-mockup-img" />
               </div>
             ) : (
-              <article className="quote-paper">
+              <article className="marketing-quote-paper">
                 <div className="paper-top"><span className="paper-logo">NORTH<span> / </span>STUDIO</span><span className="paper-label">QUOTATION<br /><b>QT-2026-0048</b></span></div>
                 <div className="paper-rule" />
                 <div className="paper-meta"><div><small>PREPARED FOR</small><b>Horizon House</b><span>Westlands, Nairobi</span></div><div><small>VALID UNTIL</small><b>18 Dec 2026</b><span>Prepared 18 Nov 2026</span></div></div>
@@ -385,6 +433,23 @@ export default function MarketingSite() {
             </article>
           </div>
         </section>
+        <section className="site-africa" id="africa">
+          <div className="africa-copy">
+            <p className="site-kicker"><span className="kicker-rule" /> BUILT FOR BUSINESS ACROSS AFRICA</p>
+            <h2>Quote in your<br /><em>local currency.</em></h2>
+            <p>Local currency support across 26 African markets, with more being added. Here are a few of the countries we support.</p>
+            <div className="africa-payments">
+              <span className="africa-payments-icon" aria-hidden="true">↗</span>
+              <div><strong>Mobile money integrations in progress</strong><p>We’re working to connect MTN MoMo, Airtel Money, and more providers, market by market.</p><div className="africa-provider-list"><span>MTN MoMo</span><span>Airtel Money</span><span>More networks</span></div></div>
+            </div>
+            <small className="africa-availability-note">Payment availability depends on local provider support. Currency support does not mean mobile payments are live in every market.</small>
+          </div>
+          <div className="africa-market-panel">
+            <div className="africa-market-panel-heading"><span>SUPPORTED MARKETS</span><strong>26+ <small>across Africa</small></strong></div>
+            <div className="africa-currency-grid">{featuredAfricanMarkets.map((market) => <div className="africa-currency-chip" key={market.country} title={`${market.country} · ${market.name}`}><img className="africa-country-flag" src={`https://flagcdn.com/w80/${countryFlagCodes[market.country]}.png`} srcSet={`https://flagcdn.com/w160/${countryFlagCodes[market.country]}.png 2x`} alt={`${market.country} flag`} loading="lazy" /><span className="africa-country-name">{market.country}</span><strong>{market.currency}</strong></div>)}</div>
+            <p>Including more countries and currencies across the continent.</p>
+          </div>
+        </section>
         <section className="site-market" id="market">
           <div className="market-heading">
             <div>
@@ -421,21 +486,21 @@ export default function MarketingSite() {
         <section className="site-plans" id="plans"><div><p className="site-kicker">A PLAN FOR YOUR NEXT CHAPTER</p><h2>Start simple.<br /><em>Grow when ready.</em></h2><p className="plan-note">Every plan begins with a 14-day local preview. Pick the workspace shape you want to explore; billing can be connected later.</p></div><div className="plan-tiles">{planCards.map((item, index) => <article key={item.id} className={index === 1 ? 'plan-tile plan-featured' : 'plan-tile'}><div className="plan-tile-top"><span>{item.name}</span>{index === 1 && <small>GOOD PLACE TO START</small>}</div><p>{item.detail}</p><ul>{item.features.map(feature => <li key={feature}><span>✓</span>{feature}</li>)}</ul><button className={index === 1 ? 'site-cta' : 'site-plan-link'} onClick={startSignup}>Explore this plan <span>↗</span></button></article>)}</div></section>
         <section className="site-final-cta"><div><p className="site-kicker">A CALMER QUOTING DESK STARTS HERE</p><h2>Make your next quote<br />your best one yet.</h2></div><button className="site-cta site-cta-light" onClick={startSignup}>Set up iQuote <span>↗</span></button></section>
       </main>
-      <footer className="site-footer"><a href="#top" className="site-brand"><span className="site-brand-mark">iQ</span><span>iQuote<span className="site-brand-dot">.</span></span></a><span>Thoughtful quoting for growing businesses.</span><span>© iQuote · Local preview</span></footer>
+      <footer className="site-footer"><a href="#top" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>Thoughtful quoting for growing businesses.</span><span>© iQuote · Local preview</span></footer>
       <ChatbotWidget onStartTrial={startSignup} />
     </div>
   }
 
-  if (screen === 'login' && loginMfaRequired) return <div className="onboarding-page onboarding-page-no-header"><div className="onboarding-layout login-layout"><section className="onboarding-form-side"><div className="onboarding-form-wrap"><div className="login-brand-row"><span className="site-brand"><span className="site-brand-mark">iQ</span><span>iQuote<span className="site-brand-dot">.</span></span></span></div><p className="site-kicker">SUPERADMIN SECURITY</p><h1>Verify it’s you.</h1><p className="onboarding-copy">Enter the six-digit code from your authenticator app to open the admin dashboard.</p><form onSubmit={verifyLoginMfa} className="onboarding-form"><label>Authenticator code<input className="code-input" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" required value={loginMfaCode} onChange={event => setLoginMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Verifying…' : 'Verify and continue'} <span>↗</span></button><button type="button" className="back-link" onClick={async () => { await apiRequest('/api/auth/logout', { method: 'POST' }).catch(() => {}); setLoginMfaRequired(false); setLoginMfaCode('') }}>← Back to sign in</button></form></div></section><OnboardingAside /></div></div>
-  if (screen === 'login') return <div className="onboarding-page onboarding-page-no-header"><div className="onboarding-layout login-layout"><section className="onboarding-form-side"><div className="onboarding-form-wrap"><div className="login-brand-row"><button className="site-brand" onClick={() => setScreen('landing')}><span className="site-brand-mark">iQ</span><span>iQuote<span className="site-brand-dot">.</span></span></button></div><p className="site-kicker">YOUR WORKSPACE IS WAITING</p><h1>Welcome back.</h1><p className="onboarding-copy">Sign in to pick up where your business left off.</p><form onSubmit={login} className="onboarding-form"><label>Email address<input type="email" required autoComplete="email" value={loginEmail} onChange={event => setLoginEmail(event.target.value)} placeholder="you@yourbusiness.com" /></label><label>Password<input type="password" required autoComplete="current-password" value={loginPassword} onChange={event => setLoginPassword(event.target.value)} placeholder="Your password" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'} <span>↗</span></button></form><p className="login-footer-link">New to iQuote? <button className="inline-action" onClick={startSignup}>Create an account</button></p></div></section><OnboardingAside /></div></div>
+  if (screen === 'login' && (loginMfaRequired || loginMfaSetupRequired)) return <div className="onboarding-page onboarding-page-no-header"><div className="onboarding-layout login-layout"><section className="onboarding-form-side"><div className="onboarding-form-wrap"><div className="login-brand-row"><span className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></span></div><p className="site-kicker">SUPERADMIN SECURITY</p><h1>{loginMfaSetupRequired ? 'Protect your account.' : 'Verify it’s you.'}</h1><p className="onboarding-copy">{loginMfaSetupRequired ? 'Super-admin accounts require an authenticator. Add this key to an authenticator app, then confirm its six-digit code.' : 'Enter the six-digit code from your authenticator app to open the admin dashboard.'}</p>{loginMfaSetupRequired && <div className="simulation-code"><span>AUTHENTICATOR SETUP KEY</span><b>{loginMfaSecret}</b><small>Account: {loginEmail} · Issuer: iQuote</small></div>}<form onSubmit={verifyLoginMfa} className="onboarding-form"><label>Authenticator code<input className="code-input" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" required value={loginMfaCode} onChange={event => setLoginMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Verifying…' : loginMfaSetupRequired ? 'Enable and continue' : 'Verify and continue'} <span>↗</span></button><button type="button" className="back-link" onClick={async () => { await apiRequest('/api/auth/logout', { method: 'POST' }).catch(() => {}); setLoginMfaRequired(false); setLoginMfaSetupRequired(false); setLoginMfaCode(''); setLoginMfaSecret('') }}>← Back to sign in</button></form></div></section><OnboardingAside /></div></div>
+  if (screen === 'login') return <div className="onboarding-page onboarding-page-no-header"><div className="onboarding-layout login-layout"><section className="onboarding-form-side"><div className="onboarding-form-wrap"><div className="login-brand-row"><button className="site-brand" onClick={() => setScreen('landing')}><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></button></div><p className="site-kicker">YOUR WORKSPACE IS WAITING</p><h1>Welcome back.</h1><p className="onboarding-copy">Sign in to pick up where your business left off.</p><form onSubmit={login} className="onboarding-form"><label>Email address<input type="email" required autoComplete="email" value={loginEmail} onChange={event => setLoginEmail(event.target.value)} placeholder="you@yourbusiness.com" /></label><label>Password<input type="password" required autoComplete="current-password" value={loginPassword} onChange={event => setLoginPassword(event.target.value)} placeholder="Your password" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'} <span>↗</span></button></form><p className="login-footer-link">New to iQuote? <button className="inline-action" onClick={startSignup}>Create an account</button></p></div></section><OnboardingAside /></div></div>
 
   const labels = ['Account', 'Verify email', 'Business', 'Plan']
   const back = () => { setError(''); setNotice(''); setStep((current) => Math.max(1, current - 1) as Step) }
-  return <div className="onboarding-page"><header className="onboarding-header"><button className="site-brand" onClick={() => setScreen('landing')}><span className="site-brand-mark">iQ</span><span>iQuote<span className="site-brand-dot">.</span></span></button><span>Already have an account? <button className="inline-action" onClick={() => { setScreen('login'); setError('') }}>Sign in</button></span></header><div className="onboarding-layout"><section className="onboarding-form-side">
+  return <div className="onboarding-page"><header className="onboarding-header"><button className="site-brand" onClick={() => setScreen('landing')}><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></button><span>Already have an account? <button className="inline-action" onClick={() => { setScreen('login'); setError('') }}>Sign in</button></span></header><div className="onboarding-layout"><section className="onboarding-form-side">
     {step < 4 ? <div className="onboarding-form-wrap"><div className="step-progress" aria-label={`Step ${step} of 4`}>{labels.map((label, index) => <div key={label} className={step === index + 1 ? 'progress-item current' : step > index + 1 ? 'progress-item complete' : 'progress-item'}><span>{step > index + 1 ? '✓' : `0${index + 1}`}</span><small>{label}</small></div>)}</div>
       {step === 1 && <><p className="site-kicker">STEP 01 · YOUR ACCOUNT</p><h1>Let’s get your<br />workspace started.</h1><p className="onboarding-copy">Create your sign-in. We’ll verify your email before setting up your business.</p><form onSubmit={requestCode} className="onboarding-form"><label>Full name<input required autoComplete="name" value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Asha Njeri" /></label><label>Work email<input required type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="you@yourbusiness.com" /></label><label>Password<input required type="password" autoComplete="new-password" minLength={8} value={password} onChange={event => setPassword(event.target.value)} placeholder="At least 8 characters" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Sending code…' : 'Continue with email'} <span>↗</span></button><small className="terms-note">By continuing, you agree to iQuote’s terms and privacy policy.</small></form></>}
       {step === 2 && <><p className="site-kicker">STEP 02 · EMAIL VERIFICATION</p><h1>Check your<br />inbox.</h1><p className="onboarding-copy">We sent a six-digit code to <b>{email}</b>. Enter it below to keep going.</p>{notice && <p className="onboarding-notice">{notice}</p>}{localCode && <div className="simulation-code"><span>LOCAL PREVIEW CODE</span><b>{localCode}</b></div>}<form onSubmit={verifyCode} className="onboarding-form"><label>Six-digit code<input className="code-input" required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={code} onChange={event => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Verifying…' : 'Verify and continue'} <span>↗</span></button><button type="button" className="resend-code" disabled={busy} onClick={() => { setError(''); void requestCode(new Event('submit') as unknown as FormEvent<HTMLFormElement>) }}>Resend code</button></form><button className="back-link" onClick={back}>← Change email address</button></>}
-      {step === 3 && <><p className="site-kicker">STEP 03 · YOUR BUSINESS</p><h1>Tell us about<br />your business.</h1><p className="onboarding-copy">Choose what you do. We’ll start your workspace with relevant service categories and quote templates. You can change everything later.</p><form onSubmit={event => { event.preventDefault(); setStep(4); setError('') }} className="onboarding-form"><label>Business name<input required autoComplete="organization" value={businessName} onChange={event => setBusinessName(event.target.value)} placeholder="e.g. North Studio" /></label><label>Business type<select required value={businessType} onChange={event => setBusinessType(event.target.value)}><option value="" disabled>Choose a business type</option><option>Handyman / home repair</option><option>Plumbing</option><option>Electrical</option><option>Cleaning &amp; maintenance</option><option>Construction &amp; contracting</option><option>Consulting &amp; professional services</option><option>Creative studio</option><option>Retail &amp; product sales</option><option>Other service business</option></select></label><div className="onboarding-two"><label>Country<select value={country} onChange={event => setCountry(event.target.value)}><option>Kenya</option><option>Uganda</option><option>Tanzania</option><option>Rwanda</option><option>United States</option><option>United Kingdom</option><option>Other</option></select></label><label>Phone number <span className="optional-label">optional</span><input type="tel" autoComplete="tel" value={phone} onChange={event => setPhone(event.target.value)} placeholder="+254 700 000 000" /></label></div>{notice && <p className="onboarding-notice">{notice}</p>}<button className="site-cta onboarding-submit">Continue to plans <span>↗</span></button></form><button className="back-link" onClick={back}>← Back</button></>}
+      {step === 3 && <><p className="site-kicker">STEP 03 · YOUR BUSINESS</p><h1>Tell us about<br />your business.</h1><p className="onboarding-copy">Choose what you do. We’ll start your workspace with relevant service categories and quote templates. You can change everything later.</p><form onSubmit={event => { event.preventDefault(); setStep(4); setError('') }} className="onboarding-form"><label>Business name<input required autoComplete="organization" value={businessName} onChange={event => setBusinessName(event.target.value)} placeholder="e.g. North Studio" /></label><label>Business type<select required value={businessType} onChange={event => setBusinessType(event.target.value)}><option value="" disabled>Choose a business type</option><option>Handyman / home repair</option><option>Plumbing</option><option>Electrical</option><option>Cleaning &amp; maintenance</option><option>Construction &amp; contracting</option><option>Consulting &amp; professional services</option><option>Creative studio</option><option>Retail &amp; product sales</option><option>Other service business</option></select></label><div className="onboarding-two"><label>Country<select value={country} onChange={event => setCountry(event.target.value)}>{africanMarkets.map((market) => <option key={market.country}>{market.country}</option>)}<option>United Kingdom</option><option>United States</option><option>Other</option></select></label><label>Phone number <span className="optional-label">optional</span><input type="tel" autoComplete="tel" value={phone} onChange={event => setPhone(event.target.value)} placeholder="+254 700 000 000" /></label></div>{notice && <p className="onboarding-notice">{notice}</p>}<button className="site-cta onboarding-submit">Continue to plans <span>↗</span></button></form><button className="back-link" onClick={back}>← Back</button></>}
     </div> : <div className="onboarding-form-wrap completion-wrap"><div className="completion-check">✓</div><p className="site-kicker">YOUR TRIAL WORKSPACE IS READY</p><h1>Welcome to<br />{businessName}.</h1><p className="onboarding-copy">Your <b>{planCards.find(item => item.id === plan)?.name}</b> plan is active in local preview for 14 days. No payment details were collected.</p>{notice && <p className="onboarding-notice">{notice}</p>}<div className="completion-summary"><span>Business</span><b>{businessName}</b><span>Plan</span><b>{planCards.find(item => item.id === plan)?.name} · 14-day trial</b><span>Account</span><b>{email}</b></div><button className="site-cta onboarding-submit" onClick={() => window.location.reload()}>Open your workspace <span>↗</span></button></div>}
   </section><OnboardingAside />{step === 4 && <div className="plan-picker" role="dialog" aria-label="Choose a trial plan"><div className="plan-picker-inner"><p className="site-kicker">STEP 04 · CHOOSE A TRIAL PLAN</p><h2>Choose your workspace shape.</h2><p className="plan-picker-copy">No card. No charge. This local plan selection is simulated while billing is built.</p><div className="signup-plan-list">{planCards.map(item => <button type="button" key={item.id} onClick={() => setPlan(item.id)} className={plan === item.id ? 'signup-plan selected' : 'signup-plan'}><span className="radio-dot">{plan === item.id && <i />}</span><span className="signup-plan-text"><b>{item.name}</b><small>{item.detail}</small><em>{item.features.join(' · ')}</em></span><span className="trial-pill">14-day trial</span></button>)}</div>{error && <p className="onboarding-error">{error}</p>}<div className="plan-picker-actions"><button className="back-link" onClick={back}>← Back</button><button className="site-cta" disabled={busy} onClick={event => { event.preventDefault(); void completeSignup(new Event('submit') as unknown as FormEvent<HTMLFormElement>) }}>{busy ? 'Creating workspace…' : 'Create trial workspace'} <span>↗</span></button></div></div></div>}</div></div>
 }
@@ -452,7 +517,7 @@ function MarketLanding() {
 
   return <div className="site-page market-page">
     <header className="site-header">
-      <a href="/" className="site-brand" aria-label="iQuote home"><span className="site-brand-mark">iQ</span><span>iQuote<span className="site-brand-dot">.</span></span></a>
+      <a href="/" className="site-brand" aria-label="iQuote home"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a>
       <nav className="site-nav" aria-label="Market navigation"><a href="/">Home</a><a href="#how-market">How it works</a><a href="#vendor-steps">Become a vendor</a></nav>
       <div className="site-header-actions"><span className="market-preview-label">Concept preview</span><a className="site-cta site-cta-small" href="#vendor-steps">Vendor guide <span>↓</span></a></div>
     </header>
@@ -515,7 +580,7 @@ function MarketLanding() {
       </section>
       <section className="market-customer-steps" id="customer-steps"><div><p className="site-kicker">FOR CUSTOMERS</p><h2>From a request to a confident choice.</h2></div><div className="market-customer-flow"><div><span>01</span><b>Post the essentials</b><small>Scope, location, budget guide, and deadline.</small></div><div><span>02</span><b>Compare proposals</b><small>Invited businesses respond privately.</small></div><div><span>03</span><b>Choose who to work with</b><small>Continue into a quote and delivery workflow.</small></div></div></section>
     </main>
-    <footer className="site-footer"><a href="/" className="site-brand"><span className="site-brand-mark">iQ</span><span>iQuote<span className="site-brand-dot">.</span></span></a><span>iQuote Market · Concept preview</span><a href="/">Return to iQuote</a></footer>
+    <footer className="site-footer"><a href="/" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>iQuote Market · Concept preview</span><a href="/">Return to iQuote</a></footer>
   </div>
 }
 

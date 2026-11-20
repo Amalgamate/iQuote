@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { apiRequest, formatMoney } from './api'
+import PwaControls from './PwaControls'
 import './Workspace.css'
 
 type SuperadminStats = {
@@ -73,13 +74,42 @@ type AuditEvent = {
   createdAt: string
 }
 type PaginatedAudit = { events: AuditEvent[]; totalCount: number; hasMore: boolean }
+type AdminAccount = { id: string; name: string; email: string; role: string; mfaEnabled: boolean; createdAt: string; workspace: { id: string; name: string | null; status: string } | null; activeSessionCount: number }
+type AdminSession = { id: string; createdAt: string; expiresAt: string }
+type PaginatedUsers = { users: AdminAccount[]; totalCount: number; hasMore: boolean }
+type OperationsSnapshot = {
+  checkedAt: string
+  uptimeSeconds: number
+  database: string
+  emailProvider: string
+  emailProviderHealth: string
+  sender: string
+  webhookSecret: string
+  deliveryCounts24h: Record<string, number>
+  deliveryCounts7d: Record<string, number>
+  incidents: Array<{ id: string; status: string; recipientEmail: string; errorMessage: string | null; createdAt: string; quote: { id: string; documentNumber: string; organisation: { id: string; name: string } } }>
+  webhook: { latest: { source: string; eventType: string; processingStatus: string; processingError: string | null; receivedAt: string; processedAt: string | null } | null; events24h: number; failures24h: number; failures: Array<{ id: string; source: string; eventType: string; processingError: string | null; receivedAt: string }> }
+}
+type PlatformReport = {
+  range: string
+  from: string
+  to: string
+  bucket: string
+  currencyTotals: Array<{ currency: string; quoted: number; invoiced: number; invoicePaid: number; receivables: number; paymentsRecorded: number }>
+  periods: Array<{ bucket: string; currency: string; quoteCount: number; quoted: number; invoiceCount: number; invoiced: number; paymentCount: number; paymentsRecorded: number }>
+  reconciliation: { issueCount: number; invoices: Array<{ id: string; organisation: string; invoiceNumber: string; currency: string; invoiceTotal: number; invoicePaid: number; paymentEvents: number; balanceDue: number; updatedAt: string }> }
+}
+
+type PlatformPlanPrice = { plan: string; amount: number | null; currency: string; source: 'ADMIN' | 'ENVIRONMENT' | 'UNSET' }
 
 type User = { id: string; name: string; email: string; role: string }
 
-type SuperadminPage = 'overview' | 'workspaces' | 'quotes' | 'signups' | 'security' | 'activity'
+type SuperadminPage = 'overview' | 'workspaces' | 'quotes' | 'signups' | 'security' | 'activity' | 'accounts' | 'operations' | 'reports' | 'pricing'
 
 type PaginatedWorkspaces = { workspaces: WorkspaceRow[]; totalCount: number; hasMore: boolean }
 type PaginatedQuotes = { quotes: RecentQuote[]; totalCount: number; hasMore: boolean }
+
+const BILLING_PLAN_NAMES = ['STARTER', 'GROWTH', 'TEAM'] as const
 
 function planBadgeClass(status: string) {
   if (status === 'TRIALING') return 'plan-badge plan-trial'
@@ -129,6 +159,23 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   const [auditHasMore, setAuditHasMore] = useState(false)
   const [auditSearch, setAuditSearch] = useState('')
   const [auditLoading, setAuditLoading] = useState(false)
+  const [adminUsers, setAdminUsers] = useState<AdminAccount[]>([])
+  const [accountsTotal, setAccountsTotal] = useState(0)
+  const [accountsHasMore, setAccountsHasMore] = useState(false)
+  const [accountSearch, setAccountSearch] = useState('')
+  const [accountsLoading, setAccountsLoading] = useState(false)
+  const [selectedAccount, setSelectedAccount] = useState<AdminAccount | null>(null)
+  const [accountSessions, setAccountSessions] = useState<AdminSession[]>([])
+  const [operations, setOperations] = useState<OperationsSnapshot | null>(null)
+  const [operationsLoading, setOperationsLoading] = useState(false)
+  const [platformReport, setPlatformReport] = useState<PlatformReport | null>(null)
+  const [platformReportRange, setPlatformReportRange] = useState('30d')
+  const [platformReportLoading, setPlatformReportLoading] = useState(false)
+  const [planPrices, setPlanPrices] = useState<PlatformPlanPrice[]>([])
+  const [priceInputs, setPriceInputs] = useState<Record<string, string>>({ STARTER: '', GROWTH: '', TEAM: '' })
+  const [priceReason, setPriceReason] = useState('')
+  const [priceMessage, setPriceMessage] = useState('')
+  const [priceBusy, setPriceBusy] = useState(false)
 
   const WORKSPACE_PAGE_SIZE = 50
   const QUOTE_PAGE_SIZE = 50
@@ -148,6 +195,67 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     setQuotesTotal(quotesRes.totalCount)
   }
 
+  const loadOperations = async () => {
+    setOperationsLoading(true)
+    try {
+      setOperations(await apiRequest<OperationsSnapshot>('/api/superadmin/operations'))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load platform operations.')
+    } finally { setOperationsLoading(false) }
+  }
+
+  const reprocessWebhook = async (id: string) => {
+    const reason = window.prompt('Why are you reprocessing this webhook?')?.trim()
+    if (!reason) return
+    try {
+      await apiRequest(`/api/superadmin/operations/webhooks/${encodeURIComponent(id)}/reprocess`, { method: 'POST', body: JSON.stringify({ reason }) })
+      await loadOperations()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reprocess webhook.')
+    }
+  }
+
+  const loadPlatformReport = async (range = platformReportRange) => {
+    setPlatformReportLoading(true)
+    try {
+      setPlatformReport(await apiRequest<PlatformReport>(`/api/superadmin/reports?range=${encodeURIComponent(range)}`))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load platform financial reporting.')
+    } finally { setPlatformReportLoading(false) }
+  }
+
+  const loadPlanPrices = async () => {
+    try {
+      const result = await apiRequest<{ prices: PlatformPlanPrice[] }>('/api/superadmin/billing/prices')
+      setPlanPrices(result.prices)
+      setPriceInputs(Object.fromEntries(result.prices.map((item) => [item.plan, item.amount === null ? '' : String(item.amount)])))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load plan prices.')
+    }
+  }
+
+  const savePlanPrices = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setPriceBusy(true)
+    setPriceMessage('')
+    setError('')
+    try {
+      const result = await apiRequest<{ prices: PlatformPlanPrice[]; message: string }>('/api/superadmin/billing/prices', {
+        method: 'PUT',
+        body: JSON.stringify({
+          reason: priceReason,
+          prices: BILLING_PLAN_NAMES.map((plan) => ({ plan, amount: priceInputs[plan].trim() === '' ? null : Number(priceInputs[plan]) })),
+        }),
+      })
+      setPlanPrices(result.prices)
+      setPriceInputs(Object.fromEntries(result.prices.map((item) => [item.plan, item.amount === null ? '' : String(item.amount)])))
+      setPriceReason('')
+      setPriceMessage(result.message)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save plan prices.')
+    } finally { setPriceBusy(false) }
+  }
+
   useEffect(() => {
     loadAll()
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load dashboard data.'))
@@ -159,6 +267,8 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     setError('')
     try {
       await loadAll()
+      if (page === 'operations') await loadOperations()
+      if (page === 'reports') await loadPlatformReport()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to refresh data.')
     } finally {
@@ -274,9 +384,66 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     } finally { setAuditLoading(false) }
   }
 
+  const fetchAdminUsers = async (offset = 0, append = false) => {
+    setAccountsLoading(true)
+    try {
+      const query = new URLSearchParams({ limit: '50', offset: String(offset), ...(accountSearch.trim() ? { q: accountSearch.trim() } : {}) })
+      const result = await apiRequest<PaginatedUsers>(`/api/superadmin/users?${query}`)
+      setAdminUsers((current) => append ? [...current, ...result.users] : result.users)
+      setAccountsTotal(result.totalCount)
+      setAccountsHasMore(result.hasMore)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load user accounts.')
+    } finally { setAccountsLoading(false) }
+  }
+
+  const openAccountSessions = async (account: AdminAccount) => {
+    setSelectedAccount(account)
+    setAccountSessions([])
+    setAccountsLoading(true)
+    try {
+      const result = await apiRequest<{ sessions: AdminSession[] }>(`/api/superadmin/users/${encodeURIComponent(account.id)}/sessions`)
+      setAccountSessions(result.sessions)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load account sessions.')
+    } finally { setAccountsLoading(false) }
+  }
+
+  const revokeAccountSession = async (account: AdminAccount, sessionId?: string) => {
+    if (account.id === user.id) return setError('Your own current admin session cannot be revoked here.')
+    const reason = window.prompt('Enter a reason for revoking access (required):')?.trim() ?? ''
+    if (reason.length < 5) return
+    if (!window.confirm(`Revoke ${sessionId ? 'this session' : 'all active sessions'} for ${account.email}?`)) return
+    try {
+      if (sessionId) await apiRequest(`/api/superadmin/users/${encodeURIComponent(account.id)}/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE', body: JSON.stringify({ reason }) })
+      else await apiRequest(`/api/superadmin/users/${encodeURIComponent(account.id)}/revoke-sessions`, { method: 'POST', body: JSON.stringify({ reason }) })
+      await Promise.all([openAccountSessions(account), fetchAdminUsers()])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not revoke sessions.')
+    }
+  }
+
+  useEffect(() => {
+    if (page !== 'accounts' || selectedAccount) return
+    const timer = window.setTimeout(() => void fetchAdminUsers(), 200)
+    return () => window.clearTimeout(timer)
+  }, [page, accountSearch, selectedAccount])
+
+  useEffect(() => {
+    if (page === 'operations') void loadOperations()
+  }, [page])
+
+  useEffect(() => {
+    if (page === 'reports') void loadPlatformReport(platformReportRange)
+  }, [page, platformReportRange])
+
+  useEffect(() => {
+    if (page === 'pricing') void loadPlanPrices()
+  }, [page])
+
   const filteredWorkspaces = workspaces
 
-  const heading = page === 'overview' ? 'Platform Overview' : page === 'workspaces' ? 'Client Workspaces' : page === 'quotes' ? 'Platform Quotes' : page === 'security' ? 'Security' : page === 'activity' ? 'Admin Activity' : 'Recent Signups'
+  const heading = page === 'overview' ? 'Platform Overview' : page === 'workspaces' ? 'Client Workspaces' : page === 'quotes' ? 'Platform Quotes' : page === 'security' ? 'Security' : page === 'activity' ? 'Admin Activity' : page === 'accounts' ? 'User Accounts' : page === 'operations' ? 'Operations' : page === 'reports' ? 'Platform Reports' : page === 'pricing' ? 'Plan Pricing' : 'Recent Signups'
 
   const openSecurity = async () => {
     setPage('security')
@@ -298,11 +465,11 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     setMfaBusy(true)
     setMfaMessage('')
     try {
-      await apiRequest(`/api/superadmin/mfa/${mfaEnabled ? 'disable' : 'verify'}`, { method: 'POST', body: JSON.stringify({ code: mfaCode }) })
-      setMfaEnabled(!mfaEnabled)
+      await apiRequest('/api/superadmin/mfa/verify', { method: 'POST', body: JSON.stringify({ code: mfaCode }) })
+      setMfaEnabled(true)
       setMfaSecret('')
       setMfaCode('')
-      setMfaMessage(mfaEnabled ? 'Authenticator protection disabled.' : 'Authenticator protection is enabled for this super-admin account.')
+      setMfaMessage('Authenticator protection is enabled for this super-admin account.')
     } catch (error) {
       setMfaMessage(error instanceof Error ? error.message : 'Could not update MFA settings.')
     } finally { setMfaBusy(false) }
@@ -314,12 +481,12 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     <div className="workspace-root superadmin-root">
       <aside className="app-sidebar">
         <a className="brand brand-workspace" href="#overview" onClick={(e) => { e.preventDefault(); setPage('overview') }}>
-          <span className="brand-mark">iQ</span><span>iQuote<span className="brand-period">.</span> Admin</span>
+          <span className="brand-mark">iQ</span><span className="brand-word">i<span className="brand-q">Q</span>uote<span className="brand-period">.</span> Admin</span>
         </a>
         <div className="sidebar-caption">Superadmin</div>
         <nav className="app-navigation" aria-label="Superadmin navigation">
-          {([['overview', 'Overview', '⌂'], ['workspaces', 'Workspaces', '▦'], ['quotes', 'Quotes', '▤'], ['signups', 'Signups', '✦'], ['activity', 'Activity log', '≋'], ['security', 'Security', '⚙']] as const).map(([key, label, glyph]) => (
-            <button key={key} type="button" className={`app-nav-item ${page === key ? 'active' : ''}`} onClick={() => { setWorkspaceDetail(null); if (key === 'security') void openSecurity(); else setPage(key) }}>
+          {([['overview', 'Overview', '⌂'], ['workspaces', 'Workspaces', '▦'], ['accounts', 'Users & sessions', '♙'], ['operations', 'Operations', '◉'], ['reports', 'Reports', '▥'], ['pricing', 'Plan pricing', '₭'], ['quotes', 'Quotes', '▤'], ['signups', 'Signups', '✦'], ['activity', 'Activity log', '≋'], ['security', 'Security', '⚙']] as const).map(([key, label, glyph]) => (
+            <button key={key} type="button" className={`app-nav-item ${page === key ? 'active' : ''}`} onClick={() => { setWorkspaceDetail(null); if (key === 'security') void openSecurity(); else { setPage(key); if (key !== 'accounts') setSelectedAccount(null) } }}>
               <span className="nav-glyph" aria-hidden="true">{glyph}</span>
               <span>{label}</span>
             </button>
@@ -334,6 +501,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
         <header className="workspace-topbar">
           <div><p className="workspace-eyebrow">Superadmin</p><h1>{heading}</h1></div>
           <div className="topbar-right">
+            <PwaControls />
             <button type="button" className="quiet-button" onClick={() => void handleRefresh()} disabled={refreshing}>
               {refreshing ? 'Refreshing…' : '↻ Refresh'}
             </button>
@@ -352,6 +520,26 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
         )}
 
         {page === 'overview' && stats && <AdminOverview user={user} stats={stats} workspaces={workspaces} quotes={recentQuotes} onWorkspaces={() => setPage('workspaces')} onQuotes={() => setPage('quotes')} onSignups={() => setPage('signups')} />}
+
+        {page === 'pricing' && <section className="workspace-content">
+          <div className="list-toolbar"><div><p className="workspace-eyebrow">Commercial settings</p><h2>Subscription plan prices</h2><p>Set the monthly KES price for each package. Saved prices appear in the customer renewal screen.</p></div></div>
+          <form className="admin-pricing-form" onSubmit={(event) => void savePlanPrices(event)}>
+            <div className="admin-price-grid">
+              {BILLING_PLAN_NAMES.map((plan) => {
+                const saved = planPrices.find((item) => item.plan === plan)
+                return <label className="admin-price-card" key={plan}>
+                  <span className="admin-price-name">{plan.charAt(0) + plan.slice(1).toLowerCase()}</span>
+                  <span className="admin-price-period">Per workspace · monthly</span>
+                  <span className="admin-price-input"><b>KES</b><input className="input-control" type="number" min="0.01" max="100000000" step="0.01" inputMode="decimal" placeholder="Leave blank to disable" value={priceInputs[plan] ?? ''} onChange={(event) => setPriceInputs((current) => ({ ...current, [plan]: event.target.value }))} aria-label={`${plan} monthly price in Kenyan shillings`} /></span>
+                  <small className="admin-price-source">{saved?.source === 'ADMIN' ? 'Saved in platform settings' : saved?.source === 'ENVIRONMENT' ? 'Using server environment value' : 'Price not set'}</small>
+                </label>
+              })}
+            </div>
+            <div className="admin-pricing-note"><strong>Price changes affect future payment requests.</strong><span>Requests already sent to a customer keep their original amount. Clear a price and save to disable checkout for that package.</span></div>
+            <label className="admin-price-reason">Reason for this change<input className="input-control" minLength={5} maxLength={300} required value={priceReason} onChange={(event) => setPriceReason(event.target.value)} placeholder="For example: approved launch pricing" /></label>
+            <div className="admin-pricing-actions"><span role="status">{priceMessage}</span><button type="submit" className="button button-primary" disabled={priceBusy || priceReason.trim().length < 5}>{priceBusy ? 'Saving prices…' : 'Save plan prices'}</button></div>
+          </form>
+        </section>}
 
         {page === 'workspaces' && (
           workspaceDetailLoading ? <main className="workspace-loading">Loading workspace details…</main> : workspaceDetail ? <WorkspaceDetailView data={workspaceDetail} actionBusy={workspaceActionBusy} onSuspend={(reason) => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'suspend', reason)} onRestore={() => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'restore')} onBack={() => setWorkspaceDetail(null)} /> : <section className="workspace-content">
@@ -451,6 +639,61 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
           </section>
         )}
 
+        {page === 'accounts' && (
+          <section className="workspace-content">
+            {selectedAccount ? <>
+              <div className="list-toolbar"><div><button className="dashboard-text-link" type="button" onClick={() => setSelectedAccount(null)}>← All users</button><p className="workspace-eyebrow" style={{ marginTop: 12 }}>Account support</p><h2>{selectedAccount.name}</h2><p>{selectedAccount.email} · {selectedAccount.role === 'SUPERADMIN' ? 'Super-admin' : 'User'}</p></div><button type="button" className="quiet-button danger-button" disabled={accountsLoading || selectedAccount.id === user.id || accountSessions.length === 0} onClick={() => void revokeAccountSession(selectedAccount)}>{accountsLoading ? 'Updating…' : `Revoke all sessions (${accountSessions.length})`}</button></div>
+              <section className="workspace-panel" style={{ padding: 20 }}><div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}><p>MFA: <strong>{selectedAccount.mfaEnabled ? 'Enabled' : 'Not enabled'}</strong></p><p>Joined: <strong>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(selectedAccount.createdAt))}</strong></p><p>Active sessions: <strong>{accountSessions.length}</strong></p><p>Workspace: <strong>{selectedAccount.workspace?.name ?? 'None'}</strong>{selectedAccount.workspace?.status === 'SUSPENDED' ? ' · Suspended' : ''}</p></div>{selectedAccount.id === user.id && <p className="workspace-eyebrow">Your current admin session is protected from this control.</p>}</section>
+              <section className="workspace-panel quote-list-panel"><div className="list-toolbar" style={{ padding: '18px 18px 8px' }}><div><h3>Active sessions</h3><p>Only active sessions are shown. Session tokens are never exposed.</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Started</th><th>Expires</th><th>Session</th><th>Action</th></tr></thead><tbody>
+                {accountSessions.map((session) => <tr key={session.id}><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(session.createdAt))}</td><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(session.expiresAt))}</td><td><code>{session.id.slice(0, 10)}</code></td><td><button type="button" className="dashboard-text-link danger-text" disabled={accountsLoading || selectedAccount.id === user.id} onClick={() => void revokeAccountSession(selectedAccount, session.id)}>Revoke</button></td></tr>)}
+              </tbody></table></div>{!accountSessions.length && <div className="panel-empty">No active sessions.</div>}</section>
+            </> : <>
+              <div className="list-toolbar"><div><p className="workspace-eyebrow">Account support</p><h2>Users and sessions</h2><p>Find an account, review its active sessions, and revoke access when needed.</p></div><span className="workspace-eyebrow">{accountsTotal} users</span></div>
+              <div className="filter-row"><input className="input-control search-control" type="search" placeholder="Search name, email, role, or workspace" value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} /><span className="workspace-eyebrow" aria-live="polite">{accountsLoading ? 'Loading…' : 'Newest first'}</span></div>
+              <section className="workspace-panel quote-list-panel"><div className="table-scroll"><table className="data-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Workspace</th><th>MFA</th><th>Sessions</th><th>Joined</th><th></th></tr></thead><tbody>
+                {adminUsers.map((account) => <tr key={account.id}><td><strong>{account.name}</strong></td><td>{account.email}</td><td>{account.role === 'SUPERADMIN' ? 'Super-admin' : 'User'}</td><td>{account.workspace?.name ?? '—'}{account.workspace?.status === 'SUSPENDED' ? <small>Suspended</small> : null}</td><td>{account.mfaEnabled ? 'On' : 'Off'}</td><td>{account.activeSessionCount}</td><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(account.createdAt))}</td><td><button type="button" className="dashboard-text-link" onClick={() => void openAccountSessions(account)}>Manage →</button></td></tr>)}
+              </tbody></table></div>{!adminUsers.length && !accountsLoading && <div className="panel-empty">No accounts match that search.</div>}{accountsHasMore && <div className="load-more-row"><button type="button" className="quiet-button" disabled={accountsLoading} onClick={() => void fetchAdminUsers(adminUsers.length, true)}>{accountsLoading ? 'Loading…' : `Load more (${adminUsers.length} of ${accountsTotal})`}</button></div>}</section>
+            </>}
+          </section>
+        )}
+
+        {page === 'operations' && (
+          <section className="workspace-content">
+            <div className="list-toolbar"><div><p className="workspace-eyebrow">Service signals</p><h2>Platform operations</h2><p>Configuration, live Resend API connectivity, and recent operational records.</p></div><span className="workspace-eyebrow" aria-live="polite">{operationsLoading ? 'Refreshing…' : operations ? `Checked ${new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(operations.checkedAt))}` : 'No snapshot loaded'}</span></div>
+            {operations && <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+                <section className="workspace-panel" style={{ padding: 18 }}><p className="workspace-eyebrow">Database</p><strong>{operations.database}</strong></section>
+                <section className="workspace-panel" style={{ padding: 18 }}><p className="workspace-eyebrow">Email API key</p><strong>{operations.emailProvider}</strong></section>
+                <section className="workspace-panel" style={{ padding: 18 }}><p className="workspace-eyebrow">Resend live health</p><strong>{operations.emailProviderHealth}</strong></section>
+                <section className="workspace-panel" style={{ padding: 18 }}><p className="workspace-eyebrow">Sender configuration</p><strong>{operations.sender}</strong></section>
+                <section className="workspace-panel" style={{ padding: 18 }}><p className="workspace-eyebrow">Webhook secret</p><strong>{operations.webhookSecret}</strong></section>
+                <section className="workspace-panel" style={{ padding: 18 }}><p className="workspace-eyebrow">API process uptime</p><strong>{Math.floor(operations.uptimeSeconds / 3600)}h {Math.floor((operations.uptimeSeconds % 3600) / 60)}m</strong></section>
+              </div>
+              <section className="workspace-panel" style={{ padding: 20 }}><h3>Email deliveries</h3><div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}><div><p className="workspace-eyebrow">Last 24 hours</p>{Object.entries(operations.deliveryCounts24h).map(([status, count]) => <p key={status}><strong>{status}</strong> · {count}</p>)}{!Object.keys(operations.deliveryCounts24h).length && <p>No delivery records.</p>}</div><div><p className="workspace-eyebrow">Last 7 days</p>{Object.entries(operations.deliveryCounts7d).map(([status, count]) => <p key={status}><strong>{status}</strong> · {count}</p>)}{!Object.keys(operations.deliveryCounts7d).length && <p>No delivery records.</p>}</div></div></section>
+              <section className="workspace-panel" style={{ padding: 20 }}><h3>Webhook activity</h3><p>{operations.webhook.events24h} events processed in the last 24 hours · {operations.webhook.failures24h} processing failures in the last 24 hours.</p><p>{operations.webhook.latest ? `Latest: ${operations.webhook.latest.eventType} · ${operations.webhook.latest.processingStatus} · ${new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(operations.webhook.latest.receivedAt))}` : 'No webhook events recorded yet.'}</p>{operations.webhook.failures.length > 0 && <div className="table-scroll"><table className="data-table"><thead><tr><th>Received</th><th>Event</th><th>Source</th><th>Processing error</th><th>Support action</th></tr></thead><tbody>{operations.webhook.failures.map((event) => <tr key={event.id}><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(event.receivedAt))}</td><td>{event.eventType}</td><td>{event.source}</td><td>{event.processingError ?? 'No error detail recorded'}</td><td><button type="button" className="dashboard-text-link" disabled={operationsLoading} onClick={() => void reprocessWebhook(event.id)}>Reprocess</button></td></tr>)}</tbody></table></div>}</section>
+              <section className="workspace-panel quote-list-panel"><div className="list-toolbar" style={{ padding: '18px 18px 8px' }}><div><h3>Delivery incidents</h3><p>Failed, bounced, or pending for more than ten minutes · last 7 days</p></div><span className="workspace-eyebrow">{operations.incidents.length} shown</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Time</th><th>State</th><th>Workspace</th><th>Quote</th><th>Recipient</th><th>Issue</th></tr></thead><tbody>
+                {operations.incidents.map((incident) => <tr key={incident.id}><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(incident.createdAt))}</td><td><span className={`quote-status status-${incident.status.toLowerCase()}`}>{incident.status}</span></td><td>{incident.quote.organisation.name}</td><td>{incident.quote.documentNumber}</td><td>{incident.recipientEmail}</td><td>{incident.errorMessage ?? (incident.status === 'PENDING' ? 'No provider response after 10 minutes' : 'No provider error detail')}</td></tr>)}
+              </tbody></table></div>{!operations.incidents.length && <div className="panel-empty">No recent delivery incidents.</div>}</section>
+            </>}
+          </section>
+        )}
+
+        {page === 'reports' && (
+          <section className="workspace-content">
+            <div className="list-toolbar"><div><p className="workspace-eyebrow">Financial activity</p><h2>Platform totals by currency</h2><p>Quotes are pipeline value; invoices and recorded payments are separate financial measures. Currencies are never combined.</p></div><label className="workspace-eyebrow">Period <select className="input-control" value={platformReportRange} onChange={(event) => setPlatformReportRange(event.target.value)}><option value="7d">7 days</option><option value="30d">30 days</option><option value="90d">90 days</option><option value="365d">1 year</option></select></label></div>
+            {platformReportLoading && !platformReport ? <main className="workspace-loading">Loading platform report…</main> : platformReport && <>
+              <p className="workspace-eyebrow" aria-live="polite">{platformReportLoading ? 'Updating…' : `${new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(platformReport.from))} – ${new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(platformReport.to))}`}</p>
+              <section className="workspace-panel quote-list-panel"><div className="table-scroll"><table className="data-table"><thead><tr><th>Currency</th><th>Quoted value</th><th>Invoiced</th><th>Invoice paid amount</th><th>Receivables</th><th>Recorded payments</th></tr></thead><tbody>
+                {platformReport.currencyTotals.map((row) => <tr key={row.currency}><td><strong>{row.currency}</strong></td><td>{formatMoney(row.quoted, row.currency)}</td><td>{formatMoney(row.invoiced, row.currency)}</td><td>{formatMoney(row.invoicePaid, row.currency)}</td><td>{formatMoney(row.receivables, row.currency)}</td><td>{formatMoney(row.paymentsRecorded, row.currency)}</td></tr>)}
+              </tbody></table></div>{!platformReport.currencyTotals.length && <div className="panel-empty">No quote, invoice, or payment activity in this period.</div>}</section>
+              <section className="workspace-panel quote-list-panel"><div className="list-toolbar" style={{ padding: '18px 18px 8px' }}><div><h3>Invoice reconciliation</h3><p>Compares each invoice's stored paid and balance amounts with its immutable payment records.</p></div><span className="workspace-eyebrow">{platformReport.reconciliation.issueCount} mismatches</span></div>{platformReport.reconciliation.invoices.length > 0 ? <div className="table-scroll"><table className="data-table"><thead><tr><th>Workspace</th><th>Invoice</th><th>Currency</th><th>Invoice total</th><th>Stored paid</th><th>Payment records</th><th>Stored balance</th></tr></thead><tbody>{platformReport.reconciliation.invoices.map((invoice) => <tr key={invoice.id}><td>{invoice.organisation}</td><td>{invoice.invoiceNumber}</td><td>{invoice.currency}</td><td>{formatMoney(invoice.invoiceTotal, invoice.currency)}</td><td>{formatMoney(invoice.invoicePaid, invoice.currency)}</td><td>{formatMoney(invoice.paymentEvents, invoice.currency)}</td><td>{formatMoney(invoice.balanceDue, invoice.currency)}</td></tr>)}</tbody></table></div> : <div className="panel-empty">Invoice totals reconcile with recorded payment rows.</div>}</section>
+              <section className="workspace-panel quote-list-panel"><div className="list-toolbar" style={{ padding: '18px 18px 8px' }}><div><h3>Activity over time</h3><p>Each row remains scoped to one currency.</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Period</th><th>Currency</th><th>Quotes</th><th>Quoted</th><th>Invoices</th><th>Invoiced</th><th>Payments</th><th>Recorded amount</th></tr></thead><tbody>
+                {platformReport.periods.map((row) => <tr key={`${row.bucket}-${row.currency}`}><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(row.bucket))}</td><td>{row.currency}</td><td>{row.quoteCount}</td><td>{formatMoney(row.quoted, row.currency)}</td><td>{row.invoiceCount}</td><td>{formatMoney(row.invoiced, row.currency)}</td><td>{row.paymentCount}</td><td>{formatMoney(row.paymentsRecorded, row.currency)}</td></tr>)}
+              </tbody></table></div>{!platformReport.periods.length && <div className="panel-empty">No activity buckets for the selected period.</div>}</section>
+            </>}
+          </section>
+        )}
+
         {page === 'activity' && (
           <section className="workspace-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Governance</p><h2>Super-admin activity</h2><p>Security and workspace lifecycle actions are recorded here.</p></div><span className="workspace-eyebrow">{auditTotal} events</span></div>
@@ -469,13 +712,13 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Account protection</p><h2>Super-admin security</h2></div></div>
             <section className="workspace-panel" style={{ maxWidth: 720, padding: 28 }}>
               <h3>Authenticator app</h3>
-              <p>{mfaEnabled ? 'Two-step verification is enabled. You will need an authenticator code each time you sign in.' : 'Add an authenticator app to protect this super-admin account. Scan or enter the setup key, then confirm a current code.'}</p>
+              <p>{mfaEnabled ? 'Two-step verification is required for this super-admin account. It cannot be disabled from the dashboard.' : 'Add an authenticator app to protect this super-admin account. Scan or enter the setup key, then confirm a current code.'}</p>
               {!mfaEnabled && mfaSecret && <div className="workspace-alert" style={{ display: 'block' }}><strong>Setup key</strong><p style={{ marginBottom: 8 }}>Add an account manually in your authenticator app with issuer iQuote.</p><code>{mfaSecret}</code><p style={{ marginBottom: 0 }}>Account: {user.email}</p></div>}
-              <form className="onboarding-form" onSubmit={submitMfa}>
-                <label>{mfaEnabled ? 'Current authenticator code' : 'Confirm authenticator code'}<input className="input-control" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" required value={mfaCode} onChange={event => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" /></label>
+              {!mfaEnabled && <form className="onboarding-form" onSubmit={submitMfa}>
+                <label>Confirm authenticator code<input className="input-control" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" required value={mfaCode} onChange={event => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" /></label>
                 {mfaMessage && <p role="status">{mfaMessage}</p>}
-                <button className="quiet-button" disabled={mfaBusy || (!mfaEnabled && !mfaSecret)}>{mfaBusy ? 'Saving…' : mfaEnabled ? 'Disable MFA' : 'Enable MFA'}</button>
-              </form>
+                <button className="quiet-button" disabled={mfaBusy || !mfaSecret}>{mfaBusy ? 'Saving…' : 'Enable MFA'}</button>
+              </form>}
               {!mfaEnabled && !mfaSecret && <button className="quiet-button" type="button" onClick={() => void openSecurity()}>Generate setup key</button>}
             </section>
           </section>

@@ -8,26 +8,29 @@ datasource db {
 }
 
 model User {
-  id                String           @id @default(cuid())
-  name              String
-  email             String           @unique
-  passwordHash      String
-  role              String           @default("USER")
-  teamRole          TeamRole         @default(OWNER)
-  mfaSecret         String?
-  mfaEnabled        Boolean          @default(false)
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
-  emailVerifiedAt   DateTime?
-  organisationId    String?
-  organisation      Organisation?    @relation("UserOrganisation", fields: [organisationId], references: [id])
-  ownedOrganisation Organisation?    @relation("OrganisationOwner")
-  sessions          Session[]
-  customers         Customer[]
-  quotes            Quote[]
-  jobs              Job[]
-  jobCosts          JobCost[]
-  sentInvitations   TeamInvitation[]
+  id                    String           @id @default(cuid())
+  name                  String
+  email                 String           @unique
+  passwordHash          String
+  role                  String           @default("USER")
+  teamRole              TeamRole         @default(OWNER)
+  mfaSecret             String?
+  mfaEnabled            Boolean          @default(false)
+  mfaEnabledAt          DateTime?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  emailVerifiedAt       DateTime?
+  organisationId        String?
+  organisation          Organisation?    @relation("UserOrganisation", fields: [organisationId], references: [id])
+  ownedOrganisation     Organisation?    @relation("OrganisationOwner")
+  sessions              Session[]
+  customers             Customer[]
+  quotes                Quote[]
+  jobs                  Job[]
+  jobCosts              JobCost[]
+  sentInvitations       TeamInvitation[]
+  notifications         Notification[]
+  authoredQuoteMessages QuoteMessage[]
 }
 
 model SuperadminAuditEvent {
@@ -49,99 +52,133 @@ model SuperadminAuditEvent {
 }
 
 model Organisation {
-  id             String    @id @default(cuid())
-  subdomain      String?   @unique
-  name           String?
-  email          String?
-  phone          String?
-  country        String?
-  businessType   String?
-  currency       String    @default("KES")
-  defaultTaxRate Decimal?  @db.Decimal(5, 2)
-  quotePrefix    String?
-  logoUrl        String?
-  website        String?
+  id                  String               @id @default(cuid())
+  subdomain           String?              @unique
+  name                String?
+  email               String?
+  phone               String?
+  country             String?
+  businessType        String?
+  currency            String               @default("KES")
+  defaultTaxRate      Decimal?             @db.Decimal(5, 2)
+  quotePrefix         String?
+  logoUrl             String?
+  website             String?
   paymentInstructions String?
-  terms          String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  status         String    @default("ACTIVE")
-  suspendedAt    DateTime?
-  suspendedByEmail String?
-  suspensionReason String?
-  restoredAt     DateTime?
-  restoredByEmail String?
-  ownerId        String    @unique
-  owner          User      @relation("OrganisationOwner", fields: [ownerId], references: [id])
-  members        User[]    @relation("UserOrganisation")
-  customers      Customer[]
-  serviceItems   ServiceItem[]
-  quoteTemplates QuoteTemplate[]
-  quotes         Quote[]
-  quoteSequences QuoteSequence[]
-  subscription   Subscription?
-  emailSettings TenantEmailSettings?
-  jobs           Job[]
-  invoices       Invoice[]
-  payments       Payment[]
-  invitations    TeamInvitation[]
+  terms               String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  status              String               @default("ACTIVE")
+  suspendedAt         DateTime?
+  suspendedByEmail    String?
+  suspensionReason    String?
+  restoredAt          DateTime?
+  restoredByEmail     String?
+  ownerId             String               @unique
+  owner               User                 @relation("OrganisationOwner", fields: [ownerId], references: [id])
+  members             User[]               @relation("UserOrganisation")
+  customers           Customer[]
+  serviceItems        ServiceItem[]
+  quoteTemplates      QuoteTemplate[]
+  quotes              Quote[]
+  quoteSequences      QuoteSequence[]
+  subscription        Subscription?
+  billingPayments     BillingPayment[]
+  emailSettings       TenantEmailSettings?
+  jobs                Job[]
+  invoices            Invoice[]
+  payments            Payment[]
+  invitations         TeamInvitation[]
+  notifications       Notification[]
+  quoteMessages       QuoteMessage[]
 }
 
 model TenantEmailSettings {
-  id                String       @id @default(cuid())
-  organisationId    String       @unique
-  organisation      Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  provider          String       @default("PLATFORM")
+  id                     String       @id @default(cuid())
+  organisationId         String       @unique
+  organisation           Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  provider               String       @default("PLATFORM")
   resendApiKeyCiphertext String?
-  senderName        String?
-  senderEmail       String?
-  customDomain      String?
-  domainStatus      String       @default("NOT_CONFIGURED")
-  domainRecords     Json?
-  verifiedAt        DateTime?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
+  senderName             String?
+  senderEmail            String?
+  customDomain           String?
+  domainStatus           String       @default("NOT_CONFIGURED")
+  domainRecords          Json?
+  verifiedAt             DateTime?
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
 }
 
 model SignupVerification {
-  email       String   @id
-  codeHash    String
-  expiresAt   DateTime
-  verifiedAt  DateTime?
-  attempts    Int      @default(0)
-  lastSentAt  DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  email      String    @id
+  codeHash   String
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  attempts   Int       @default(0)
+  lastSentAt DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 }
 
 model Subscription {
-  id             String       @id @default(cuid())
-  organisationId String       @unique
-  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  plan           String       @default("STARTER")
-  status         String       @default("TRIALING")
-  billingInterval String      @default("MONTHLY")
-  trialStartedAt DateTime     @default(now())
-  trialEndsAt    DateTime
-  simulated      Boolean      @default(true)
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id                  String       @id @default(cuid())
+  organisationId      String       @unique
+  organisation        Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  plan                String       @default("STARTER")
+  status              String       @default("TRIALING")
+  billingInterval     String       @default("MONTHLY")
+  trialStartedAt      DateTime     @default(now())
+  trialEndsAt         DateTime
+  currentPeriodEndsAt DateTime?
+  simulated           Boolean      @default(true)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+}
+
+model BillingPayment {
+  id                String       @id @default(cuid())
+  organisationId    String
+  organisation      Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  plan              String
+  amount            Decimal      @db.Decimal(14, 2)
+  currency          String       @default("KES")
+  phone             String
+  status            String       @default("PENDING")
+  idempotencyKey    String       @unique
+  transactionId     String?      @unique
+  providerReference String?
+  statusDescription String?
+  paidAt            DateTime?
+  periodEndsAt      DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([organisationId, createdAt])
+  @@index([status, createdAt])
+}
+
+model PlatformPlanPrice {
+  plan           String   @id
+  amount         Decimal? @db.Decimal(14, 2)
+  currency       String   @default("KES")
+  updatedByEmail String?
+  updatedAt      DateTime @updatedAt
 }
 
 model ServiceItem {
-  id               String       @id @default(cuid())
-  organisationId   String
-  organisation     Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  name             String
-  category         String
-  kind             String       @default("SERVICE")
-  description      String?
-  unit             String       @default("job")
-  defaultPrice     Decimal      @default(0) @db.Decimal(14, 2)
-  defaultTaxRate   Decimal?     @db.Decimal(5, 2)
-  active           Boolean      @default(true)
-  isStarter        Boolean      @default(false)
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  id             String       @id @default(cuid())
+  organisationId String
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  name           String
+  category       String
+  kind           String       @default("SERVICE")
+  description    String?
+  unit           String       @default("job")
+  defaultPrice   Decimal      @default(0) @db.Decimal(14, 2)
+  defaultTaxRate Decimal?     @db.Decimal(5, 2)
+  active         Boolean      @default(true)
+  isStarter      Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
   @@unique([organisationId, category, name])
   @@index([organisationId, active, category])
@@ -167,30 +204,30 @@ model QuoteTemplate {
 }
 
 model Session {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  token     String   @unique
-  createdAt DateTime @default(now())
-  expiresAt DateTime
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token         String    @unique
+  createdAt     DateTime  @default(now())
+  expiresAt     DateTime
   mfaVerifiedAt DateTime?
 }
 
 model Customer {
-  id        String   @id @default(cuid())
+  id             String       @id @default(cuid())
   organisationId String
-  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  ownerId   String
-  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  name      String
-  phone     String?
-  email     String?
-  archivedAt DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  quotes    Quote[]
-  jobs      Job[]
-  invoices  Invoice[]
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  ownerId        String
+  owner          User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name           String
+  phone          String?
+  email          String?
+  archivedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  quotes         Quote[]
+  jobs           Job[]
+  invoices       Invoice[]
 
   @@index([organisationId, archivedAt, updatedAt])
   @@index([organisationId, archivedAt, name])
@@ -207,35 +244,37 @@ enum QuoteStatus {
 }
 
 model Quote {
-  id                 String      @id @default(cuid())
-  organisationId     String
-  organisation       Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  ownerId            String
-  owner              User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  customerId         String
-  customer           Customer    @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  documentNumber     String
-  publicToken        String?     @unique
-  status             QuoteStatus @default(DRAFT)
-  currency           String
-  validUntil         DateTime?
-  notes              String?
-  terms              String?
-  subtotal           Decimal     @default(0) @db.Decimal(14, 2)
-  taxTotal           Decimal     @default(0) @db.Decimal(14, 2)
-  total              Decimal     @default(0) @db.Decimal(14, 2)
-  viewedAt           DateTime?
-  decisionComment    String?
-  decidedAt          DateTime?
-  tokenRevokedAt     DateTime?
-  tokenRevokedBy     String?
-  version            Int         @default(1)
-  parentQuoteId      String?
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
-  lines              QuoteLine[]
-  deliveries         QuoteDelivery[]
-  jobs               Job[]
+  id              String          @id @default(cuid())
+  organisationId  String
+  organisation    Organisation    @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  ownerId         String
+  owner           User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  customerId      String
+  customer        Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  documentNumber  String
+  publicToken     String?         @unique
+  status          QuoteStatus     @default(DRAFT)
+  currency        String
+  validUntil      DateTime?
+  notes           String?
+  terms           String?
+  subtotal        Decimal         @default(0) @db.Decimal(14, 2)
+  taxTotal        Decimal         @default(0) @db.Decimal(14, 2)
+  total           Decimal         @default(0) @db.Decimal(14, 2)
+  viewedAt        DateTime?
+  decisionComment String?
+  decidedAt       DateTime?
+  tokenRevokedAt  DateTime?
+  tokenRevokedBy  String?
+  version         Int             @default(1)
+  parentQuoteId   String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  lines           QuoteLine[]
+  deliveries      QuoteDelivery[]
+  jobs            Job[]
+  messages        QuoteMessage[]
+  notifications   Notification[]
 
   @@unique([organisationId, documentNumber])
   @@index([ownerId, updatedAt])
@@ -258,6 +297,45 @@ model QuoteLine {
   @@index([quoteId, position])
 }
 
+model QuoteMessage {
+  id             String         @id @default(cuid())
+  quoteId        String
+  quote          Quote          @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  organisationId String
+  organisation   Organisation   @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  authorUserId   String?
+  authorUser     User?          @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+  authorType     String
+  authorName     String
+  content        String         @db.VarChar(4000)
+  createdAt      DateTime       @default(now())
+  notifications  Notification[]
+
+  @@index([quoteId, createdAt])
+  @@index([organisationId, createdAt])
+}
+
+model Notification {
+  id              String        @id @default(cuid())
+  recipientUserId String
+  recipient       User          @relation(fields: [recipientUserId], references: [id], onDelete: Cascade)
+  organisationId  String
+  organisation    Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  quoteId         String?
+  quote           Quote?        @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  quoteMessageId  String?
+  quoteMessage    QuoteMessage? @relation(fields: [quoteMessageId], references: [id], onDelete: Cascade)
+  type            String
+  title           String
+  body            String
+  sourceKey       String        @unique
+  readAt          DateTime?
+  createdAt       DateTime      @default(now())
+
+  @@index([recipientUserId, readAt, createdAt])
+  @@index([organisationId, createdAt])
+}
+
 model QuoteSequence {
   organisationId String
   organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
@@ -268,41 +346,46 @@ model QuoteSequence {
 }
 
 model LoginAttempt {
-  id        String   @id @default(cuid())
-  key       String   @unique
-  count       Int      @default(0)
+  id          String    @id @default(cuid())
+  key         String    @unique
+  count       Int       @default(0)
   lockedUntil DateTime?
-  updatedAt   DateTime @default(now())
+  updatedAt   DateTime  @default(now())
 
   @@index([lockedUntil])
 }
 
 model QuoteDelivery {
-  id                 String   @id @default(cuid())
-  quoteId            String
-  quote              Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
-  recipientEmail     String
-  recipientName      String?
-  message            String?
-  providerMessageId  String?
-  status             String   @default("PENDING")
-  errorMessage       String?
-  sentAt             DateTime?
-  deliveredAt        DateTime?
-  bouncedAt          DateTime?
-  createdAt          DateTime @default(now())
+  id                String    @id @default(cuid())
+  quoteId           String
+  quote             Quote     @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  recipientEmail    String
+  recipientName     String?
+  message           String?
+  providerMessageId String?
+  status            String    @default("PENDING")
+  errorMessage      String?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  bouncedAt         DateTime?
+  createdAt         DateTime  @default(now())
 
   @@index([quoteId, createdAt])
   @@index([status])
 }
 
 model WebhookEvent {
-  id          String   @id @default(cuid())
-  source      String
-  eventId     String   @unique
-  eventType   String
-  payload     Json
-  processedAt DateTime @default(now())
+  id               String    @id @default(cuid())
+  source           String
+  eventId          String    @unique
+  eventType        String
+  payload          Json
+  processingStatus String    @default("RECEIVED")
+  processingError  String?
+  receivedAt       DateTime  @default(now())
+  processedAt      DateTime?
+
+  @@index([processingStatus, receivedAt])
 }
 
 // ---- Stage 14: Jobs and Financial Records ----
@@ -316,28 +399,32 @@ enum JobStatus {
 }
 
 model Job {
-  id             String   @id @default(cuid())
-  organisationId String
-  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  quoteId        String?
-  quote          Quote?   @relation(fields: [quoteId], references: [id], onDelete: SetNull)
-  ownerId        String
-  owner          User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  customerId     String
-  customer       Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  title          String
-  description    String?
-  status         JobStatus @default(PLANNED)
-  currency       String
-  startDate      DateTime?
-  endDate        DateTime?
+  id                    String       @id @default(cuid())
+  organisationId        String
+  organisation          Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  quoteId               String?
+  quote                 Quote?       @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  ownerId               String
+  owner                 User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  customerId            String
+  customer              Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  title                 String
+  description           String?
+  status                JobStatus    @default(PLANNED)
+  currency              String
+  startDate             DateTime?
+  endDate               DateTime?
   acceptedQuoteSnapshot Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  progressTokenHash     String?      @unique
+  progressEnabledAt     DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
 
-  milestones     JobMilestone[]
-  costs          JobCost[]
-  invoices       Invoice[]
+  milestones  JobMilestone[]
+  costs       JobCost[]
+  invoices    Invoice[]
+  activities  JobActivity[]
+  attachments JobAttachment[]
 
   @@index([organisationId, status, updatedAt])
   @@index([ownerId, updatedAt])
@@ -345,31 +432,60 @@ model Job {
 }
 
 model JobMilestone {
-  id          String   @id @default(cuid())
-  jobId       String
-  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  title       String
-  description String?
-  dueDate     DateTime?
-  completedAt DateTime?
-  position    Int      @default(0)
-  createdAt   DateTime @default(now())
+  id              String    @id @default(cuid())
+  jobId           String
+  job             Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  title           String
+  description     String?
+  dueDate         DateTime?
+  completedAt     DateTime?
+  customerVisible Boolean   @default(false)
+  position        Int       @default(0)
+  createdAt       DateTime  @default(now())
 
   @@index([jobId, position])
 }
 
+model JobActivity {
+  id        String   @id @default(cuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  actorId   String
+  actorName String
+  action    String
+  details   Json?
+  createdAt DateTime @default(now())
+
+  @@index([jobId, createdAt])
+}
+
+model JobAttachment {
+  id               String   @id @default(cuid())
+  jobId            String
+  job              Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  storageKey       String   @unique
+  originalFilename String
+  mimeType         String
+  sizeBytes        Int
+  uploadedBy       String
+  uploaderName     String
+  createdAt        DateTime @default(now())
+
+  @@index([jobId, createdAt])
+}
+
 model JobCost {
-  id          String   @id @default(cuid())
-  jobId       String
-  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  category    String
-  description String
-  amount      Decimal  @db.Decimal(14, 2)
-  currency    String
-  incurredBy  String
-  incurredByUser User  @relation(fields: [incurredBy], references: [id], onDelete: Cascade)
-  incurredAt  DateTime @default(now())
-  createdAt   DateTime @default(now())
+  id             String   @id @default(cuid())
+  jobId          String
+  job            Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  category       String
+  description    String
+  amount         Decimal  @db.Decimal(14, 2)
+  currency       String
+  incurredBy     String
+  incurredByUser User     @relation(fields: [incurredBy], references: [id], onDelete: Cascade)
+  incurredAt     DateTime @default(now())
+  createdAt      DateTime @default(now())
 
   @@index([jobId, category])
 }
@@ -384,28 +500,29 @@ enum InvoiceStatus {
 }
 
 model Invoice {
-  id             String   @id @default(cuid())
+  id             String        @id @default(cuid())
   organisationId String
-  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  organisation   Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   jobId          String?
-  job            Job?     @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  job            Job?          @relation(fields: [jobId], references: [id], onDelete: SetNull)
   customerId     String
-  customer       Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  customer       Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
   invoiceNumber  String
   status         InvoiceStatus @default(DRAFT)
   currency       String
-  subtotal       Decimal  @default(0) @db.Decimal(14, 2)
-  taxTotal       Decimal  @default(0) @db.Decimal(14, 2)
-  total          Decimal  @default(0) @db.Decimal(14, 2)
-  amountPaid     Decimal  @default(0) @db.Decimal(14, 2)
-  balanceDue     Decimal  @default(0) @db.Decimal(14, 2)
-  issueDate      DateTime @default(now())
+  subtotal       Decimal       @default(0) @db.Decimal(14, 2)
+  taxTotal       Decimal       @default(0) @db.Decimal(14, 2)
+  total          Decimal       @default(0) @db.Decimal(14, 2)
+  amountPaid     Decimal       @default(0) @db.Decimal(14, 2)
+  balanceDue     Decimal       @default(0) @db.Decimal(14, 2)
+  issueDate      DateTime      @default(now())
   dueDate        DateTime?
   notes          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
-  payments       Payment[]
+  payments        Payment[]
+  reconciliations InvoiceReconciliation[]
 
   @@unique([organisationId, invoiceNumber])
   @@index([organisationId, status])
@@ -413,21 +530,40 @@ model Invoice {
 }
 
 model Payment {
-  id             String   @id @default(cuid())
+  id             String       @id @default(cuid())
+  idempotencyKey String?      @unique
   invoiceId      String
-  invoice        Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   organisationId String
   organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  amount         Decimal  @db.Decimal(14, 2)
+  amount         Decimal      @db.Decimal(14, 2)
   currency       String
   method         String
   reference      String?
-  paymentDate    DateTime @default(now())
+  paymentDate    DateTime     @default(now())
   receivedBy     String
-  createdAt      DateTime @default(now())
+  createdAt      DateTime     @default(now())
 
   @@index([invoiceId])
   @@index([organisationId, paymentDate])
+}
+
+model InvoiceReconciliation {
+  id                  String   @id @default(cuid())
+  invoiceId           String
+  invoice             Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  organisationId      String
+  actorId             String
+  actorName           String
+  reason              String
+  previousAmountPaid  Decimal  @db.Decimal(14, 2)
+  previousBalanceDue  Decimal  @db.Decimal(14, 2)
+  correctedAmountPaid Decimal  @db.Decimal(14, 2)
+  correctedBalanceDue Decimal  @db.Decimal(14, 2)
+  createdAt           DateTime @default(now())
+
+  @@index([organisationId, createdAt])
+  @@index([invoiceId, createdAt])
 }
 
 // ---- Stage 15: Team membership and invitations ----
@@ -439,19 +575,19 @@ enum TeamRole {
 }
 
 model TeamInvitation {
-  id              String   @id @default(cuid())
-  organisationId  String
-  organisation    Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  email           String
-  role            TeamRole @default(MEMBER)
-  token           String   @unique
-  invitedBy       String
-  inviter         User     @relation(fields: [invitedBy], references: [id], onDelete: Cascade)
-  acceptedAt      DateTime?
-  revokedAt       DateTime?
-  expiresAt       DateTime
-  createdAt       DateTime @default(now())
+  id             String       @id @default(cuid())
+  organisationId String
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  email          String
+  role           TeamRole     @default(MEMBER)
+  token          String       @unique
+  invitedBy      String
+  inviter        User         @relation(fields: [invitedBy], references: [id], onDelete: Cascade)
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  expiresAt      DateTime
+  createdAt      DateTime     @default(now())
 
-  @@index([organisationId, email])
   @@unique([organisationId, email])
+  @@index([organisationId, email])
 }

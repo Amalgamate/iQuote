@@ -4,13 +4,16 @@ import LogoUpload from './LogoUpload'
 import PublicQuote from './PublicQuote'
 import QuoteDocument, { type QuoteDocumentData, type QuoteLine } from './QuoteDocument'
 import { QuotePdfDownloadLink } from './QuotePdf'
+import QuoteChatter from './QuoteChatter'
+import NotificationCenter from './NotificationCenter'
+import PwaControls from './PwaControls'
 import JobsPanel from './JobsPanel'
 import InvoicesPanel from './InvoicesPanel'
 import ReportsPanel from './ReportsPanel'
 import TeamPanel from './TeamPanel'
 import './Workspace.css'
 
-type User = { id: string; name: string; email: string }
+type User = { id: string; name: string; email: string; teamRole?: string }
 type Business = {
   id: string
   name: string
@@ -50,7 +53,7 @@ type QuoteDraft = {
   terms: string
   lines: QuoteLine[]
 }
-type Page = 'dashboard' | 'quotes' | 'customers' | 'services' | 'jobs' | 'invoices' | 'reports' | 'team' | 'settings' | 'editor'
+type Page = 'dashboard' | 'quotes' | 'customers' | 'services' | 'jobs' | 'invoices' | 'reports' | 'team' | 'settings' | 'editor' | 'conversation'
 type ChartRange = '7D' | '30D' | '90D' | '1Y'
 type CustomerForm = { id: string; name: string; phone: string; email: string }
 type EmailSettings = { provider: 'PLATFORM' | 'CUSTOM'; senderName: string; senderEmail: string; customDomain: string; domainStatus: string; domainRecords: unknown[] | null; apiKeySet: boolean; encryptionReady: boolean; platformSenderAvailable: boolean }
@@ -407,6 +410,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [templateDescription, setTemplateDescription] = useState('')
   const [editor, setEditor] = useState<QuoteDraft | null>(null)
   const [editorQuoteId, setEditorQuoteId] = useState<string | null>(null)
+  const [conversationQuote, setConversationQuote] = useState<{ id: string; documentNumber: string; publicToken: string | null; status: QuoteStatus } | null>(null)
   const [editorNumber, setEditorNumber] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
   const [saveState, setSaveState] = useState('')
@@ -507,17 +511,6 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     const query = search.trim().toLowerCase()
     return serviceItems.filter((item) => !query || [item.name, item.category, item.description ?? '', item.kind].some((value) => value.toLowerCase().includes(query)))
   }, [serviceItems, search])
-
-  const dashboardStats = useMemo(() => {
-    const total = quotes.length
-    const approved = quotes.filter((q) => q.status === 'APPROVED').length
-    const approvedValue = quotes.filter((q) => q.status === 'APPROVED').reduce((sum, q) => sum + q.total, 0)
-    const pending = quotes.filter((q) => ['SENT', 'VIEWED'].includes(q.status)).length
-    const draftCount = quotes.filter((q) => q.status === 'DRAFT').length
-    const totalRevenue = quotes.filter((q) => ['APPROVED'].includes(q.status)).reduce((sum, q) => sum + q.total, 0)
-    const conversionRate = total > 0 ? Math.round((approved / total) * 100) : 0
-    return { total, approved, approvedValue, pending, draftCount, totalRevenue, conversionRate }
-  }, [quotes])
 
   const chartData = useMemo(() => {
     const now = new Date()
@@ -623,6 +616,15 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     } finally {
       setSaveState('')
     }
+  }
+
+  const openConversation = async (quoteId: string) => {
+    try {
+      const { quote } = await apiRequest<{ quote: Quote }>(`/api/quotes/${encodeURIComponent(quoteId)}`)
+      setConversationQuote({ id: quote.id, documentNumber: quote.documentNumber, publicToken: quote.publicToken, status: quote.status })
+      setPage('conversation')
+      setError('')
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Unable to open this quote conversation.') }
   }
 
   const addLine = () => updateEditor({ lines: [...(editor?.lines ?? []), { description: '', quantity: 1, unit: 'unit', unitPrice: 0, taxRate: Number(business?.defaultTaxRate ?? 0) }] })
@@ -995,7 +997,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     setQuoteStatusFilter('ALL')
     setIncludeArchived(false)
   }
-  const heading = page === 'dashboard' ? 'Overview' : page === 'quotes' ? 'Quotes' : page === 'customers' ? 'Customers' : page === 'services' ? 'Services & products' : page === 'jobs' ? 'Jobs' : page === 'invoices' ? 'Finance' : page === 'reports' ? 'Reports' : page === 'team' ? 'Team' : page === 'settings' ? 'Settings' : 'Quote editor'
+  const heading = page === 'dashboard' ? 'Overview' : page === 'quotes' ? 'Quotes' : page === 'customers' ? 'Customers' : page === 'services' ? 'Services & products' : page === 'jobs' ? 'Jobs' : page === 'invoices' ? 'Finance' : page === 'reports' ? 'Reports' : page === 'team' ? 'Team' : page === 'settings' ? 'Settings' : page === 'conversation' ? 'Quote conversation' : 'Quote editor'
 
   if (loading) return <main className="workspace-loading">Loading your workspace…</main>
 
@@ -1003,7 +1005,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     <div className="workspace-root">
       <aside className="app-sidebar">
         <a className="brand brand-workspace" href="#dashboard" onClick={(event) => { event.preventDefault(); changePage('dashboard') }}>
-          <span className="brand-mark">iQ</span><span>iQuote<span className="brand-period">.</span></span>
+          <span className="brand-mark">iQ</span><span className="brand-word">i<span className="brand-q">Q</span>uote<span className="brand-period">.</span></span>
         </a>
         <nav className="app-navigation" aria-label="Workspace navigation">
           <div className="sidebar-nav-group">
@@ -1074,10 +1076,8 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           </div>
           <div className="topbar-right">
             {business?.subdomain && <a className="topbar-domain-link" href={`https://${business.subdomain}.trendscore.co.ke`} target="_blank" rel="noreferrer">{business.subdomain}.trendscore.co.ke</a>}
-            <button type="button" className="topbar-icon-btn" aria-label="Notifications">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
-              {dashboardStats.pending > 0 && <span className="topbar-badge">{dashboardStats.pending}</span>}
-            </button>
+            <PwaControls />
+            <NotificationCenter onOpenQuote={(id) => void openConversation(id)} />
             {page !== 'editor' && <button type="button" className="button button-primary" onClick={startNewQuote}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
               New Quote
@@ -1088,6 +1088,8 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
         {error && <div className="workspace-alert" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
 
         {page === 'dashboard' && business && <CustomerDashboard user={user} business={business} quotes={quotes} customers={customers} chartRange={chartRange} chartData={chartData} onRangeChange={setChartRange} onNewQuote={startNewQuote} onViewQuotes={() => changePage('quotes')} onViewCustomers={() => changePage('customers')} onOpenQuote={openQuote} />}
+
+        {page === 'conversation' && conversationQuote && <section className="workspace-content conversation-page"><div className="list-toolbar"><div><p className="workspace-eyebrow">Quote activity</p><h2>{conversationQuote.documentNumber}</h2><p>Messages stay attached to the quote and are shared with its customer.</p></div><div className="conversation-actions"><button className="button button-secondary" type="button" onClick={() => changePage('quotes')}>← All quotes</button>{conversationQuote.publicToken && <a className="button button-secondary" href={`/quote/${encodeURIComponent(conversationQuote.publicToken)}`} target="_blank" rel="noreferrer">Open customer view</a>}</div></div><QuoteChatter quoteId={conversationQuote.id} mode="business" readOnly={conversationQuote.status === 'EXPIRED'} /></section>}
 
         {page === 'quotes' && business && (
           <section className="workspace-content">
@@ -1169,12 +1171,13 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
                 <div className="settings-footer email-settings-footer"><button className="button button-secondary" type="button" onClick={() => void setupEmailDomain()} disabled={emailSettingsSaving || emailSettingsForm.provider !== 'CUSTOM' || !emailSettingsForm.customDomain}>Set up domain</button><button className="button button-secondary" type="button" onClick={() => void checkEmailDomain()} disabled={emailSettingsSaving || !emailSettings?.customDomain}>Check status</button><button className="button button-primary" type="submit" disabled={emailSettingsSaving}>{emailSettingsSaving ? 'Saving…' : 'Save email settings'}</button></div>
               </div>
             </form>
+            {user.teamRole !== 'MEMBER' && <section className="workspace-panel settings-form"><div className="settings-section"><h3>Workspace data</h3><p>Download a JSON copy of your business data, including customers, quotations, jobs, costs, invoices, payment records, team, and settings. Only owners and admins can export.</p><a className="button button-secondary" href="/api/export/workspace.json">Download workspace export</a></div></section>}
           </section>
         )}
 
         {page === 'jobs' && business && <JobsPanel business={business} customers={customers} currency={business.currency} />}
 
-        {page === 'invoices' && business && <InvoicesPanel business={business} customers={customers} currency={business.currency} />}
+        {page === 'invoices' && business && <InvoicesPanel business={business} customers={customers} currency={business.currency} canManageFinancials={user.teamRole !== 'MEMBER'} />}
 
         {page === 'reports' && business && <ReportsPanel business={business} currency={business.currency} />}
 
@@ -1191,6 +1194,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
                 <div className="table-scroll"><table className="data-table"><thead><tr><th>Recipient</th><th>Status</th><th>Sent</th><th>Delivered</th><th>Error</th></tr></thead><tbody>{deliveries.map((d) => <tr key={d.id}><td>{d.recipientEmail}</td><td><span className={`status-badge status-${d.status.toLowerCase()}`}>{d.status}</span></td><td>{d.sentAt ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(d.sentAt)) : '—'}</td><td>{d.deliveredAt ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(d.deliveredAt)) : '—'}</td><td>{d.errorMessage || '—'}</td></tr>)}</tbody></table></div>
               </section>
             )}
+            {editorQuoteId && quotes.find((quote) => quote.id === editorQuoteId)?.status !== 'DRAFT' && <QuoteChatter quoteId={editorQuoteId} mode="business" readOnly={quotes.find((quote) => quote.id === editorQuoteId)?.status === 'EXPIRED'} />}
             <div className="editor-layout">
               <div className="editor-fields">
                 <section className="workspace-panel editor-section">

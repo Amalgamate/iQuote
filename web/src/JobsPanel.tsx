@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { apiRequest, formatMoney } from './api'
+import { apiRequest, downloadAuthenticatedFile, formatMoney } from './api'
 
 type Customer = { id: string; name: string; phone: string | null; email: string | null }
 type Business = {
@@ -16,6 +16,7 @@ type Milestone = {
   dueDate: string | null
   completedAt: string | null
   position: number
+  customerVisible: boolean
 }
 
 type Cost = {
@@ -24,6 +25,30 @@ type Cost = {
   amount: number
   category: string | null
   incurredAt: string | null
+}
+
+type JobActivity = {
+  id: string
+  actorName: string
+  action: string
+  details: { title?: string; fromStatus?: string; toStatus?: string; amount?: number; currency?: string } | null
+  createdAt: string
+}
+
+type JobAttachment = { id: string; originalFilename: string; mimeType: string; sizeBytes: number; uploadedBy: string; uploaderName: string; createdAt: string }
+
+function fileToBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : ''
+      const comma = result.indexOf(',')
+      if (comma < 0) return reject(new Error('Could not read this file.'))
+      resolve(result.slice(comma + 1))
+    }
+    reader.onerror = () => reject(new Error('Could not read this file.'))
+    reader.readAsDataURL(file)
+  })
 }
 
 type Job = {
@@ -40,6 +65,9 @@ type Job = {
   quote?: { id: string; documentNumber: string; status: string } | null
   milestones: Milestone[]
   costs: Cost[]
+  activities?: JobActivity[]
+  attachments?: JobAttachment[]
+  progressEnabled?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -308,8 +336,22 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
   const [editMilestoneId, setEditMilestoneId] = useState<string | null>(null)
   const [editMilestoneForm, setEditMilestoneForm] = useState<MilestoneForm>(blankMilestoneForm)
   const [showCostForm, setShowCostForm] = useState(false)
+  const [activities, setActivities] = useState<JobActivity[]>(job.activities ?? [])
+  const [progressUrl, setProgressUrl] = useState<string | null>(null)
+  const [attachmentUploading, setAttachmentUploading] = useState(false)
 
   const customer = customers.find((c) => c.id === job.customerId)
+
+  const refreshActivity = async () => {
+    try {
+      const response = await apiRequest<{ activities: JobActivity[] }>(`/api/jobs/${job.id}/activity`)
+      setActivities(response.activities)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to load job history.')
+    }
+  }
+
+  useEffect(() => { void refreshActivity() }, [job.id])
 
   const addMilestone = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -320,6 +362,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
         body: JSON.stringify({ title: milestoneForm.title, dueDate: milestoneForm.dueDate || undefined }),
       })
       onJobUpdate({ ...job, milestones: [...job.milestones, response.milestone] })
+      void refreshActivity()
       setMilestoneForm(blankMilestoneForm)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to add milestone.')
@@ -334,6 +377,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
         body: JSON.stringify({ completedAt }),
       })
       onJobUpdate({ ...job, milestones: job.milestones.map((m) => (m.id === response.milestone.id ? response.milestone : m)) })
+      void refreshActivity()
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to update milestone.')
     }
@@ -351,6 +395,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
         body: JSON.stringify({ title: editMilestoneForm.title, dueDate: editMilestoneForm.dueDate || undefined }),
       })
       onJobUpdate({ ...job, milestones: job.milestones.map((m) => (m.id === response.milestone.id ? response.milestone : m)) })
+      void refreshActivity()
       setEditMilestoneId(null)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to update milestone.')
@@ -362,8 +407,56 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
     try {
       await apiRequest(`/api/jobs/${job.id}/milestones/${milestone.id}`, { method: 'DELETE' })
       onJobUpdate({ ...job, milestones: job.milestones.filter((m) => m.id !== milestone.id) })
+      void refreshActivity()
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to delete milestone.')
+    }
+  }
+
+  const toggleMilestoneVisibility = async (milestone: Milestone) => {
+    try {
+      const response = await apiRequest<MilestoneResponse>(`/api/jobs/${job.id}/milestones/${milestone.id}`, { method: 'PUT', body: JSON.stringify({ customerVisible: !milestone.customerVisible }) })
+      onJobUpdate({ ...job, milestones: job.milestones.map((m) => (m.id === milestone.id ? response.milestone : m)) })
+      void refreshActivity()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to update customer visibility.')
+    }
+  }
+
+  const createProgressLink = async () => {
+    try {
+      const response = await apiRequest<{ progressUrl: string }>(`/api/jobs/${job.id}/progress-link`, { method: 'POST' })
+      setProgressUrl(response.progressUrl)
+      onJobUpdate({ ...job, progressEnabled: true })
+      void refreshActivity()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to create customer progress link.')
+    }
+  }
+
+  const revokeProgressLink = async () => {
+    if (!window.confirm('Revoke the customer progress link? Anyone with the link will lose access.')) return
+    try {
+      await apiRequest(`/api/jobs/${job.id}/progress-link`, { method: 'DELETE' })
+      setProgressUrl(null)
+      onJobUpdate({ ...job, progressEnabled: false })
+      void refreshActivity()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to revoke customer progress link.')
+    }
+  }
+
+  const uploadAttachment = async (file: File) => {
+    setAttachmentUploading(true)
+    try {
+      const contentBase64 = await fileToBase64(file)
+      const response = await apiRequest<{ attachment: JobAttachment }>(`/api/jobs/${job.id}/attachments`, { method: 'POST', body: JSON.stringify({ filename: file.name, mimeType: file.type, contentBase64 }) })
+      onJobUpdate({ ...job, attachments: [response.attachment, ...(job.attachments ?? [])] })
+      void refreshActivity()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to upload this attachment.')
+    } finally {
+      setAttachmentUploading(false)
     }
   }
 
@@ -381,6 +474,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
         }),
       })
       onJobUpdate({ ...job, costs: [...job.costs, response.cost] })
+      void refreshActivity()
       setCostForm(blankCostForm)
       setShowCostForm(false)
     } catch (requestError) {
@@ -433,6 +527,36 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
       </section>
 
       <section className="workspace-panel">
+        <div className="panel-heading"><div><h2>Customer progress link</h2><p>Only milestones explicitly marked visible are shown. The link can be revoked at any time.</p></div></div>
+        <div className="job-info-grid">
+          <div><span>Link status</span><strong>{job.progressEnabled ? 'Active' : 'Off'}</strong></div>
+          <div><button className="button button-secondary" type="button" onClick={() => void createProgressLink()}>{job.progressEnabled ? 'Rotate link' : 'Create link'}</button></div>
+          {job.progressEnabled && <div><button className="quiet-button danger-button" type="button" onClick={() => void revokeProgressLink()}>Revoke link</button></div>}
+        </div>
+        {progressUrl && <div className="field-row"><input className="input-control" readOnly value={progressUrl} aria-label="Customer progress link" /><button className="quiet-button" type="button" onClick={() => void navigator.clipboard?.writeText(progressUrl)}>Copy link</button></div>}
+      </section>
+
+      <section className="workspace-panel">
+        <div className="panel-heading"><div><h2>Job history</h2><p>Status, milestone, and cost changes with the team member and time.</p></div></div>
+        <div className="milestone-list">
+          {activities.length ? activities.map((activity) => (
+            <div className="milestone-item" key={activity.id}>
+              <div className="milestone-content">
+                <strong>{activity.action.replaceAll('_', ' ').toLowerCase()}</strong>
+                <small>{activity.actorName} · {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(activity.createdAt))}{activity.details?.fromStatus && activity.details.toStatus ? ` · ${activity.details.fromStatus} → ${activity.details.toStatus}` : ''}{activity.details?.title ? ` · ${activity.details.title}` : ''}{activity.details?.amount !== undefined ? ` · ${formatMoney(activity.details.amount, activity.details.currency ?? currency)}` : ''}</small>
+              </div>
+            </div>
+          )) : <div className="panel-empty"><p>No history recorded.</p></div>}
+        </div>
+      </section>
+
+      <section className="workspace-panel">
+        <div className="panel-heading"><div><h2>Attachments</h2><p>Private to this workspace · PDF, PNG, JPEG, or WebP · maximum 6 MB each</p></div><label className="button button-secondary">{attachmentUploading ? 'Uploading…' : 'Add file'}<input type="file" accept="application/pdf,image/png,image/jpeg,image/webp" disabled={attachmentUploading} hidden onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void uploadAttachment(file) }} /></label></div>
+        <div className="table-scroll"><table className="data-table"><thead><tr><th>File</th><th>Type</th><th>Added by</th><th>Added</th><th /></tr></thead><tbody>{(job.attachments ?? []).map((attachment) => <tr key={attachment.id}><td><strong>{attachment.originalFilename}</strong><small>{(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB</small></td><td>{attachment.mimeType}</td><td>{attachment.uploaderName}</td><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(attachment.createdAt))}</td><td><button type="button" className="dashboard-text-link" onClick={() => void downloadAuthenticatedFile(`/api/jobs/${encodeURIComponent(job.id)}/attachments/${encodeURIComponent(attachment.id)}`, attachment.originalFilename).catch((err) => setError(err instanceof Error ? err.message : 'Unable to download this attachment.'))}>Download</button></td></tr>)}</tbody></table></div>
+        {!(job.attachments ?? []).length && <div className="panel-empty"><p>No job attachments yet.</p></div>}
+      </section>
+
+      <section className="workspace-panel">
         <div className="panel-heading">
           <div>
             <h2>Milestones</h2>
@@ -458,6 +582,7 @@ function JobDetail({ job, currency, customers, onBack, onStatusChange, onJobUpda
                   <small>Due: {formatDate(milestone.dueDate)}{milestone.completedAt && ` · Completed ${formatDate(milestone.completedAt)}`}</small>
                 </div>
               )}
+              {editMilestoneId !== milestone.id && <label className="workspace-eyebrow"><input type="checkbox" checked={milestone.customerVisible} onChange={() => void toggleMilestoneVisibility(milestone)} /> Show to customer</label>}
               {editMilestoneId !== milestone.id && (
                 <div className="table-action-group">
                   <button className="quiet-button" type="button" onClick={() => startEditMilestone(milestone)}>Edit</button>

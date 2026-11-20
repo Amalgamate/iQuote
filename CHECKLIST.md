@@ -58,6 +58,21 @@ The audits report a React/Vite/TypeScript web app, Express API, Prisma/PostgreSQ
 
 The workspace sidebar includes Overview, Quotes, Customers, Catalogue, Market, Proposals, Jobs, Finance, Reports, Team, and Settings. Jobs, Finance, Reports, and Team have working screens and APIs, although their broad acceptance criteria still need review. Market and Proposals have a public-site concept and inactive customer-sidebar entries, but no RFQ/proposal backend. They are deferred by the founder and must remain the last workstream; do not start them as part of the current implementation sequence.
 
+## Current super-admin completion sequence (marketplace deferred)
+
+This workstream corrects the earlier overclaim that Stages 11–15 were fully accepted. Implement and verify the following non-marketplace items in order. Do not start Marketplace/Proposals until the other listed work is complete and the founder later asks to begin it.
+
+- [x] Reconcile the completion tracker against source: Stage 11 sender configuration is open; Stage 12 pilot evidence is absent; Stage 13 Marketplace backend is absent; Stages 14–15 are partial.
+- [ ] Finish account/session support: user directory, session visibility, reasoned single/all session revocation, mandatory MFA enrollment, encrypted MFA secrets, and behavioral authorization/revocation verification. Directory/revocation and mandatory encrypted MFA code are present; behavioral acceptance remains open.
+- [ ] Build platform operations visibility: API/database dependencies, Resend failures/bounces, webhook freshness and processing errors, service health, and support actions with audit coverage. Live Resend connectivity status, audited failed-webhook reprocessing, and failure details are implemented; provider credentials are absent locally, and behavioral verification/alerts remain open.
+- [ ] Add platform-wide reporting by time and currency, separating quote value from invoiced amounts, collected payments, and receivables; do not sum unlike currencies. Grouped 7/30/90/365-day reports and invoice/payment reconciliation views are implemented; behavioral and accounting acceptance remains open.
+- [ ] Resolve Stage 11's verified sender configuration and acceptance evidence when the required provider settings are available. The local API environment has no Resend key, sender address, or webhook secret.
+- [ ] Complete Stage 14–15 acceptance gaps for job history/customer progress, financial reconciliation/refunds, data export/retention, and operational recovery. Job history, private attachments, selected-milestone public progress links, idempotent payment recording, reasoned invoice reconciliation, and owner/admin JSON export are implemented; refund rails/policy, retention policy, manual acceptance, and recovery evidence remain open.
+- [ ] Decide billing provider and implement provider-backed subscription controls only after pricing, entitlement, reconciliation, and support rules are approved.
+- [ ] Marketplace (last; explicitly deferred): only return to Stage 12 pilot evidence and Stage 13 software after all above items and a later founder instruction.
+
+Do not mark an item complete because it compiles. Require the relevant migration state, behavior/authorization evidence, and recorded acceptance before checking it off.
+
 ## Dashboard screen acceptance criteria
 
 Screen-level specs for each sidebar module. Active screens are implemented and need verification; upcoming screens need implementation per their stage gate. Add or revise these criteria before building each new screen.
@@ -72,7 +87,7 @@ Screen-level specs for each sidebar module. Active screens are implemented and n
 | **Catalogue** | Business owner | Service/product items with name, category, description, kind, rate; search and filter; items reusable across quotes; edit/delete preserves historical quote line snapshots; tenant-scoped | 7, 10 |
 | **Settings** | Business owner | Business profile (name, logo, currency, tax rate); email sender config (platform vs custom domain, API key, domain verification records); user account details; trial status display; logo upload with safe MIME handling | 7, 8, 11 |
 | **Public Quote** | Customer (logged-out) | Token-authenticated view; shows quote lines, totals, business branding; records view timestamp; approve/decline with optional comment; expiry enforcement; repeat-decision prevention or explicit re-open; mobile-responsive; PDF download | 7, 11 |
-| **Superadmin** | Platform admin | Overview, quote and signup snapshots; searchable workspace list and detail; reasoned suspend/restore; optional TOTP MFA; searchable activity log for selected actions. Still needs mandatory MFA, user/session support, delivery/health operations, platform financial reporting, and broader audit coverage. No marketplace moderation until that workstream is approved. | Current admin workstream |
+| **Superadmin** | Platform admin | Overview, quote and signup snapshots; searchable workspace list and detail; reasoned suspend/restore; mandatory encrypted TOTP MFA; searchable user/session support; delivery operations with live Resend status and audited failed-webhook reprocessing; currency-separated financial reports with invoice/payment reconciliation; searchable activity log for selected actions. Behavioral acceptance, alerting, and broader audit coverage remain open. No marketplace moderation until that workstream is approved. | Current admin workstream |
 
 ### Upcoming screens (gated by stage)
 
@@ -149,17 +164,17 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 
 ## Stage 11 — Deliver quotes by email and make delivery observable
 
-- [x] Configure a verified platform Resend sender in the target environment and verify OTP/welcome delivery using a controlled test account.
+- [ ] Configure a verified platform Resend sender in the target environment and verify OTP/welcome delivery using a controlled test account. Local API configuration currently has no Resend key, sender address, or webhook secret.
 - [x] Design an explicit Send Quote flow with recipient confirmation, message preview, public review link, and generated PDF attachment.
 - [x] Keep the current share-link action distinct from email sending and make status labels describe what actually happened.
 - [x] Add persisted delivery attempts/results, provider message IDs, timestamps, safe error summaries, and a tenant-visible delivery status.
 - [x] Add idempotent retry/resend behavior and prevent duplicate or ambiguous send outcomes.
-- [x] Verify platform-versus-tenant sender selection, tenant key encryption/decryption, sender/domain verification, and failure behavior without exposing credentials.
-- [x] Verify Resend webhook signatures and replay protection; process delivered, bounced, complained, and provider-domain events.
-- [x] Move provider calls to a retryable queue/worker when measured latency/reliability warrants it; define dead-letter and alert handling.
+- [ ] Verify platform-versus-tenant sender selection, tenant key encryption/decryption, sender/domain verification, and failure behavior without exposing credentials.
+- [ ] Verify Resend webhook signatures and replay protection; process delivered, bounced, complained, and provider-domain events. Signature verification and delivered/bounced updates exist; complained/provider-domain handling and live acceptance remain open.
+- [ ] Move provider calls to a retryable queue/worker when measured latency/reliability warrants it; define dead-letter and alert handling. No workload measurements or queue/worker evidence are recorded.
 - [x] Add token revoke/replace behavior for superseded or compromised quote links.
-- [x] Consider a request-changes decision state and customer notification only after its business semantics are defined.
-- [x] Verify PDF attachments and rendering for long quotes, supported logos, currencies, and common mail clients.
+- [ ] Consider a request-changes decision state and customer notification only after its business semantics are defined.
+- [ ] Verify PDF attachments and rendering for long quotes, supported logos, currencies, and common mail clients.
 
 **Exit checks:** a business can send an immutable quote version with a PDF and link; delivery state and retry behavior are visible; provider failures are diagnosable; verified sender behavior is demonstrated in the intended environment. The source includes the send and webhook paths, but `progress.json` records no configured Resend sender; keep the operational sender item open until demonstrated.
 
@@ -200,24 +215,24 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 ## Stage 14 — Connect accepted work to delivery and financial records
 
 - [x] Define the quote-to-job conversion point and preserve accepted quote/version/terms as an immutable snapshot.
-- [ ] Model jobs, ownership, status history, milestones, due dates, attachments, and customer-visible progress. Basic jobs/milestones exist; history, attachments, and public progress are not present.
+- [ ] Model jobs, ownership, status history, milestones, due dates, attachments, and customer-visible progress. Job activity history, authenticated private attachments, and revocable public progress links for selected milestones now exist; behavioral acceptance remains open.
 - [ ] Validate one initial vertical's real production stages before making a generalized workflow engine.
-- [ ] Add materials, labor, supplier, transport, and other cost records with actor, timestamp, currency, and audit trail. Generic job costs exist; full cost classes and durable audit trail need review.
-- [ ] Define invoices, deposits, partial payments, allocations, receipts, refunds, and balances as explicit financial events. Invoice and payment records exist; provider-backed receipts/refunds/allocations are not complete.
+- [ ] Add materials, labor, supplier, transport, and other cost records with actor, timestamp, currency, and audit trail. The five cost categories, actor/timestamp/currency, and job activity entries exist; acceptance evidence remains open.
+- [ ] Define invoices, deposits, partial payments, allocations, receipts, refunds, and balances as explicit financial events. Immutable payment rows and reasoned invoice reconciliations exist; receipt delivery, allocations, and provider-backed refunds remain incomplete.
 - [ ] Select and integrate payment rails only after provider, reconciliation, refunds, and failure handling are designed.
-- [ ] Ensure payments cannot be silently edited or double-counted; add idempotency and reconciliation workflows. A duplicate window exists; provider reconciliation is absent.
+- [ ] Ensure payments cannot be silently edited or double-counted; add idempotency and reconciliation workflows. Stable idempotency keys, invoice row locking, and a reasoned invoice-to-payment reconciliation action are implemented; provider settlement reconciliation and behavioral acceptance remain open.
 - [x] Add estimated-versus-actual cost and margin reports with currency-aware aggregation.
-- [ ] Add role authorization, tenant constraints, retention, export, and recovery tests for job and financial data.
+- [ ] Add role authorization, tenant constraints, retention, export, and recovery tests for job and financial data. Owner/admin JSON export is implemented; retention policy and recovery/authorization acceptance remain open.
 
 **Exit checks:** an accepted quote can be delivered as tracked work; costs and payment events reconcile to an auditable history; reports respect currencies and access scope.
 
 ## Stage 15 — Expand commercial controls, integrations, reporting, and operations
 
-- [ ] Decide plans, entitlements, trial terms, cancellation/grace behavior, and pricing using validated evidence.
-- [ ] Select a payment provider for the target market; document fees, settlement, refunds, webhook support, and operational ownership.
-- [ ] Add provider customer/subscription IDs and immutable billing event records through versioned migrations.
-- [ ] Implement checkout and signed, replay-protected webhooks; make lifecycle handlers idempotent.
-- [ ] Reconcile provider events against local subscription state, expose failures for support review, and enforce entitlements server-side.
+- [ ] Finalize plan prices and entitlements; 14-day trial, monthly payments, and immediate workspace lock after expiry are selected. Actual prices remain operator-configurable and unset pending founder approval.
+- [x] Select NCBA M-Pesa STK Push as the initial subscription rail; merchant activation, fees, settlement timings, and support ownership remain to be confirmed with NCBA.
+- [ ] Add immutable billing records and provider transaction references through versioned migrations. STK payment attempts and references are implemented; webhook event history remains open.
+- [ ] Implement checkout and signed, replay-protected webhooks; STK checkout and authenticated transaction-status queries are implemented. NCBA notification webhook, callback signature verification, dynamic QR, and lifecycle acceptance remain open.
+- [ ] Reconcile provider events against local subscription state, expose failures for support review, and enforce entitlements server-side. Subscription expiry lock, owner billing screen, idempotent pending-payment handling, and NCBA query-based activation are implemented; production settlement reconciliation and bank acceptance remain open.
 - [ ] Add premium opportunity credits only if later marketplace evidence supports them; marketplace work remains deferred.
 - [x] Preserve explicit development/simulated mode that cannot be mistaken for paid status.
 - [x] Design team membership and invitations for multi-user organisations; define role permissions and workspace switching before implementation.
@@ -227,10 +242,12 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 - [x] Add tenant reports for quote funnel, repeat customers, revenue/receivables, and job profitability where underlying data is reliable.
 - [ ] Add structured logs, error monitoring, alert thresholds, privacy-conscious tracing, support runbooks, and operational release reporting. Structured JSON logging exists; monitoring and alerts do not.
 - [ ] Measure query plans, load behavior, PDF generation, and queue throughput before scaling infrastructure.
-- [ ] Define retention, deletion/export, incident response, access reviews, and recurring restore exercises.
+- [ ] Define retention, deletion/export, incident response, access reviews, and recurring restore exercises. Workspace JSON export exists; retention/deletion policy, access reviews, and recurring restore evidence remain open.
 - [ ] Reassess shared services, storage, rate limiting, and tenant architecture against observed usage before splitting services.
 
 **Exit checks:** any paid features are supported by observed demand and provider evidence; billing is auditable; reporting is currency-aware; integrations and operating capacity are observable and tested.
+
+**NCBA implementation status:** iQuote now has super-admin-managed monthly KES plan prices, NCBA STK initiation and status query, a locked-workspace payment screen, one pending payment per workspace, auditable price changes, and server-side activation only after a successful NCBA query. Production use still requires the admin to enter approved prices, a signed NCBA service request, merchant credentials/Till details, a migrated production database, and controlled live payment acceptance. Paybill push notifications and dynamic QR are deferred from the first renewal flow.
 
 ## Automatic progress workflow
 

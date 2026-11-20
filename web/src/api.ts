@@ -4,10 +4,15 @@ const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
 // Session expiry handler — allows the app to react to 401s globally
 let onSessionExpired: (() => void) | null = null
+let onSubscriptionPaymentRequired: (() => void) | null = null
 
 /** Register a callback that fires when the API returns 401 (session expired/invalid) */
 export function setSessionExpiredHandler(handler: (() => void) | null) {
   onSessionExpired = handler
+}
+
+export function setSubscriptionPaymentRequiredHandler(handler: (() => void) | null) {
+  onSubscriptionPaymentRequired = handler
 }
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -28,10 +33,30 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     if (response.status === 401 && !path.startsWith('/api/public/') && onSessionExpired) {
       onSessionExpired()
     }
+    if (response.status === 402 && data?.code === 'SUBSCRIPTION_PAYMENT_REQUIRED' && onSubscriptionPaymentRequired) {
+      onSubscriptionPaymentRequired()
+    }
     throw new Error(data?.message ?? 'Something went wrong.')
   }
 
   return data as T
+}
+
+export async function downloadAuthenticatedFile(path: string, filename: string) {
+  const response = await fetch(`${API_BASE}${path}`, { credentials: 'include' })
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data?.message ?? 'Could not download the file.')
+  }
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 /** Resolve a server-relative URL (e.g. /uploads/logo.png) to a full API URL */

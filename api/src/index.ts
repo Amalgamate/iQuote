@@ -8,9 +8,10 @@ import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { generateSecret, generateURI, verifySync } from 'otplib'
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
 import { getIndustryPack } from './industry-packs.js'
+import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush } from './ncba-client.js'
 import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, emailSubjects } from './email-templates.js'
 
 const prisma = new PrismaClient()
@@ -118,6 +119,24 @@ function decryptEmailSecret(value: string) {
   return Buffer.concat([decipher.update(Buffer.from(encryptedText, 'base64')), decipher.final()]).toString('utf8')
 }
 
+function encryptMfaSecret(value: string) {
+  const iv = randomBytes(12)
+  const key = createHmac('sha256', appSecret).update('iquote-superadmin-mfa').digest()
+  const cipher = createCipheriv('aes-256-gcm', key, iv)
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()])
+  return `enc:v1:${iv.toString('base64')}:${cipher.getAuthTag().toString('base64')}:${encrypted.toString('base64')}`
+}
+
+function decryptMfaSecret(value: string) {
+  if (!value.startsWith('enc:v1:')) return value // Upgrade legacy plaintext records on successful verification.
+  const [, , ivText, tagText, encryptedText] = value.split(':')
+  if (!ivText || !tagText || !encryptedText) throw new Error('Stored authenticator secret is invalid.')
+  const key = createHmac('sha256', appSecret).update('iquote-superadmin-mfa').digest()
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivText, 'base64'))
+  decipher.setAuthTag(Buffer.from(tagText, 'base64'))
+  return Buffer.concat([decipher.update(Buffer.from(encryptedText, 'base64')), decipher.final()]).toString('utf8')
+}
+
 // ---- CORS: explicit trusted origins only ----
 // TRUSTED_ORIGINS is a comma-separated list of exact URLs allowed to make
 // credentialed requests (e.g. "https://iquote.trendscore.co.ke").
@@ -203,6 +222,7 @@ app.use('/api/webhooks/resend', express.json({
 
 // ---- Logo uploads: static serving ----
 const uploadsDir = process.env.UPLOADS_DIR ?? join(process.cwd(), 'uploads')
+app.use('/uploads/job-attachments', (_req, res) => res.status(404).end())
 app.use('/uploads', express.static(uploadsDir, { maxAge: '7d', immutable: true }))
 
 function readTokenFromRequest(req: Request) {
@@ -254,12 +274,13 @@ async function issueSession(userId: string, mfaVerified = false): Promise<string
   return rawToken
 }
 
-function toPublicUser(user: { id: string; name: string; email: string; role?: string }) {
+function toPublicUser(user: { id: string; name: string; email: string; role?: string; teamRole?: string }) {
   return {
     id: user.id,
     name: user.name,
     email: user.email,
     role: user.role ?? 'USER',
+    teamRole: user.teamRole ?? 'OWNER',
   }
 }
 
@@ -301,6 +322,26 @@ function platformSenderName() {
 
 function platformEmailReady() {
   return Boolean(process.env.RESEND_API_KEY && platformSenderEmail())
+}
+
+async function checkResendProviderHealth(): Promise<string> {
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) return 'NOT_CONFIGURED'
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 5000)
+  try {
+    const response = await fetch('https://api.resend.com/domains', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    })
+    if (response.ok) return 'HEALTHY'
+    if (response.status === 401 || response.status === 403) return 'INVALID_CREDENTIALS'
+    return `HTTP_${response.status}`
+  } catch {
+    return 'UNAVAILABLE'
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 type SendEmailResult = { success: true; messageId: string | null }
@@ -478,7 +519,7 @@ async function loadUserFromToken(token: string) {
     if (!session) return null
     const user = await prisma.user.findUnique({
       where: { id: session.userId },
-      select: { id: true, name: true, email: true, role: true },
+      select: { id: true, name: true, email: true, role: true, teamRole: true },
     })
 
     return user ? toPublicUser(user) : null
@@ -492,10 +533,49 @@ async function markSessionMfaVerified(token: string) {
 }
 
 async function hasVerifiedSuperadminSession(token: string, userId: string) {
-  const account = await prisma.user.findUnique({ where: { id: userId }, select: { mfaEnabled: true } })
-  if (!account?.mfaEnabled) return true
+  const account = await prisma.user.findUnique({ where: { id: userId }, select: { mfaEnabled: true, mfaEnabledAt: true } })
+  if (!account?.mfaEnabled || !account.mfaEnabledAt) return false
   const session = await prisma.session.findFirst({ where: { token: hashToken(token), expiresAt: { gt: new Date() } }, select: { mfaVerifiedAt: true } })
-  return Boolean(session?.mfaVerifiedAt)
+  return Boolean(session?.mfaVerifiedAt && session.mfaVerifiedAt >= account.mfaEnabledAt)
+}
+
+async function refreshSubscriptionState(organisationId: string) {
+  const subscription = await prisma.subscription.findUnique({ where: { organisationId } })
+  if (!subscription) return null
+  const now = new Date()
+  const expiredTrial = subscription.status === 'TRIALING' && subscription.trialEndsAt <= now
+  const expiredPaidPeriod = subscription.status === 'ACTIVE' && subscription.currentPeriodEndsAt !== null && subscription.currentPeriodEndsAt <= now
+  if (expiredTrial || expiredPaidPeriod) {
+    return prisma.subscription.update({ where: { organisationId }, data: { status: 'EXPIRED' } })
+  }
+  return subscription
+}
+
+const BILLING_PLANS = ['STARTER', 'GROWTH', 'TEAM'] as const
+
+async function platformPlanPrices() {
+  const saved = await prisma.platformPlanPrice.findMany({ where: { plan: { in: [...BILLING_PLANS] } } })
+  const savedByPlan = new Map(saved.map((row) => [row.plan, row]))
+  return BILLING_PLANS.map((plan) => {
+    const row = savedByPlan.get(plan)
+    const amount = row ? (row.amount === null ? null : Number(row.amount)) : ncbaPlanPrice(plan)
+    return { plan, amount, currency: 'KES', source: row ? 'ADMIN' : amount === null ? 'UNSET' : 'ENVIRONMENT' }
+  })
+}
+
+async function platformPlanPrice(plan: string) {
+  if (!BILLING_PLANS.includes(plan as typeof BILLING_PLANS[number])) return null
+  const saved = await prisma.platformPlanPrice.findUnique({ where: { plan } })
+  if (saved) return saved.amount === null ? null : Number(saved.amount)
+  return ncbaPlanPrice(plan)
+}
+
+async function workspaceBillingIsCurrent(userId: string) {
+  const organisationId = await getOrganisationId(userId)
+  if (!organisationId) return true
+  const subscription = await refreshSubscriptionState(organisationId)
+  if (!subscription) return true
+  return subscription.status === 'TRIALING' || subscription.status === 'ACTIVE'
 }
 
 const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
@@ -516,6 +596,9 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   if (user.role !== 'SUPERADMIN') {
     const workspace = await getWorkspaceSuspension(user.id)
     if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
+    if (!req.path.startsWith('/api/billing/') && !await workspaceBillingIsCurrent(user.id)) {
+      return res.status(402).json({ message: 'Your trial or subscription has ended. Complete payment to reopen this workspace.', code: 'SUBSCRIPTION_PAYMENT_REQUIRED' })
+    }
   }
 
   ;(req as Request & { user?: typeof user }).user = user
@@ -574,6 +657,9 @@ function requireTeamRole(...allowed: TeamRoleName[]) {
     if (fullUser.role !== 'SUPERADMIN') {
       const workspace = await getWorkspaceSuspension(fullUser.id)
       if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
+      if (!req.path.startsWith('/api/billing/') && !await workspaceBillingIsCurrent(fullUser.id)) {
+        return res.status(402).json({ message: 'Your trial or subscription has ended. Complete payment to reopen this workspace.', code: 'SUBSCRIPTION_PAYMENT_REQUIRED' })
+      }
     }
 
     if (fullUser.role === 'SUPERADMIN' || allowed.includes(fullUser.teamRole)) {
@@ -716,7 +802,13 @@ app.post('/api/auth/register', async (req, res) => {
         businessType,
         defaultTaxRate: country === 'Kenya' ? 16 : 0,
         ownerId: created.id,
-        currency: ({ Kenya: 'KES', Uganda: 'UGX', Tanzania: 'TZS', Rwanda: 'RWF', 'United Kingdom': 'GBP', 'United States': 'USD' } as Record<string, string>)[country] ?? 'USD',
+        currency: ({
+          Kenya: 'KES', Uganda: 'UGX', Tanzania: 'TZS', Rwanda: 'RWF', Nigeria: 'NGN', Ghana: 'GHS',
+          'South Africa': 'ZAR', Egypt: 'EGP', Morocco: 'MAD', Ethiopia: 'ETB', Algeria: 'DZD', Angola: 'AOA',
+          Botswana: 'BWP', Zambia: 'ZMW', Malawi: 'MWK', Mozambique: 'MZN', Namibia: 'NAD', Mauritius: 'MUR',
+          Madagascar: 'MGA', Senegal: 'XOF', 'Côte d’Ivoire': 'XOF', Cameroon: 'XAF', 'DR Congo': 'CDF',
+          Tunisia: 'TND', Zimbabwe: 'ZWG', Eswatini: 'SZL', 'United Kingdom': 'GBP', 'United States': 'USD',
+        } as Record<string, string>)[country] ?? 'USD',
         quotePrefix: 'QT',
         serviceItems: { create: industryPack.services.map((item) => ({ ...item, isStarter: true })) },
         quoteTemplates: { create: industryPack.templates.map((template) => ({ ...template, isStarter: true })) },
@@ -931,10 +1023,10 @@ app.post('/api/auth/login', async (req, res) => {
   }
 
   await clearLoginAttempts(rateLimitKey)
-  const token = await issueSession(user.id, user.role !== 'SUPERADMIN' || !user.mfaEnabled)
+  const token = await issueSession(user.id, user.role !== 'SUPERADMIN')
   sendSessionCookie(res, token)
 
-  res.json({ user: toPublicUser(user), mfaRequired: user.role === 'SUPERADMIN' && user.mfaEnabled })
+  res.json({ user: toPublicUser(user), mfaRequired: user.role === 'SUPERADMIN' && user.mfaEnabled, mfaSetupRequired: user.role === 'SUPERADMIN' && !user.mfaEnabled })
 })
 
 app.post('/api/auth/superadmin-mfa/verify', async (req, res) => {
@@ -950,11 +1042,14 @@ app.post('/api/auth/superadmin-mfa/verify', async (req, res) => {
   const rateLimitKey = `admin-mfa:${user.email}:${ip}`
   const rateCheck = await checkLoginRateLimit(rateLimitKey)
   if (!rateCheck.allowed) return res.status(429).json({ message: 'Too many incorrect authenticator codes. Try again later.' })
-  if (!verifySync({ token: code, secret: account.mfaSecret })) {
+  const mfaSecret = decryptMfaSecret(account.mfaSecret)
+  if (!verifySync({ token: code, secret: mfaSecret })) {
     await recordFailedLogin(rateLimitKey)
+    await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_LOGIN_FAILED', 'USER', user.id, 'A super-admin authenticator code was rejected.')
     return res.status(401).json({ message: 'That authenticator code is invalid. Try again.' })
   }
   await clearLoginAttempts(rateLimitKey)
+  if (!account.mfaSecret.startsWith('enc:v1:')) await prisma.user.update({ where: { id: user.id }, data: { mfaSecret: encryptMfaSecret(mfaSecret) } })
   await markSessionMfaVerified(token)
   await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_LOGIN_VERIFIED', 'USER', user.id, 'Super-admin sign-in completed with authenticator verification.')
   res.json({ verified: true })
@@ -988,7 +1083,133 @@ app.get('/api/auth/me', async (req, res) => {
     if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
   }
 
+  if (user.role === 'SUPERADMIN' && !(await hasVerifiedSuperadminSession(token, user.id))) {
+    const account = await prisma.user.findUnique({ where: { id: user.id }, select: { mfaEnabled: true } })
+    return res.json({ user, mfaRequired: Boolean(account?.mfaEnabled), mfaSetupRequired: !account?.mfaEnabled })
+  }
+
   res.json({ user })
+})
+
+function addOneMonth(from: Date) {
+  const result = new Date(from)
+  const day = result.getDate()
+  result.setDate(1)
+  result.setMonth(result.getMonth() + 1)
+  const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate()
+  result.setDate(Math.min(day, lastDay))
+  return result
+}
+
+async function activateSubscriptionFromPayment(paymentId: string, providerStatus: string, description: string | null) {
+  return prisma.$transaction(async (tx) => {
+    const payment = await tx.billingPayment.findUnique({ where: { id: paymentId } })
+    if (!payment) return null
+    if (payment.status !== 'PENDING') return payment
+
+    const normalizedStatus = providerStatus.trim().toUpperCase()
+    if (normalizedStatus === 'FAILED' || normalizedStatus === 'CANCELLED') {
+      return tx.billingPayment.update({ where: { id: payment.id }, data: { status: 'FAILED', statusDescription: description || 'The payment was not completed.' } })
+    }
+    if (normalizedStatus !== 'SUCCESS') {
+      return tx.billingPayment.update({ where: { id: payment.id }, data: { statusDescription: description || 'Waiting for payment confirmation.' } })
+    }
+
+    const now = new Date()
+    const subscription = await tx.subscription.findUnique({ where: { organisationId: payment.organisationId } })
+    if (!subscription) return tx.billingPayment.update({ where: { id: payment.id }, data: { status: 'FAILED', statusDescription: 'The workspace subscription record is missing.' } })
+    const startFrom = [now, subscription.currentPeriodEndsAt, subscription.trialEndsAt].filter((date): date is Date => Boolean(date)).reduce((latest, date) => date > latest ? date : latest, now)
+    const periodEndsAt = addOneMonth(startFrom)
+    const updated = await tx.billingPayment.update({
+      where: { id: payment.id },
+      data: { status: 'PAID', statusDescription: description || 'Payment confirmed by NCBA.', paidAt: now, periodEndsAt },
+    })
+    await tx.subscription.update({
+      where: { organisationId: payment.organisationId },
+      data: { plan: payment.plan, status: 'ACTIVE', simulated: false, currentPeriodEndsAt: periodEndsAt },
+    })
+    return updated
+  })
+}
+
+app.get('/api/billing/status', requireAuth, async (req, res) => {
+  const user = (req as Request & { user?: { id: string } }).user
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace before managing billing.' })
+  const [subscription, latestPayment] = await Promise.all([
+    refreshSubscriptionState(organisationId),
+    prisma.billingPayment.findFirst({ where: { organisationId }, orderBy: { createdAt: 'desc' }, select: { id: true, plan: true, amount: true, currency: true, phone: true, status: true, statusDescription: true, createdAt: true } }),
+  ])
+  const plans = await platformPlanPrices()
+  const state = subscription?.status ?? 'NO_SUBSCRIPTION'
+  return res.json({
+    plan: subscription?.plan ?? 'STARTER', status: state, trialEndsAt: subscription?.trialEndsAt ?? null,
+    currentPeriodEndsAt: subscription?.currentPeriodEndsAt ?? null,
+    locked: Boolean(subscription && state !== 'TRIALING' && state !== 'ACTIVE'),
+    providerConfigured: ncbaStkConfigured(), pricesConfigured: plans.some((item) => item.amount !== null),
+    plans,
+    latestPayment: latestPayment ? { ...latestPayment, amount: Number(latestPayment.amount), phone: `${latestPayment.phone.slice(0, 5)}••••${latestPayment.phone.slice(-2)}` } : null,
+  })
+})
+
+app.post('/api/billing/stk', requireTeamRole('OWNER'), async (req, res) => {
+  const user = (req as Request & { user?: { id: string } }).user
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace before paying.' })
+  const plan = String(req.body?.plan ?? '').toUpperCase()
+  const amount = await platformPlanPrice(plan)
+  const phone = normalizeKenyanPhone(req.body?.phone)
+  const idempotencyKey = String(req.header('Idempotency-Key') ?? '').trim()
+  if (!['STARTER', 'GROWTH', 'TEAM'].includes(plan) || amount === null) return res.status(400).json({ message: 'That plan is not configured for billing.' })
+  if (!phone) return res.status(400).json({ message: 'Enter a valid Kenyan Safaricom number, for example 0712345678.' })
+  if (!/^[\w:-]{12,120}$/.test(idempotencyKey)) return res.status(400).json({ message: 'Refresh the payment form and try again.' })
+  if (!ncbaStkConfigured()) return res.status(503).json({ message: 'NCBA STK credentials and merchant Till details are not configured yet.' })
+
+  const repeated = await prisma.billingPayment.findUnique({ where: { idempotencyKey } })
+  if (repeated) {
+    if (repeated.organisationId !== organisationId) return res.status(409).json({ message: 'This payment request has already been used.' })
+    return res.json({ payment: { id: repeated.id, plan: repeated.plan, amount: Number(repeated.amount), currency: repeated.currency, status: repeated.status, statusDescription: repeated.statusDescription } })
+  }
+  await prisma.billingPayment.updateMany({ where: { organisationId, status: 'PENDING', createdAt: { lte: new Date(Date.now() - 15 * 60 * 1000) } }, data: { status: 'EXPIRED', statusDescription: 'Payment request expired. Start a new request to try again.' } })
+  const openPayment = await prisma.billingPayment.findFirst({ where: { organisationId, status: 'PENDING', createdAt: { gt: new Date(Date.now() - 15 * 60 * 1000) } }, orderBy: { createdAt: 'desc' } })
+  if (openPayment) return res.status(409).json({ message: 'A payment request is already waiting. Confirm it or wait for it to expire before retrying.' })
+
+  let payment: Awaited<ReturnType<typeof prisma.billingPayment.create>>
+  try {
+    payment = await prisma.billingPayment.create({ data: { organisationId, plan, amount, currency: 'KES', phone, idempotencyKey, status: 'PENDING', statusDescription: 'Starting secure payment request.' } })
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') return res.status(409).json({ message: 'A payment request is already waiting. Confirm it or wait for it to expire before retrying.' })
+    throw error
+  }
+  try {
+    const provider = await initiateNcbaStkPush({ telephone: phone, amount })
+    const updated = await prisma.billingPayment.update({ where: { id: payment.id }, data: { transactionId: provider.TransactionID, providerReference: provider.ReferenceID, statusDescription: provider.StatusDescription || 'Approve the M-Pesa prompt on your phone.' } })
+    return res.status(201).json({ payment: { id: updated.id, plan: updated.plan, amount: Number(updated.amount), currency: updated.currency, status: updated.status, statusDescription: updated.statusDescription } })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'NCBA could not start this payment.'
+    await prisma.billingPayment.update({ where: { id: payment.id }, data: { status: 'FAILED', statusDescription: message } })
+    return res.status(502).json({ message })
+  }
+})
+
+app.get('/api/billing/payments/:id', requireAuth, async (req, res) => {
+  const user = (req as Request & { user?: { id: string } }).user
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(404).json({ message: 'Payment was not found.' })
+  let payment = await prisma.billingPayment.findFirst({ where: { id: String(req.params.id), organisationId } })
+  if (!payment) return res.status(404).json({ message: 'Payment was not found.' })
+  if (payment.status === 'PENDING' && payment.transactionId && Date.now() - payment.updatedAt.getTime() >= 5_000) {
+    try {
+      const result = await queryNcbaStkPush(payment.transactionId)
+      payment = await activateSubscriptionFromPayment(payment.id, String(result.status ?? 'PENDING'), String(result.description ?? '')) ?? payment
+    } catch {
+      // Keep the payment pending when NCBA is temporarily unavailable; the customer can check again.
+    }
+  }
+  return res.json({ payment: { id: payment.id, plan: payment.plan, amount: Number(payment.amount), currency: payment.currency, status: payment.status, statusDescription: payment.statusDescription, paidAt: payment.paidAt, periodEndsAt: payment.periodEndsAt } })
 })
 
 app.get('/api/app', requireAuth, (req, res) => {
@@ -1430,6 +1651,49 @@ app.get('/api/quotes/:id', requireAuth, async (req, res) => {
   })
   if (!quote) return res.status(404).json({ message: 'Quote not found.' })
   res.json({ quote: serializeQuote(quote) })
+})
+
+app.get('/api/notifications', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const notifications = await prisma.notification.findMany({ where: { recipientUserId: user.id }, include: { quote: { select: { id: true, documentNumber: true } } }, orderBy: { createdAt: 'desc' }, take: 30 })
+  const unreadCount = await prisma.notification.count({ where: { recipientUserId: user.id, readAt: null } })
+  res.json({ notifications, unreadCount })
+})
+
+app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  await prisma.notification.updateMany({ where: { recipientUserId: user.id, readAt: null }, data: { readAt: new Date() } })
+  res.json({ ok: true })
+})
+
+app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  await prisma.notification.updateMany({ where: { id: String(req.params.id), recipientUserId: user.id, readAt: null }, data: { readAt: new Date() } })
+  res.json({ ok: true })
+})
+
+app.get('/api/quotes/:id/messages', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const quote = await prisma.quote.findFirst({ where: { id: String(req.params.id), organisationId: await getOrganisationId(user.id) ?? '__none__' } })
+  if (!quote || quote.status === 'DRAFT' || !quote.publicToken) return res.status(404).json({ message: 'Conversation is not available.' })
+  const messages = await prisma.quoteMessage.findMany({ where: { quoteId: quote.id }, orderBy: { createdAt: 'asc' }, take: 100 })
+  res.json({ messages })
+})
+
+app.post('/api/quotes/:id/messages', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const quote = await prisma.quote.findFirst({ where: { id: String(req.params.id), organisationId: await getOrganisationId(user.id) ?? '__none__' }, include: { owner: { select: { name: true } }, customer: { select: { name: true } } } })
+  if (!quote || quote.status === 'DRAFT' || !quote.publicToken) return res.status(404).json({ message: 'Conversation is not available.' })
+  if (quote.status === 'EXPIRED') return res.status(409).json({ message: 'This quote has expired; messaging is closed.' })
+  const content = String(req.body?.content ?? '').trim()
+  if (!content || content.length > 4000) return res.status(400).json({ message: 'Write a message up to 4,000 characters.' })
+  const message = await prisma.quoteMessage.create({ data: { quoteId: quote.id, organisationId: quote.organisationId, authorUserId: user.id, authorType: 'BUSINESS', authorName: user.name, content } })
+  res.status(201).json({ message })
 })
 
 app.put('/api/quotes/:id', requireAuth, async (req, res) => {
@@ -1880,6 +2144,9 @@ app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
     quote.viewedAt = new Date()
     await prisma.quote.update({ where: { id: quote.id }, data: { status: 'VIEWED', viewedAt: quote.viewedAt } })
   }
+  if (quote.status === 'VIEWED' && quote.viewedAt) {
+    await prisma.notification.upsert({ where: { sourceKey: `quote-viewed:${quote.id}` }, update: {}, create: { recipientUserId: quote.ownerId, organisationId: quote.organisationId, quoteId: quote.id, type: 'QUOTE_VIEWED', title: 'Quote viewed', body: `${quote.customer.name} viewed ${quote.documentNumber}.`, sourceKey: `quote-viewed:${quote.id}` } }).catch(() => {})
+  }
   res.json({
     quote: {
       documentNumber: quote.documentNumber,
@@ -1918,7 +2185,7 @@ app.post('/api/public/quotes/:token/decision', publicRateLimit, async (req, res)
   const decidedAt = new Date()
   const result = await prisma.quote.updateMany({
     where: { id: quote.id, status: { in: ['SENT', 'VIEWED'] } },
-    data: { status: nextStatus, decisionComment: String(req.body?.comment ?? '').trim() || null, decidedAt },
+    data: { status: nextStatus, decisionComment: String(req.body?.comment ?? '').trim().slice(0, 4000) || null, decidedAt },
   })
   if (!result.count) return res.status(409).json({ message: 'This quote can no longer be changed.' })
 
@@ -1937,6 +2204,10 @@ app.post('/api/public/quotes/:token/decision', publicRateLimit, async (req, res)
     },
   })
   if (fullQuote) {
+    if (fullQuote.decisionComment) {
+      await prisma.quoteMessage.create({ data: { quoteId: quote.id, organisationId: fullQuote.organisationId, authorType: 'CUSTOMER', authorName: fullQuote.customer.name, content: fullQuote.decisionComment } }).catch(() => {})
+    }
+    await prisma.notification.upsert({ where: { sourceKey: `quote-decision:${quote.id}` }, update: {}, create: { recipientUserId: fullQuote.owner.id, organisationId: fullQuote.organisationId, quoteId: quote.id, type: 'QUOTE_DECISION', title: decision === 'APPROVED' ? 'Quote approved' : 'Quote declined', body: `${fullQuote.customer.name} ${decision === 'APPROVED' ? 'approved' : 'declined'} ${fullQuote.documentNumber}.`, sourceKey: `quote-decision:${quote.id}` } }).catch(() => {})
     const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
     const quoteUrl = `${platformUrl}/quote/${encodeURIComponent(fullQuote.publicToken ?? '')}`
     sendEmail(
@@ -1959,6 +2230,27 @@ app.post('/api/public/quotes/:token/decision', publicRateLimit, async (req, res)
 
   const updated = { status: nextStatus, decidedAt }
   res.json({ quote: updated })
+})
+
+app.get('/api/public/quotes/:token/messages', publicRateLimit, async (req, res) => {
+  const quote = await prisma.quote.findUnique({ where: { publicToken: String(req.params.token ?? '') } })
+  if (!quote || quote.status === 'DRAFT') return res.status(404).json({ message: 'Conversation is not available.' })
+  const messages = await prisma.quoteMessage.findMany({ where: { quoteId: quote.id }, orderBy: { createdAt: 'asc' }, take: 100 })
+  res.json({ messages })
+})
+
+app.post('/api/public/quotes/:token/messages', publicRateLimit, async (req, res) => {
+  const quote = await prisma.quote.findUnique({ where: { publicToken: String(req.params.token ?? '') }, include: { customer: { select: { name: true } } } })
+  if (!quote || quote.status === 'DRAFT') return res.status(404).json({ message: 'Conversation is not available.' })
+  if (quote.status === 'EXPIRED' || (quote.validUntil && quote.validUntil < new Date() && ['SENT', 'VIEWED'].includes(quote.status))) return res.status(409).json({ message: 'This quote has expired; messaging is closed.' })
+  const content = String(req.body?.content ?? '').trim()
+  if (!content || content.length > 4000) return res.status(400).json({ message: 'Write a message up to 4,000 characters.' })
+  const message = await prisma.$transaction(async (tx) => {
+    const created = await tx.quoteMessage.create({ data: { quoteId: quote.id, organisationId: quote.organisationId, authorType: 'CUSTOMER', authorName: quote.customer.name, content } })
+    await tx.notification.create({ data: { recipientUserId: quote.ownerId, organisationId: quote.organisationId, quoteId: quote.id, quoteMessageId: created.id, type: 'QUOTE_MESSAGE', title: 'New quote message', body: `${quote.customer.name} sent a message about ${quote.documentNumber}.`, sourceKey: `quote-message:${created.id}` } })
+    return created
+  })
+  res.status(201).json({ message })
 })
 
 app.get('/api/business/me', requireAuth, async (req, res) => {
@@ -2208,6 +2500,52 @@ app.delete('/api/settings/logo', requireAuth, async (req, res) => {
 })
 
 // ---- Superadmin routes ----
+app.get('/api/superadmin/billing/prices', requireSuperadmin, async (_req, res) => {
+  const prices = await platformPlanPrices()
+  res.json({ prices })
+})
+
+app.put('/api/superadmin/billing/prices', requireSuperadmin, async (req, res) => {
+  const actor = getRequestUser(req)
+  if (!actor) return res.status(401).json({ message: 'Unauthorized' })
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 300)
+  if (reason.length < 5) return res.status(400).json({ message: 'Add a short reason for this pricing change.' })
+  const inputs = req.body?.prices
+  if (!Array.isArray(inputs) || inputs.length !== BILLING_PLANS.length) return res.status(400).json({ message: 'Provide a price for each of the three plans.' })
+  const normalized: Array<{ plan: typeof BILLING_PLANS[number]; amount: number | null }> = []
+  for (const plan of BILLING_PLANS) {
+    const matches = inputs.filter((item: unknown) => item && typeof item === 'object' && String((item as Record<string, unknown>).plan ?? '').toUpperCase() === plan)
+    if (matches.length !== 1) return res.status(400).json({ message: `Provide exactly one price for ${plan}.` })
+    const raw = (matches[0] as Record<string, unknown>).amount
+    if (raw === null || raw === undefined || String(raw).trim() === '') {
+      normalized.push({ plan, amount: null })
+      continue
+    }
+    const amount = Number(raw)
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 100_000_000 || Number(amount.toFixed(2)) !== amount) {
+      return res.status(400).json({ message: `${plan} must be a positive KES price with at most two decimal places, or left blank.` })
+    }
+    normalized.push({ plan, amount })
+  }
+
+  const changes = await prisma.$transaction(async (tx) => {
+    const rows: Array<{ plan: string; amount: unknown; currency: string }> = []
+    for (const { plan, amount } of normalized) {
+      rows.push(await tx.platformPlanPrice.upsert({
+        where: { plan },
+        create: { plan, amount, currency: 'KES', updatedByEmail: actor.email },
+        update: { amount, currency: 'KES', updatedByEmail: actor.email },
+      }))
+    }
+    await writeSuperadminAudit(req, actor, 'SUBSCRIPTION_PRICES_UPDATED', 'PLATFORM_BILLING', null, 'Updated monthly subscription plan prices.', {
+      reason,
+      prices: rows.map((row) => ({ plan: row.plan, amount: row.amount === null ? null : Number(row.amount), currency: row.currency })),
+    }, tx)
+    return rows
+  })
+  res.json({ prices: await platformPlanPrices(), message: 'Plan prices saved. New checkouts will use these prices.' })
+})
+
 app.get('/api/superadmin/stats', requireSuperadmin, async (_req, res) => {
   const [totalUsers, totalOrganisations, totalQuotes, approvedQuotes, quoteAgg, trialCount, currencyBreakdown] = await Promise.all([
     prisma.user.count(),
@@ -2235,6 +2573,161 @@ app.get('/api/superadmin/stats', requireSuperadmin, async (_req, res) => {
     activeTrials: trialCount,
     currencyBreakdown: currencyBreakdown.map((row) => ({ currency: row.currency, total: Number(row._sum.total ?? 0), count: row._count })),
     recentSignups: recentSignups.map((u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, createdAt: u.createdAt, organisationName: u.organisation?.name ?? null })),
+  })
+})
+
+app.get('/api/superadmin/operations', requireSuperadmin, async (req, res) => {
+  const now = new Date()
+  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+  const stalePendingBefore = new Date(now.getTime() - 10 * 60 * 1000)
+  const [database, deliveryCounts24h, deliveryCounts7d, incidents, latestWebhook, webhookCount24h, webhookFailures24h, webhookFailures, emailProviderHealth] = await Promise.all([
+    prisma.$queryRaw`SELECT 1`.then(() => 'CONNECTED').catch(() => 'UNAVAILABLE'),
+    prisma.quoteDelivery.groupBy({ by: ['status'], where: { createdAt: { gte: dayAgo } }, _count: { _all: true }, orderBy: { status: 'asc' } }),
+    prisma.quoteDelivery.groupBy({ by: ['status'], where: { createdAt: { gte: weekAgo } }, _count: { _all: true }, orderBy: { status: 'asc' } }),
+    prisma.quoteDelivery.findMany({
+      where: { createdAt: { gte: weekAgo }, OR: [{ status: { in: ['FAILED', 'BOUNCED'] } }, { status: 'PENDING', createdAt: { lt: stalePendingBefore } }] },
+      orderBy: { createdAt: 'desc' }, take: 40,
+      select: { id: true, status: true, recipientEmail: true, errorMessage: true, createdAt: true, quote: { select: { id: true, documentNumber: true, organisation: { select: { id: true, name: true } } } } },
+    }),
+    prisma.webhookEvent.findFirst({ orderBy: { receivedAt: 'desc' }, select: { source: true, eventType: true, processingStatus: true, processingError: true, receivedAt: true, processedAt: true } }),
+    prisma.webhookEvent.count({ where: { receivedAt: { gte: dayAgo }, processingStatus: 'PROCESSED' } }),
+    prisma.webhookEvent.count({ where: { receivedAt: { gte: dayAgo }, processingStatus: 'FAILED' } }),
+    prisma.webhookEvent.findMany({ where: { receivedAt: { gte: weekAgo }, processingStatus: 'FAILED' }, orderBy: { receivedAt: 'desc' }, take: 20, select: { id: true, source: true, eventType: true, processingError: true, receivedAt: true } }),
+    checkResendProviderHealth(),
+  ])
+  const actor = getRequestUser(req)
+  if (actor) await writeSuperadminAudit(req, actor, 'PLATFORM_OPERATIONS_VIEWED', 'PLATFORM', null, 'Viewed platform operations and delivery signals.')
+  const toCounts = (rows: Array<{ status: string; _count: { _all: number } }>) => Object.fromEntries(rows.map((row) => [row.status, row._count._all]))
+  res.json({
+    checkedAt: now,
+    uptimeSeconds: Math.floor(process.uptime()),
+    database,
+    emailProvider: process.env.RESEND_API_KEY ? 'CONFIGURED' : 'NOT_CONFIGURED',
+    emailProviderHealth,
+    sender: platformSenderEmail() ? 'CONFIGURED' : 'NOT_CONFIGURED',
+    webhookSecret: process.env.RESEND_WEBHOOK_SECRET ? 'CONFIGURED' : 'NOT_CONFIGURED',
+    deliveryCounts24h: toCounts(deliveryCounts24h),
+    deliveryCounts7d: toCounts(deliveryCounts7d),
+    incidents: incidents.map((event) => ({ id: event.id, status: event.status, recipientEmail: event.recipientEmail, errorMessage: event.errorMessage, createdAt: event.createdAt, quote: event.quote })),
+    webhook: { latest: latestWebhook, events24h: webhookCount24h, failures24h: webhookFailures24h, failures: webhookFailures },
+  })
+})
+
+app.post('/api/superadmin/operations/webhooks/:id/reprocess', requireSuperadmin, async (req, res) => {
+  const actor = getRequestUser(req)
+  if (!actor) return res.status(401).json({ message: 'Unauthorized.' })
+  const id = String(req.params.id ?? '')
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!reason) return res.status(400).json({ message: 'Provide a reason for reprocessing this webhook.' })
+
+  const claimed = await prisma.webhookEvent.updateMany({ where: { id, source: 'resend', processingStatus: 'FAILED' }, data: { processingStatus: 'PROCESSING', processingError: null } })
+  if (!claimed.count) return res.status(409).json({ message: 'This webhook is not failed or is already being processed.' })
+  const event = await prisma.webhookEvent.findUnique({ where: { id } })
+  if (!event) return res.status(404).json({ message: 'Webhook event not found.' })
+  const result = await applyResendWebhookEvent(event.id, event.payload as ResendWebhookPayload)
+  await writeSuperadminAudit(req, actor, result.ok ? 'WEBHOOK_REPROCESSED' : 'WEBHOOK_REPROCESS_FAILED', 'WEBHOOK_EVENT', event.id, result.ok ? `Reprocessed ${event.eventType} webhook.` : `Webhook reprocessing failed for ${event.eventType}.`, { reason })
+  if (!result.ok) return res.status(502).json({ message: 'Webhook reprocessing failed. Review the updated error detail.' })
+  return res.json({ message: 'Webhook reprocessed.' })
+})
+
+app.get('/api/superadmin/reports', requireSuperadmin, async (req, res) => {
+  const requestedRange = String(req.query?.range ?? '30d')
+  const range = ['7d', '30d', '90d', '365d'].includes(requestedRange) ? requestedRange : '30d'
+  const days = Number(range.slice(0, -1))
+  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+  const grain = range === '365d' ? 'month' : range === '90d' ? 'week' : 'day'
+  const [quoteRows, invoiceRows, paymentRows, reconciliationCount, reconciliationRows] = await Promise.all([
+    prisma.$queryRaw<Array<{ bucket: Date; currency: string; count: number; amount: string }>>`
+      SELECT date_trunc(${grain}, "createdAt") AS bucket, "currency", COUNT(*)::int AS count,
+        COALESCE(SUM("total"), 0)::text AS amount
+      FROM "Quote" WHERE "createdAt" >= ${from}
+      GROUP BY 1, 2 ORDER BY 1, 2
+    `,
+    prisma.$queryRaw<Array<{ bucket: Date; currency: string; count: number; invoiced: string; paid: string; due: string }>>`
+      SELECT date_trunc(${grain}, "createdAt") AS bucket, "currency", COUNT(*)::int AS count,
+        COALESCE(SUM("total"), 0)::text AS invoiced, COALESCE(SUM("amountPaid"), 0)::text AS paid,
+        COALESCE(SUM("balanceDue"), 0)::text AS due
+      FROM "Invoice" WHERE "createdAt" >= ${from}
+      GROUP BY 1, 2 ORDER BY 1, 2
+    `,
+    prisma.$queryRaw<Array<{ bucket: Date; currency: string; count: number; amount: string }>>`
+      SELECT date_trunc(${grain}, "paymentDate") AS bucket, "currency", COUNT(*)::int AS count,
+        COALESCE(SUM("amount"), 0)::text AS amount
+      FROM "Payment" WHERE "paymentDate" >= ${from}
+      GROUP BY 1, 2 ORDER BY 1, 2
+    `,
+    prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT COUNT(*)::int AS count
+      FROM "Invoice" i
+      LEFT JOIN (SELECT "invoiceId", SUM("amount") AS paid FROM "Payment" GROUP BY "invoiceId") p ON p."invoiceId" = i."id"
+      WHERE ABS(i."amountPaid" - COALESCE(p.paid, 0)) > 0.01
+         OR ABS(i."balanceDue" - (i."total" - COALESCE(p.paid, 0))) > 0.01
+    `,
+    prisma.$queryRaw<Array<{ id: string; organisation: string; invoiceNumber: string; currency: string; invoiceTotal: string; invoicePaid: string; paymentEvents: string; balanceDue: string; updatedAt: Date }>>`
+      SELECT i."id", o."name" AS organisation, i."invoiceNumber", i."currency", i."total"::text AS "invoiceTotal",
+        i."amountPaid"::text AS "invoicePaid", COALESCE(p.paid, 0)::text AS "paymentEvents", i."balanceDue"::text AS "balanceDue", i."updatedAt"
+      FROM "Invoice" i
+      JOIN "Organisation" o ON o."id" = i."organisationId"
+      LEFT JOIN (SELECT "invoiceId", SUM("amount") AS paid FROM "Payment" GROUP BY "invoiceId") p ON p."invoiceId" = i."id"
+      WHERE ABS(i."amountPaid" - COALESCE(p.paid, 0)) > 0.01
+         OR ABS(i."balanceDue" - (i."total" - COALESCE(p.paid, 0))) > 0.01
+      ORDER BY i."updatedAt" DESC LIMIT 50
+    `,
+  ])
+
+  const currencyTotals = new Map<string, { quoted: number; invoiced: number; invoicePaid: number; receivables: number; paymentsRecorded: number }>()
+  const periodTotals = new Map<string, { bucket: Date; currency: string; quoteCount: number; quoted: number; invoiceCount: number; invoiced: number; paymentCount: number; paymentsRecorded: number }>()
+  const currencySummary = (currency: string) => {
+    const current = currencyTotals.get(currency) ?? { quoted: 0, invoiced: 0, invoicePaid: 0, receivables: 0, paymentsRecorded: 0 }
+    currencyTotals.set(currency, current)
+    return current
+  }
+  const periodSummary = (bucket: Date, currency: string) => {
+    const key = `${bucket.toISOString()}|${currency}`
+    const current = periodTotals.get(key) ?? { bucket, currency, quoteCount: 0, quoted: 0, invoiceCount: 0, invoiced: 0, paymentCount: 0, paymentsRecorded: 0 }
+    periodTotals.set(key, current)
+    return current
+  }
+  for (const row of quoteRows) {
+    const amount = Number(row.amount)
+    currencySummary(row.currency).quoted += amount
+    const period = periodSummary(row.bucket, row.currency)
+    period.quoteCount += row.count
+    period.quoted += amount
+  }
+  for (const row of invoiceRows) {
+    const invoiced = Number(row.invoiced)
+    const paid = Number(row.paid)
+    const due = Number(row.due)
+    const totals = currencySummary(row.currency)
+    totals.invoiced += invoiced
+    totals.invoicePaid += paid
+    totals.receivables += due
+    const period = periodSummary(row.bucket, row.currency)
+    period.invoiceCount += row.count
+    period.invoiced += invoiced
+  }
+  for (const row of paymentRows) {
+    const amount = Number(row.amount)
+    currencySummary(row.currency).paymentsRecorded += amount
+    const period = periodSummary(row.bucket, row.currency)
+    period.paymentCount += row.count
+    period.paymentsRecorded += amount
+  }
+  const actor = getRequestUser(req)
+  if (actor) await writeSuperadminAudit(req, actor, 'PLATFORM_REPORTS_VIEWED', 'PLATFORM', null, `Viewed platform financial report for ${range}.`, { range })
+  res.json({
+    range,
+    from,
+    to: new Date(),
+    bucket: grain,
+    currencyTotals: [...currencyTotals.entries()].map(([currency, totals]) => ({ currency, ...totals })),
+    periods: [...periodTotals.values()].sort((a, b) => a.bucket.getTime() - b.bucket.getTime() || a.currency.localeCompare(b.currency)),
+    reconciliation: {
+      issueCount: reconciliationCount[0]?.count ?? 0,
+      invoices: reconciliationRows.map((row) => ({ ...row, invoiceTotal: Number(row.invoiceTotal), invoicePaid: Number(row.invoicePaid), paymentEvents: Number(row.paymentEvents), balanceDue: Number(row.balanceDue) })),
+    },
   })
 })
 
@@ -2418,10 +2911,79 @@ app.get('/api/superadmin/audit', requireSuperadmin, async (req, res) => {
     ],
   } : {}
   const [events, totalCount] = await Promise.all([
-    (prisma as any).superadminAuditEvent.findMany({ where, orderBy: { createdAt: 'desc' }, take: limit, skip: offset, select: { id: true, actorEmail: true, action: true, targetType: true, targetId: true, summary: true, metadata: true, ipAddress: true, userAgent: true, createdAt: true } }),
-    (prisma as any).superadminAuditEvent.count({ where }),
+    prisma.superadminAuditEvent.findMany({ where, orderBy: { createdAt: 'desc' }, take: limit, skip: offset, select: { id: true, actorEmail: true, action: true, targetType: true, targetId: true, summary: true, metadata: true, ipAddress: true, userAgent: true, createdAt: true } }),
+    prisma.superadminAuditEvent.count({ where }),
   ])
   res.json({ events, totalCount, hasMore: offset + limit < totalCount })
+})
+
+app.get('/api/superadmin/users', requireSuperadmin, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 100)
+  const offset = Math.max(Number(req.query?.offset ?? 0), 0)
+  const search = String(req.query?.q ?? '').trim().slice(0, 120)
+  const where = search ? { OR: [
+    { name: { contains: search, mode: 'insensitive' as const } },
+    { email: { contains: search, mode: 'insensitive' as const } },
+    { role: { contains: search, mode: 'insensitive' as const } },
+    { organisation: { is: { name: { contains: search, mode: 'insensitive' as const } } } },
+    { ownedOrganisation: { is: { name: { contains: search, mode: 'insensitive' as const } } } },
+  ] } : {}
+  const [users, totalCount] = await Promise.all([
+    prisma.user.findMany({ where, orderBy: { createdAt: 'desc' }, take: limit, skip: offset, select: {
+      id: true, name: true, email: true, role: true, mfaEnabled: true, createdAt: true,
+      organisation: { select: { id: true, name: true, status: true } },
+      ownedOrganisation: { select: { id: true, name: true, status: true } },
+    } }),
+    prisma.user.count({ where }),
+  ])
+  const userIds = users.map((account) => account.id)
+  const counts = userIds.length ? await prisma.session.groupBy({ by: ['userId'], where: { userId: { in: userIds }, expiresAt: { gt: new Date() } }, _count: { _all: true } }) : []
+  const countByUser = new Map(counts.map((row) => [row.userId, row._count._all]))
+  res.json({ users: users.map(({ organisation, ownedOrganisation, ...account }) => ({ ...account, workspace: organisation ?? ownedOrganisation, activeSessionCount: countByUser.get(account.id) ?? 0 })), totalCount, hasMore: offset + limit < totalCount })
+})
+
+app.get('/api/superadmin/users/:id/sessions', requireSuperadmin, async (req, res) => {
+  const id = String(req.params.id ?? '')
+  const target = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, email: true } })
+  if (!target) return res.status(404).json({ message: 'User not found.' })
+  const sessions = await prisma.session.findMany({ where: { userId: id, expiresAt: { gt: new Date() } }, orderBy: { createdAt: 'desc' }, select: { id: true, createdAt: true, expiresAt: true } })
+  const actor = getRequestUser(req)
+  if (actor) await writeSuperadminAudit(req, actor, 'USER_SESSIONS_VIEWED', 'USER', id, `Viewed active sessions for ${target.email}.`)
+  res.json({ user: target, sessions })
+})
+
+app.delete('/api/superadmin/users/:userId/sessions/:sessionId', requireSuperadmin, async (req, res) => {
+  const actor = getRequestUser(req)
+  const userId = String(req.params.userId ?? '')
+  const sessionId = String(req.params.sessionId ?? '')
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!reason || reason.length < 5) return res.status(400).json({ message: 'Enter a reason of at least 5 characters.' })
+  if (!actor) return res.status(401).json({ message: 'Unauthorized' })
+  if (actor.id === userId) return res.status(409).json({ message: 'Use Sign out to end your own current admin session.' })
+  const targetSession = await prisma.session.findFirst({ where: { id: sessionId, userId, expiresAt: { gt: new Date() } }, select: { id: true } })
+  if (!targetSession) return res.status(404).json({ message: 'Active session not found.' })
+  await prisma.$transaction(async (transaction) => {
+    await transaction.session.delete({ where: { id: sessionId } })
+    await writeSuperadminAudit(req, actor, 'USER_SESSION_REVOKED', 'SESSION', sessionId, `Revoked an active session for user ${userId}.`, { reason, userId }, transaction)
+  })
+  res.json({ revoked: true })
+})
+
+app.post('/api/superadmin/users/:id/revoke-sessions', requireSuperadmin, async (req, res) => {
+  const actor = getRequestUser(req)
+  const id = String(req.params.id ?? '')
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!reason || reason.length < 5) return res.status(400).json({ message: 'Enter a reason of at least 5 characters.' })
+  if (!actor) return res.status(401).json({ message: 'Unauthorized' })
+  if (actor.id === id) return res.status(409).json({ message: 'Use Sign out to end your own current admin session.' })
+  const target = await prisma.user.findUnique({ where: { id }, select: { id: true, email: true } })
+  if (!target) return res.status(404).json({ message: 'User not found.' })
+  const result = await prisma.$transaction(async (transaction) => {
+    const removed = await transaction.session.deleteMany({ where: { userId: id, expiresAt: { gt: new Date() } } })
+    if (removed.count > 0) await writeSuperadminAudit(req, actor, 'USER_SESSIONS_REVOKED', 'USER', id, `Revoked ${removed.count} active session(s) for ${target.email}.`, { reason, count: removed.count }, transaction)
+    return removed
+  })
+  res.json({ revokedCount: result.count })
 })
 
 // Promote a user to SUPERADMIN (only a superadmin can do this)
@@ -2445,6 +3007,41 @@ app.post('/api/superadmin/promote', requireSuperadmin, async (req, res) => {
 
 // ---- Resend webhook handler ----
 // Public endpoint (no auth) — verifies Svix signature and processes delivery events.
+type ResendWebhookPayload = { type?: string; data?: { email_id?: string; event_id?: string; created_at?: string } }
+
+async function applyResendWebhookEvent(webhookEventId: string, payload: ResendWebhookPayload) {
+  try {
+    const emailId = payload.data?.email_id
+    if (emailId) {
+      const delivery = await prisma.quoteDelivery.findFirst({ where: { providerMessageId: emailId } })
+      if (delivery) {
+        const now = new Date()
+        switch (payload.type) {
+          case 'email.sent':
+            if (delivery.status === 'PENDING') await prisma.quoteDelivery.update({ where: { id: delivery.id }, data: { status: 'SENT', sentAt: delivery.sentAt ?? now } })
+            break
+          case 'email.delivered':
+            await prisma.quoteDelivery.update({ where: { id: delivery.id }, data: { status: 'DELIVERED', deliveredAt: now } })
+            break
+          case 'email.bounced':
+            await prisma.quoteDelivery.update({ where: { id: delivery.id }, data: { status: 'BOUNCED', bouncedAt: now, errorMessage: 'Email bounced.' } })
+            break
+          case 'email.complained':
+          default:
+            break
+        }
+      }
+    }
+    await prisma.webhookEvent.update({ where: { id: webhookEventId }, data: { processingStatus: 'PROCESSED', processingError: null, processedAt: new Date() } })
+    return { ok: true as const }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Webhook processing failed.'
+    await prisma.webhookEvent.update({ where: { id: webhookEventId }, data: { processingStatus: 'FAILED', processingError: message.slice(0, 1000) } }).catch(() => {})
+    console.error(`[webhook] Event ${webhookEventId} processing failed.`)
+    return { ok: false as const }
+  }
+}
+
 app.post('/api/webhooks/resend', async (req, res) => {
   const webhookSecret = process.env.RESEND_WEBHOOK_SECRET
   if (!webhookSecret) {
@@ -2508,70 +3105,32 @@ app.post('/api/webhooks/resend', async (req, res) => {
   const eventType = payload.type
   const eventId = svixMsgId // Svix msg-id is the unique event identifier
 
-  // Replay protection: check if we already processed this event
-  try {
-    await prisma.webhookEvent.create({
-      data: {
-        source: 'resend',
-        eventId,
-        eventType,
-        payload: payload as object,
-      },
-    })
-  } catch {
-    // Unique constraint violation — already processed
-    return res.status(200).json({ message: 'Event already processed.' })
-  }
-
-  // Find the email_id from the payload to match a delivery
-  const emailId = payload.data?.email_id
-  if (!emailId) {
-    // No email_id to match — acknowledge but don't fail
-    return res.status(200).json({ message: 'Event received (no email_id).' })
-  }
-
-  // Find the delivery by providerMessageId
-  const delivery = await prisma.quoteDelivery.findFirst({
-    where: { providerMessageId: emailId },
-  })
-
-  if (!delivery) {
-    return res.status(200).json({ message: 'Event received (no matching delivery).' })
-  }
-
-  const now = new Date()
-
-  // Map event types to delivery status updates
-  switch (eventType) {
-    case 'email.sent':
-      if (delivery.status === 'PENDING') {
-        await prisma.quoteDelivery.update({
-          where: { id: delivery.id },
-          data: { status: 'SENT', sentAt: delivery.sentAt ?? now },
-        })
-      }
-      break
-    case 'email.delivered':
-      await prisma.quoteDelivery.update({
-        where: { id: delivery.id },
-        data: { status: 'DELIVERED', deliveredAt: now },
+  // Treat already-processed events as duplicates, but allow Resend to retry a failed event.
+  let webhookEvent = await prisma.webhookEvent.findUnique({ where: { eventId } })
+  if (webhookEvent?.processingStatus === 'PROCESSED') return res.status(200).json({ message: 'Event already processed.' })
+  if (webhookEvent) {
+    if (webhookEvent.processingStatus !== 'FAILED') return res.status(202).json({ message: 'Event processing is already in progress.' })
+    const claimed = await prisma.webhookEvent.updateMany({ where: { id: webhookEvent.id, processingStatus: 'FAILED' }, data: { processingStatus: 'PROCESSING', processingError: null } })
+    if (claimed.count === 0) return res.status(202).json({ message: 'Event processing is already in progress.' })
+    webhookEvent = await prisma.webhookEvent.findUniqueOrThrow({ where: { id: webhookEvent.id } })
+  } else {
+    try {
+      webhookEvent = await prisma.webhookEvent.create({
+        data: { source: 'resend', eventId, eventType, payload: payload as object, processingStatus: 'PROCESSING' },
       })
-      break
-    case 'email.bounced':
-      await prisma.quoteDelivery.update({
-        where: { id: delivery.id },
-        data: { status: 'BOUNCED', bouncedAt: now, errorMessage: 'Email bounced.' },
-      })
-      break
-    case 'email.complained':
-      // Complaint doesn't change delivery status but we could log it
-      break
-    default:
-      // Unknown event type — acknowledge
-      break
+    } catch {
+      // A concurrent request may have created the event; let the provider retry if it failed.
+      const concurrent = await prisma.webhookEvent.findUnique({ where: { eventId } })
+      if (!concurrent || concurrent.processingStatus === 'PROCESSED') return res.status(200).json({ message: 'Event already processed.' })
+      if (concurrent.processingStatus !== 'FAILED') return res.status(202).json({ message: 'Event processing is already in progress.' })
+      const claimed = await prisma.webhookEvent.updateMany({ where: { id: concurrent.id, processingStatus: 'FAILED' }, data: { processingStatus: 'PROCESSING', processingError: null } })
+      if (claimed.count === 0) return res.status(202).json({ message: 'Event processing is already in progress.' })
+      webhookEvent = await prisma.webhookEvent.findUniqueOrThrow({ where: { id: concurrent.id } })
+    }
   }
-
-  res.status(200).json({ message: 'Event processed.' })
+  const result = await applyResendWebhookEvent(webhookEvent.id, payload)
+  if (!result.ok) return res.status(500).json({ message: 'Webhook processing failed; retry is safe.' })
+  return res.status(200).json({ message: 'Event processed.' })
 })
 
 // ---- Stage 14: Jobs ----
@@ -2581,11 +3140,38 @@ const VALID_COST_CATEGORIES = ['MATERIALS', 'LABOR', 'SUPPLIER', 'TRANSPORT', 'O
 const VALID_PAYMENT_METHODS = ['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY', 'CARD', 'OTHER']
 const VALID_INVOICE_STATUSES = ['DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED']
 
+app.get('/api/public/jobs/:token', publicRateLimit, async (req, res) => {
+  const token = String(req.params.token ?? '')
+  if (token.length < 32 || token.length > 128) return res.status(404).json({ message: 'Progress page not found.' })
+  const job = await prisma.job.findUnique({
+    where: { progressTokenHash: hashToken(token) },
+    select: {
+      title: true, status: true, updatedAt: true,
+      organisation: { select: { name: true } },
+      milestones: { where: { customerVisible: true }, orderBy: { position: 'asc' }, select: { id: true, title: true, dueDate: true, completedAt: true } },
+    },
+  })
+  if (!job || job.milestones.length === 0) return res.status(404).json({ message: 'Progress page not found.' })
+  return res.json({ job })
+})
+
 function serializeJob(job: any) {
   return {
     ...job,
     costs: Array.isArray(job.costs) ? job.costs.map((c: any) => ({ ...c, amount: Number(c.amount) })) : job.costs,
   }
+}
+
+async function recordJobActivity(jobId: string, actor: { id: string; name: string }, action: string, details?: Record<string, unknown>, db: PrismaTypes.TransactionClient | typeof prisma = prisma) {
+  await db.jobActivity.create({
+    data: {
+      jobId,
+      actorId: actor.id,
+      actorName: actor.name,
+      action,
+      ...(details ? { details: details as PrismaTypes.InputJsonValue } : {}),
+    },
+  })
 }
 
 app.post('/api/jobs', requireAuth, async (req, res) => {
@@ -2645,27 +3231,33 @@ app.post('/api/jobs', requireAuth, async (req, res) => {
     validatedQuoteId = quoteId
   }
 
-  const job = await prisma.job.create({
-    data: {
-      organisationId,
-      quoteId: validatedQuoteId,
-      ownerId: user.id,
-      customerId,
-      title,
-      description,
-      status: status as never,
-      currency,
-      startDate: startDate && !Number.isNaN(startDate.getTime()) ? startDate : null,
-      endDate: endDate && !Number.isNaN(endDate.getTime()) ? endDate : null,
-      acceptedQuoteSnapshot: acceptedQuoteSnapshot as never,
-    },
-    include: {
-      customer: { select: { id: true, name: true, phone: true, email: true } },
-      milestones: { orderBy: { position: 'asc' } },
-    },
+  const job = await prisma.$transaction(async (tx) => {
+    const created = await tx.job.create({
+      data: {
+        organisationId,
+        quoteId: validatedQuoteId,
+        ownerId: user.id,
+        customerId,
+        title,
+        description,
+        status: status as never,
+        currency,
+        startDate: startDate && !Number.isNaN(startDate.getTime()) ? startDate : null,
+        endDate: endDate && !Number.isNaN(endDate.getTime()) ? endDate : null,
+        acceptedQuoteSnapshot: acceptedQuoteSnapshot as never,
+      },
+      include: {
+        customer: { select: { id: true, name: true, phone: true, email: true } },
+        milestones: { orderBy: { position: 'asc' } },
+      },
+    })
+    await recordJobActivity(created.id, user, 'JOB_CREATED', { title, status, quoteId: validatedQuoteId }, tx)
+    return created
   })
 
-  res.status(201).json({ job })
+  const activities = await prisma.jobActivity.findMany({ where: { jobId: job.id }, orderBy: { createdAt: 'desc' }, take: 100 })
+  const { progressTokenHash: _progressTokenHash, ...safeJob } = job
+  res.status(201).json({ job: { ...safeJob, progressEnabled: false, activities } })
 })
 
 app.get('/api/jobs', requireAuth, async (req, res) => {
@@ -2694,7 +3286,7 @@ app.get('/api/jobs', requireAuth, async (req, res) => {
     prisma.job.count({ where: where as never }),
   ])
 
-  res.json({ jobs, totalCount, hasMore: offset + limit < totalCount })
+  res.json({ jobs: jobs.map(({ progressTokenHash, ...job }) => ({ ...job, progressEnabled: Boolean(progressTokenHash) })), totalCount, hasMore: offset + limit < totalCount })
 })
 
 app.get('/api/jobs/:id', requireAuth, async (req, res) => {
@@ -2709,17 +3301,122 @@ app.get('/api/jobs/:id', requireAuth, async (req, res) => {
       customer: { select: { id: true, name: true, phone: true, email: true } },
       milestones: { orderBy: { position: 'asc' } },
       costs: { orderBy: { incurredAt: 'desc' } },
+      activities: { orderBy: { createdAt: 'desc' }, take: 100 },
+      attachments: { orderBy: { createdAt: 'desc' }, select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true, uploadedBy: true, uploaderName: true, createdAt: true } },
       quote: { select: { id: true, documentNumber: true, status: true } },
     },
   })
   if (!job) return res.status(404).json({ message: 'Job not found.' })
 
+  const { progressTokenHash, ...safeJob } = job
   res.json({
     job: {
-      ...job,
+      ...safeJob,
+      progressEnabled: Boolean(progressTokenHash),
       costs: job.costs.map((c) => ({ ...c, amount: Number(c.amount) })),
     },
   })
+})
+
+app.post('/api/jobs/:id/progress-link', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId }, select: { id: true, milestones: { where: { customerVisible: true }, select: { id: true } } } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+  if (!job.milestones.length) return res.status(409).json({ message: 'Mark at least one milestone visible to the customer before creating a progress link.' })
+  const token = randomBytes(32).toString('base64url')
+  await prisma.$transaction(async (tx) => {
+    await tx.job.update({ where: { id: job.id }, data: { progressTokenHash: hashToken(token), progressEnabledAt: new Date() } })
+    await recordJobActivity(job.id, user, 'JOB_PROGRESS_LINK_CREATED', { visibleMilestoneCount: job.milestones.length }, tx)
+  })
+  const requestOrigin = req.headers.origin && isOriginAllowed(req.headers.origin) ? req.headers.origin : null
+  const platformUrl = (process.env.PLATFORM_URL || requestOrigin || 'http://localhost:5174').replace(/\/$/, '')
+  return res.json({ progressUrl: `${platformUrl}/job-progress/${token}` })
+})
+
+app.delete('/api/jobs/:id/progress-link', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId }, select: { id: true, progressTokenHash: true } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+  if (job.progressTokenHash) {
+    await prisma.$transaction(async (tx) => {
+      await tx.job.update({ where: { id: job.id }, data: { progressTokenHash: null, progressEnabledAt: null } })
+      await recordJobActivity(job.id, user, 'JOB_PROGRESS_LINK_REVOKED', undefined, tx)
+    })
+  }
+  return res.json({ success: true })
+})
+
+const JOB_ATTACHMENT_TYPES: Record<string, string> = { 'application/pdf': '.pdf', 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' }
+const MAX_JOB_ATTACHMENT_SIZE = 6 * 1024 * 1024
+
+app.post('/api/jobs/:id/attachments', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId }, select: { id: true } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+
+  const mimeType = String(req.body?.mimeType ?? '').toLowerCase()
+  const extension = JOB_ATTACHMENT_TYPES[mimeType]
+  const encoded = String(req.body?.contentBase64 ?? '')
+  if (!extension || !encoded || encoded.length > Math.ceil(MAX_JOB_ATTACHMENT_SIZE * 4 / 3) + 8 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    return res.status(400).json({ message: 'Attach a PDF, PNG, JPEG, or WebP file no larger than 6 MB.' })
+  }
+  const buffer = Buffer.from(encoded, 'base64')
+  if (!buffer.length || buffer.length > MAX_JOB_ATTACHMENT_SIZE) return res.status(413).json({ message: 'Job attachments are limited to 6 MB.' })
+  const validContent = mimeType === 'application/pdf'
+    ? buffer.subarray(0, 5).toString('ascii') === '%PDF-'
+    : detectImageType(buffer)?.mime === mimeType
+  if (!validContent) return res.status(400).json({ message: 'File content does not match its supported type.' })
+
+  const originalFilename = String(req.body?.filename ?? 'attachment').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim().slice(0, 160) || 'attachment'
+  const storageKey = `${randomBytes(24).toString('hex')}${extension}`
+  const attachmentDirectory = join(uploadsDir, 'job-attachments')
+  const storagePath = join(attachmentDirectory, storageKey)
+  try {
+    await mkdir(attachmentDirectory, { recursive: true })
+    await writeFile(storagePath, buffer, { flag: 'wx' })
+    const attachment = await prisma.$transaction(async (tx) => {
+      const attachment = await tx.jobAttachment.create({ data: { jobId: job.id, storageKey, originalFilename, mimeType, sizeBytes: buffer.length, uploadedBy: user.id, uploaderName: user.name } })
+      await recordJobActivity(job.id, user, 'JOB_ATTACHMENT_ADDED', { attachmentId: attachment.id, filename: originalFilename, mimeType, sizeBytes: buffer.length }, tx)
+      return attachment
+    })
+    return res.status(201).json({ attachment: { id: attachment.id, originalFilename: attachment.originalFilename, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, uploadedBy: attachment.uploadedBy, uploaderName: attachment.uploaderName, createdAt: attachment.createdAt } })
+  } catch {
+    await unlink(storagePath).catch(() => {})
+    return res.status(500).json({ message: 'Could not save the job attachment.' })
+  }
+})
+
+app.get('/api/jobs/:id/attachments/:attachmentId', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const attachment = await prisma.jobAttachment.findFirst({ where: { id: String(req.params.attachmentId ?? ''), jobId: String(req.params.id ?? ''), job: { organisationId } } })
+  if (!attachment) return res.status(404).json({ message: 'Attachment not found.' })
+  const storagePath = join(uploadsDir, 'job-attachments', attachment.storageKey)
+  return res.download(storagePath, attachment.originalFilename, (error) => {
+    if (error && !res.headersSent) res.status(404).json({ message: 'Attachment file is unavailable.' })
+  })
+})
+
+app.get('/api/jobs/:id/activity', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId }, select: { id: true } })
+  if (!job) return res.status(404).json({ message: 'Job not found.' })
+  const activities = await prisma.jobActivity.findMany({ where: { jobId: job.id }, orderBy: { createdAt: 'desc' }, take: 100 })
+  res.json({ activities })
 })
 
 app.put('/api/jobs/:id', requireAuth, async (req, res) => {
@@ -2747,12 +3444,21 @@ app.put('/api/jobs/:id', requireAuth, async (req, res) => {
   if (startDate !== undefined) data.startDate = startDate && !Number.isNaN(startDate.getTime()) ? startDate : null
   if (endDate !== undefined) data.endDate = endDate && !Number.isNaN(endDate.getTime()) ? endDate : null
 
-  const updated = await prisma.job.update({
-    where: { id: job.id },
-    data: data as never,
-    include: { customer: { select: { id: true, name: true } } },
+  const updated = await prisma.$transaction(async (tx) => {
+    const updated = await tx.job.update({
+      where: { id: job.id },
+      data: data as never,
+      include: { customer: { select: { id: true, name: true } } },
+    })
+    await recordJobActivity(job.id, user, status && status !== job.status ? 'JOB_STATUS_CHANGED' : 'JOB_UPDATED', {
+      fields: Object.keys(data),
+      ...(status && status !== job.status ? { fromStatus: job.status, toStatus: status } : {}),
+    }, tx)
+    return updated
   })
-  res.json({ job: updated })
+  const activities = await prisma.jobActivity.findMany({ where: { jobId: job.id }, orderBy: { createdAt: 'desc' }, take: 100 })
+  const { progressTokenHash: _progressTokenHash, ...safeJob } = updated
+  res.json({ job: { ...safeJob, progressEnabled: Boolean(updated.progressTokenHash), activities } })
 })
 
 app.post('/api/jobs/:id/milestones', requireAuth, async (req, res) => {
@@ -2771,14 +3477,18 @@ app.post('/api/jobs/:id/milestones', requireAuth, async (req, res) => {
 
   if (!title) return res.status(400).json({ message: 'Milestone title is required.' })
 
-  const milestone = await prisma.jobMilestone.create({
-    data: {
-      jobId: job.id,
-      title,
-      description,
-      dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null,
-      position,
-    },
+  const milestone = await prisma.$transaction(async (tx) => {
+    const milestone = await tx.jobMilestone.create({
+      data: {
+        jobId: job.id,
+        title,
+        description,
+        dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null,
+        position,
+      },
+    })
+    await recordJobActivity(job.id, user, 'JOB_MILESTONE_ADDED', { milestoneId: milestone.id, title: milestone.title }, tx)
+    return milestone
   })
   res.status(201).json({ milestone })
 })
@@ -2802,12 +3512,18 @@ app.put('/api/jobs/:id/milestones/:milestoneId', requireAuth, async (req, res) =
     const d = req.body.dueDate ? new Date(req.body.dueDate) : null
     data.dueDate = d && !Number.isNaN(d.getTime()) ? d : null
   }
-  if (req.body?.completed !== undefined) {
-    data.completedAt = req.body.completed ? new Date() : null
-  }
+  if (req.body?.completedAt !== undefined) {
+    const completedAt = req.body.completedAt ? new Date(req.body.completedAt) : null
+    data.completedAt = completedAt && !Number.isNaN(completedAt.getTime()) ? completedAt : null
+  } else if (req.body?.completed !== undefined) data.completedAt = req.body.completed ? new Date() : null
+  if (req.body?.customerVisible !== undefined) data.customerVisible = Boolean(req.body.customerVisible)
   if (req.body?.position !== undefined) data.position = Number(req.body.position)
 
-  const updated = await prisma.jobMilestone.update({ where: { id: milestone.id }, data: data as never })
+  const updated = await prisma.$transaction(async (tx) => {
+    const updated = await tx.jobMilestone.update({ where: { id: milestone.id }, data: data as never })
+    await recordJobActivity(job.id, user, 'JOB_MILESTONE_UPDATED', { milestoneId: milestone.id, title: updated.title, completedAt: updated.completedAt?.toISOString() ?? null, customerVisible: updated.customerVisible }, tx)
+    return updated
+  })
   res.json({ milestone: updated })
 })
 
@@ -2820,7 +3536,14 @@ app.delete('/api/jobs/:id/milestones/:milestoneId', requireAuth, async (req, res
   const job = await prisma.job.findFirst({ where: { id: String(req.params.id ?? ''), organisationId } })
   if (!job) return res.status(404).json({ message: 'Job not found.' })
 
-  const deleted = await prisma.jobMilestone.deleteMany({ where: { id: String(req.params.milestoneId ?? ''), jobId: job.id } })
+  const milestoneId = String(req.params.milestoneId ?? '')
+  const milestone = await prisma.jobMilestone.findFirst({ where: { id: milestoneId, jobId: job.id } })
+  if (!milestone) return res.status(404).json({ message: 'Milestone not found.' })
+  const deleted = await prisma.$transaction(async (tx) => {
+    const deleted = await tx.jobMilestone.deleteMany({ where: { id: milestoneId, jobId: job.id } })
+    if (deleted.count) await recordJobActivity(job.id, user, 'JOB_MILESTONE_REMOVED', { milestoneId, title: milestone.title }, tx)
+    return deleted
+  })
   if (!deleted.count) return res.status(404).json({ message: 'Milestone not found.' })
   res.json({ success: true })
 })
@@ -2845,16 +3568,20 @@ app.post('/api/jobs/:id/costs', requireAuth, async (req, res) => {
   if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'Amount must be a positive number.' })
   if (!/^[A-Z]{3}$/.test(currency)) return res.status(400).json({ message: 'Currency must be a 3-letter code.' })
 
-  const cost = await prisma.jobCost.create({
-    data: {
-      jobId: job.id,
-      category,
-      description,
-      amount,
-      currency,
-      incurredBy: user.id,
-      incurredAt: incurredAt && !Number.isNaN(incurredAt.getTime()) ? incurredAt : new Date(),
-    },
+  const cost = await prisma.$transaction(async (tx) => {
+    const cost = await tx.jobCost.create({
+      data: {
+        jobId: job.id,
+        category,
+        description,
+        amount,
+        currency,
+        incurredBy: user.id,
+        incurredAt: incurredAt && !Number.isNaN(incurredAt.getTime()) ? incurredAt : new Date(),
+      },
+    })
+    await recordJobActivity(job.id, user, 'JOB_COST_RECORDED', { costId: cost.id, category, amount, currency, description }, tx)
+    return cost
   })
   res.status(201).json({ cost: { ...cost, amount: Number(cost.amount) } })
 })
@@ -2884,7 +3611,7 @@ async function generateInvoiceNumber(organisationId: string, prefix: string): Pr
   return `${prefix || 'INV'}-${year}-${String(count + 1).padStart(4, '0')}`
 }
 
-app.post('/api/invoices', requireAuth, async (req, res) => {
+app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
   const user = getRequestUser(req)
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const organisationId = await getOrganisationId(user.id)
@@ -2990,7 +3717,8 @@ app.get('/api/invoices/:id', requireAuth, async (req, res) => {
     include: {
       customer: { select: { id: true, name: true, phone: true, email: true } },
       job: { select: { id: true, title: true } },
-      payments: { orderBy: { paymentDate: 'desc' } },
+      payments: { orderBy: { paymentDate: 'desc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, paymentDate: true, receivedBy: true, createdAt: true } },
+      reconciliations: { orderBy: { createdAt: 'desc' }, take: 50 },
     },
   })
   if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
@@ -3008,7 +3736,52 @@ app.get('/api/invoices/:id', requireAuth, async (req, res) => {
   })
 })
 
-app.put('/api/invoices/:id', requireAuth, async (req, res) => {
+app.post('/api/invoices/:id/reconcile', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!reason) return res.status(400).json({ message: 'Provide a reason for reconciliation.' })
+  const invoice = await prisma.invoice.findFirst({ where: { id: String(req.params.id ?? ''), organisationId }, select: { id: true } })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${invoice.id} FOR UPDATE`
+    const current = await tx.invoice.findUnique({ where: { id: invoice.id } })
+    if (!current || current.organisationId !== organisationId) return { error: 'Invoice not found.' as const }
+    const paymentTotals = await tx.payment.aggregate({ where: { invoiceId: current.id }, _sum: { amount: true } })
+    const correctedAmountPaid = roundMoney(Number(paymentTotals._sum.amount ?? 0))
+    const correctedBalanceDue = roundMoney(Number(current.total) - correctedAmountPaid)
+    const correctedStatus = current.status === 'CANCELLED'
+      ? 'CANCELLED'
+      : correctedBalanceDue <= 0.001
+        ? 'PAID'
+        : correctedAmountPaid > 0
+          ? 'PARTIALLY_PAID'
+          : current.status === 'PAID' || current.status === 'PARTIALLY_PAID' ? 'SENT' : current.status
+    const isMismatch = Math.abs(Number(current.amountPaid) - correctedAmountPaid) > 0.01
+      || Math.abs(Number(current.balanceDue) - correctedBalanceDue) > 0.01
+      || current.status !== correctedStatus
+    if (!isMismatch) return { invoice: current, reconciled: false }
+
+    const updated = await tx.invoice.update({ where: { id: current.id }, data: { amountPaid: correctedAmountPaid, balanceDue: correctedBalanceDue, status: correctedStatus } })
+    await tx.invoiceReconciliation.create({
+      data: {
+        invoiceId: current.id, organisationId, actorId: user.id, actorName: user.name, reason,
+        previousAmountPaid: current.amountPaid, previousBalanceDue: current.balanceDue,
+        correctedAmountPaid, correctedBalanceDue,
+      },
+    })
+    return { invoice: updated, reconciled: true }
+  })
+  if ('error' in result) return res.status(404).json({ message: result.error })
+  const fullInvoice = await prisma.invoice.findFirst({ where: { id: invoice.id, organisationId }, include: { customer: { select: { id: true, name: true } }, job: { select: { id: true, title: true } }, payments: { orderBy: { paymentDate: 'desc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, paymentDate: true, receivedBy: true, createdAt: true } }, reconciliations: { orderBy: { createdAt: 'desc' }, take: 50 } } })
+  if (!fullInvoice) return res.status(404).json({ message: 'Invoice not found.' })
+  return res.json({ reconciled: result.reconciled, invoice: { ...fullInvoice, subtotal: Number(fullInvoice.subtotal), taxTotal: Number(fullInvoice.taxTotal), total: Number(fullInvoice.total), amountPaid: Number(fullInvoice.amountPaid), balanceDue: Number(fullInvoice.balanceDue), payments: fullInvoice.payments.map((payment) => ({ ...payment, amount: Number(payment.amount) })) } })
+})
+
+app.put('/api/invoices/:id', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
   const user = getRequestUser(req)
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const organisationId = await getOrganisationId(user.id)
@@ -3062,7 +3835,7 @@ app.put('/api/invoices/:id', requireAuth, async (req, res) => {
   })
 })
 
-app.post('/api/invoices/:id/payments', requireAuth, async (req, res) => {
+app.post('/api/invoices/:id/payments', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
   const user = getRequestUser(req)
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const organisationId = await getOrganisationId(user.id)
@@ -3075,33 +3848,41 @@ app.post('/api/invoices/:id/payments', requireAuth, async (req, res) => {
   const amount = Number(req.body?.amount ?? 0)
   const method = String(req.body?.method ?? '').toUpperCase()
   const reference = req.body?.reference ? String(req.body.reference).trim() : null
+  const idempotencyKey = String(req.body?.idempotencyKey ?? '').trim()
   const paymentDate = req.body?.paymentDate ? new Date(req.body.paymentDate) : new Date()
 
   if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'Payment amount must be a positive number.' })
   if (!VALID_PAYMENT_METHODS.includes(method)) return res.status(400).json({ message: 'Invalid payment method.' })
+  if (!/^[A-Za-z0-9._:-]{16,100}$/.test(idempotencyKey)) return res.status(400).json({ message: 'A valid idempotency key is required.' })
   if (paymentDate && Number.isNaN(paymentDate.getTime())) return res.status(400).json({ message: 'Invalid payment date.' })
 
-  // Idempotency: check for duplicate payment within 5-minute window
-  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
-  const existingPayment = await prisma.payment.findFirst({
-    where: {
-      invoiceId: invoice.id,
-      amount,
-      method,
-      reference: reference ?? undefined,
-      paymentDate: { gte: fiveMinutesAgo },
-    },
-  })
+  // Repeated submissions return the first durable payment row for this exact user action.
+  const existingPayment = await prisma.payment.findUnique({ where: { idempotencyKey } })
   if (existingPayment) {
-    return res.status(409).json({ message: 'A similar payment was already recorded recently. Duplicate payments are not allowed.' })
+    if (existingPayment.organisationId !== organisationId || existingPayment.invoiceId !== invoice.id) return res.status(409).json({ message: 'This idempotency key has already been used for another payment.' })
+    return res.json({ payment: { ...existingPayment, amount: Number(existingPayment.amount) }, replayed: true })
   }
 
-  // Create payment and update invoice in a transaction
+  // Lock the invoice row so concurrent payment posts cannot overwrite each other's totals.
   const result = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${invoice.id} FOR UPDATE`
+    const lockedInvoice = await tx.invoice.findUnique({ where: { id: invoice.id } })
+    if (!lockedInvoice || lockedInvoice.organisationId !== organisationId || lockedInvoice.status === 'CANCELLED') return { conflict: 'Invoice is no longer available for payments.' as const }
+    const repeated = await tx.payment.findUnique({ where: { idempotencyKey } })
+    if (repeated) {
+      if (repeated.organisationId !== organisationId || repeated.invoiceId !== lockedInvoice.id) return { conflict: 'This idempotency key has already been used for another payment.' as const }
+      return { payment: repeated, replayed: true as const }
+    }
+    const paidBefore = await tx.payment.aggregate({ where: { invoiceId: lockedInvoice.id }, _sum: { amount: true } })
+    const currentPaid = Number(paidBefore._sum.amount ?? 0)
+    const dueBefore = roundMoney(Number(lockedInvoice.total) - currentPaid)
+    if (amount > dueBefore + 0.001) return { conflict: 'Payment amount exceeds the remaining invoice balance.' as const }
+
     const payment = await tx.payment.create({
       data: {
         invoiceId: invoice.id,
         organisationId,
+        idempotencyKey,
         amount,
         currency: invoice.currency,
         method,
@@ -3111,9 +3892,9 @@ app.post('/api/invoices/:id/payments', requireAuth, async (req, res) => {
       },
     })
 
-    const allPayments = await tx.payment.findMany({ where: { invoiceId: invoice.id } })
-    const totalPaid = allPayments.reduce((sum, p) => sum + Number(p.amount), 0)
-    const invoiceTotal = Number(invoice.total)
+    const allPayments = await tx.payment.aggregate({ where: { invoiceId: invoice.id }, _sum: { amount: true } })
+    const totalPaid = Number(allPayments._sum.amount ?? 0)
+    const invoiceTotal = Number(lockedInvoice.total)
     const balanceDue = roundMoney(invoiceTotal - totalPaid)
 
     let nextStatus: string
@@ -3134,10 +3915,12 @@ app.post('/api/invoices/:id/payments', requireAuth, async (req, res) => {
       },
     })
 
-    return payment
+    return { payment, replayed: false as const }
   })
 
-  res.status(201).json({ payment: { ...result, amount: Number(result.amount) } })
+  if ('conflict' in result) return res.status(409).json({ message: result.conflict })
+  const { idempotencyKey: _idempotencyKey, ...safePayment } = result.payment
+  res.status(result.replayed ? 200 : 201).json({ payment: { ...safePayment, amount: Number(result.payment.amount) }, replayed: result.replayed })
 })
 
 app.get('/api/invoices/:id/payments', requireAuth, async (req, res) => {
@@ -3152,8 +3935,33 @@ app.get('/api/invoices/:id/payments', requireAuth, async (req, res) => {
   const payments = await prisma.payment.findMany({
     where: { invoiceId: invoice.id },
     orderBy: { paymentDate: 'desc' },
+    select: { id: true, amount: true, currency: true, method: true, reference: true, paymentDate: true, receivedBy: true, createdAt: true },
   })
   res.json({ payments: payments.map((p) => ({ ...p, amount: Number(p.amount) })) })
+})
+
+app.get('/api/export/workspace.json', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+
+  const [organisation, members, customers, quotes, jobs, invoices, serviceItems, quoteTemplates, subscription, emailSettings] = await Promise.all([
+    prisma.organisation.findUnique({ where: { id: organisationId }, select: { id: true, name: true, email: true, phone: true, country: true, businessType: true, currency: true, defaultTaxRate: true, quotePrefix: true, logoUrl: true, website: true, paymentInstructions: true, terms: true, createdAt: true, updatedAt: true } }),
+    prisma.user.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, email: true, role: true, teamRole: true, emailVerifiedAt: true, createdAt: true } }),
+    prisma.customer.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, phone: true, email: true, archivedAt: true, createdAt: true, updatedAt: true } }),
+    prisma.quote.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, documentNumber: true, status: true, currency: true, validUntil: true, notes: true, terms: true, subtotal: true, taxTotal: true, total: true, viewedAt: true, decisionComment: true, decidedAt: true, tokenRevokedAt: true, version: true, parentQuoteId: true, createdAt: true, updatedAt: true, customerId: true, lines: { orderBy: { position: 'asc' }, select: { id: true, description: true, quantity: true, unit: true, unitPrice: true, taxRate: true, position: true } } } }),
+    prisma.job.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, quoteId: true, ownerId: true, customerId: true, title: true, description: true, status: true, currency: true, startDate: true, endDate: true, acceptedQuoteSnapshot: true, createdAt: true, updatedAt: true, milestones: { orderBy: { position: 'asc' }, select: { id: true, title: true, description: true, dueDate: true, completedAt: true, position: true, customerVisible: true, createdAt: true } }, costs: { orderBy: { incurredAt: 'asc' }, select: { id: true, category: true, description: true, amount: true, currency: true, incurredBy: true, incurredAt: true, createdAt: true } }, activities: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, action: true, details: true, createdAt: true } }, attachments: { orderBy: { createdAt: 'asc' }, select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true, uploadedBy: true, uploaderName: true, createdAt: true } } } }),
+    prisma.invoice.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, jobId: true, customerId: true, invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, issueDate: true, dueDate: true, notes: true, createdAt: true, updatedAt: true, payments: { orderBy: { paymentDate: 'asc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, paymentDate: true, receivedBy: true, createdAt: true } }, reconciliations: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, reason: true, previousAmountPaid: true, previousBalanceDue: true, correctedAmountPaid: true, correctedBalanceDue: true, createdAt: true } } } }),
+    prisma.serviceItem.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, category: true, kind: true, description: true, unit: true, defaultPrice: true, defaultTaxRate: true, active: true, isStarter: true, createdAt: true, updatedAt: true } }),
+    prisma.quoteTemplate.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, description: true, workflow: true, lineItems: true, defaultNotes: true, defaultTerms: true, isStarter: true, version: true, createdAt: true, updatedAt: true } }),
+    prisma.subscription.findUnique({ where: { organisationId }, select: { plan: true, status: true, billingInterval: true, trialStartedAt: true, trialEndsAt: true, simulated: true, createdAt: true, updatedAt: true } }),
+    prisma.tenantEmailSettings.findUnique({ where: { organisationId }, select: { provider: true, senderName: true, senderEmail: true, customDomain: true, domainStatus: true, domainRecords: true, verifiedAt: true, createdAt: true, updatedAt: true } }),
+  ])
+
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="iquote-workspace-export-${new Date().toISOString().slice(0, 10)}.json"`)
+  return res.json({ exportedAt: new Date().toISOString(), formatVersion: 1, organisation, members, customers, quotes, jobs, invoices, serviceItems, quoteTemplates, subscription, emailSettings })
 })
 
 // ---- Stage 15: Team membership and invitations ----
@@ -3264,60 +4072,62 @@ app.delete('/api/team/members/:id', requireTeamRole('OWNER'), async (req, res) =
 
 // ---- Stage 15: Superadmin MFA ----
 
-app.get('/api/superadmin/mfa/setup', requireSuperadmin, async (req, res) => {
-  const user = getRequestUser(req)
-  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+app.get('/api/superadmin/mfa/setup', async (req, res) => {
+  const token = readTokenFromRequest(req)
+  if (!token) return res.status(401).json({ message: 'Unauthorized' })
+  const user = await loadUserFromToken(token)
+  if (!user || user.role !== 'SUPERADMIN') return res.status(403).json({ message: 'Superadmin access required.' })
 
   const existing = await prisma.user.findUnique({ where: { id: user.id }, select: { mfaSecret: true, mfaEnabled: true } })
   if (!existing) return res.status(404).json({ message: 'User not found.' })
   if (existing.mfaEnabled) return res.status(409).json({ message: 'MFA is already enabled.' })
 
-  const secret = existing.mfaSecret ?? generateSecret()
+  const secret = existing.mfaSecret ? decryptMfaSecret(existing.mfaSecret) : generateSecret()
   const otpauth = generateURI({ label: user.email, issuer: 'iQuote', secret })
   await prisma.$transaction(async (transaction) => {
-    await transaction.user.update({ where: { id: user.id }, data: { mfaSecret: secret } })
+    await transaction.user.update({ where: { id: user.id }, data: { mfaSecret: encryptMfaSecret(secret) } })
     await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_SETUP_STARTED', 'USER', user.id, 'Authenticator setup was started.', undefined, transaction)
   })
   res.json({ secret, otpauth })
 })
 
-app.post('/api/superadmin/mfa/verify', requireSuperadmin, async (req, res) => {
-  const user = getRequestUser(req)
-  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+app.post('/api/superadmin/mfa/verify', async (req, res) => {
+  const token = readTokenFromRequest(req)
+  if (!token) return res.status(401).json({ message: 'Unauthorized' })
+  const user = await loadUserFromToken(token)
+  if (!user || user.role !== 'SUPERADMIN') return res.status(403).json({ message: 'Superadmin access required.' })
 
   const code = String(req.body?.code ?? '').trim()
   const existing = await prisma.user.findUnique({ where: { id: user.id }, select: { mfaSecret: true, mfaEnabled: true } })
   if (!existing?.mfaSecret) return res.status(409).json({ message: 'Set up MFA first.' })
-  if (existing.mfaEnabled) return res.status(409).json({ message: 'MFA is already enabled.' })
+  if (existing.mfaEnabled) return res.status(409).json({ message: 'MFA is already enabled. Use the login verification step.' })
 
-  const valid = verifySync({ token: code, secret: existing.mfaSecret })
-  if (!valid) return res.status(400).json({ message: 'Invalid verification code.' })
+  const secret = decryptMfaSecret(existing.mfaSecret)
+  const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown'
+  const rateLimitKey = `admin-mfa-setup:${user.email}:${ip}`
+  const rateCheck = await checkLoginRateLimit(rateLimitKey)
+  if (!rateCheck.allowed) return res.status(429).json({ message: 'Too many incorrect setup codes. Try again later.' })
+  const valid = verifySync({ token: code, secret })
+  if (!valid) {
+    await recordFailedLogin(rateLimitKey)
+    await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_ENROLLMENT_FAILED', 'USER', user.id, 'A super-admin authenticator enrollment code was rejected.')
+    return res.status(400).json({ message: 'Invalid verification code.' })
+  }
+  await clearLoginAttempts(rateLimitKey)
+  const currentSession = await prisma.session.findFirst({ where: { token: hashToken(token), userId: user.id, expiresAt: { gt: new Date() } }, select: { id: true } })
+  if (!currentSession) return res.status(401).json({ message: 'Session expired. Sign in again.' })
 
   await prisma.$transaction(async (transaction) => {
-    await transaction.user.update({ where: { id: user.id }, data: { mfaEnabled: true } })
+    await transaction.user.update({ where: { id: user.id }, data: { mfaSecret: encryptMfaSecret(secret), mfaEnabled: true, mfaEnabledAt: new Date() } })
+    await transaction.session.deleteMany({ where: { userId: user.id, id: { not: currentSession.id } } })
     await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_ENABLED', 'USER', user.id, 'Authenticator protection was enabled.', undefined, transaction)
   })
-  const token = readTokenFromRequest(req)
-  if (token) await markSessionMfaVerified(token)
+  await markSessionMfaVerified(token)
   res.json({ success: true })
 })
 
 app.post('/api/superadmin/mfa/disable', requireSuperadmin, async (req, res) => {
-  const user = getRequestUser(req)
-  if (!user) return res.status(401).json({ message: 'Unauthorized' })
-
-  const code = String(req.body?.code ?? '').trim()
-  const existing = await prisma.user.findUnique({ where: { id: user.id }, select: { mfaSecret: true, mfaEnabled: true } })
-  if (!existing?.mfaEnabled) return res.status(409).json({ message: 'MFA is not enabled.' })
-
-  const valid = verifySync({ token: code, secret: existing.mfaSecret ?? '' })
-  if (!valid) return res.status(400).json({ message: 'Invalid verification code.' })
-
-  await prisma.$transaction(async (transaction) => {
-    await transaction.user.update({ where: { id: user.id }, data: { mfaEnabled: false, mfaSecret: null } })
-    await writeSuperadminAudit(req, user, 'SUPERADMIN_MFA_DISABLED', 'USER', user.id, 'Authenticator protection was disabled.', undefined, transaction)
-  })
-  res.json({ success: true })
+  return res.status(409).json({ message: 'MFA is required for super-admin accounts. Use the recovery process if you have lost your authenticator.' })
 })
 
 // ---- Stage 15: Tenant reports ----

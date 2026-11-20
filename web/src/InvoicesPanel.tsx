@@ -14,6 +14,8 @@ type Payment = {
   paymentDate: string
 }
 
+type InvoiceReconciliation = { id: string; actorName: string; reason: string; previousAmountPaid: number; previousBalanceDue: number; correctedAmountPaid: number; correctedBalanceDue: number; createdAt: string }
+
 type Invoice = {
   id: string
   invoiceNumber: string
@@ -32,6 +34,7 @@ type Invoice = {
   dueDate: string | null
   notes: string | null
   payments?: Payment[]
+  reconciliations?: InvoiceReconciliation[]
 }
 
 type InvoiceListResponse = { invoices: Invoice[]; totalCount: number; hasMore: boolean }
@@ -100,7 +103,7 @@ function formatDate(date: string | null | undefined): string {
   }
 }
 
-export default function InvoicesPanel({ customers, currency }: { business: Business; customers: Customer[]; currency: string }) {
+export default function InvoicesPanel({ customers, currency, canManageFinancials }: { business: Business; customers: Customer[]; currency: string; canManageFinancials: boolean }) {
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -196,6 +199,7 @@ export default function InvoicesPanel({ customers, currency }: { business: Busin
         onSend={() => void sendInvoice(selectedInvoice)}
         onInvoiceUpdate={(updated) => setSelectedInvoice(updated)}
         setError={setError}
+        canManageFinancials={canManageFinancials}
       />
     )
   }
@@ -207,7 +211,7 @@ export default function InvoicesPanel({ customers, currency }: { business: Busin
           <p className="workspace-eyebrow">Money &amp; insights</p>
           <h2>Invoices</h2>
         </div>
-        <button className="button button-primary" type="button" onClick={openInvoiceModal}>New invoice</button>
+        {canManageFinancials && <button className="button button-primary" type="button" onClick={openInvoiceModal}>New invoice</button>}
       </div>
 
       {error && <div className="workspace-alert" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
@@ -291,7 +295,7 @@ export default function InvoicesPanel({ customers, currency }: { business: Busin
   )
 }
 
-function InvoiceDetail({ invoice, customers, onBack, onSend, onInvoiceUpdate, setError }: {
+function InvoiceDetail({ invoice, customers, onBack, onSend, onInvoiceUpdate, setError, canManageFinancials }: {
   invoice: Invoice
   currency: string
   customers: Customer[]
@@ -299,13 +303,28 @@ function InvoiceDetail({ invoice, customers, onBack, onSend, onInvoiceUpdate, se
   onSend: () => void
   onInvoiceUpdate: (invoice: Invoice) => void
   setError: (error: string) => void
+  canManageFinancials: boolean
 }) {
   const [paymentForm, setPaymentForm] = useState<PaymentForm>(blankPaymentForm)
   const [showPaymentForm, setShowPaymentForm] = useState(false)
   const [paymentSaving, setPaymentSaving] = useState(false)
+  const paymentIdempotencyStorageKey = `iquote.payment.${invoice.id}`
+  const [paymentIdempotencyKey, setPaymentIdempotencyKey] = useState(() => {
+    try {
+      const stored = sessionStorage.getItem(paymentIdempotencyStorageKey)
+      if (stored) return stored
+      const generated = crypto.randomUUID()
+      sessionStorage.setItem(paymentIdempotencyStorageKey, generated)
+      return generated
+    } catch {
+      return crypto.randomUUID()
+    }
+  })
 
   const customer = customers.find((c) => c.id === invoice.customerId)
   const payments = invoice.payments ?? []
+  const paymentRowsTotal = payments.reduce((sum, payment) => sum + Number(payment.amount), 0)
+  const hasReconciliationMismatch = Math.abs(invoice.amountPaid - paymentRowsTotal) > 0.01 || Math.abs(invoice.balanceDue - (invoice.total - paymentRowsTotal)) > 0.01
 
   const recordPayment = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -318,16 +337,31 @@ function InvoiceDetail({ invoice, customers, onBack, onSend, onInvoiceUpdate, se
           amount: Number(paymentForm.amount),
           method: paymentForm.method,
           reference: paymentForm.reference || undefined,
+          idempotencyKey: paymentIdempotencyKey,
         }),
       })
       const response = await apiRequest<InvoiceResponse>(`/api/invoices/${invoice.id}`)
       onInvoiceUpdate(response.invoice)
       setPaymentForm(blankPaymentForm)
+      const nextPaymentKey = crypto.randomUUID()
+      setPaymentIdempotencyKey(nextPaymentKey)
+      try { sessionStorage.setItem(paymentIdempotencyStorageKey, nextPaymentKey) } catch { /* persistent storage is optional */ }
       setShowPaymentForm(false)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to record payment.')
     } finally {
       setPaymentSaving(false)
+    }
+  }
+
+  const reconcileInvoice = async () => {
+    const reason = window.prompt('Why are you reconciling this invoice against its recorded payments?')?.trim()
+    if (!reason) return
+    try {
+      const response = await apiRequest<{ invoice: Invoice }>(`/api/invoices/${invoice.id}/reconcile`, { method: 'POST', body: JSON.stringify({ reason }) })
+      onInvoiceUpdate(response.invoice)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to reconcile invoice totals.')
     }
   }
 
@@ -339,7 +373,7 @@ function InvoiceDetail({ invoice, customers, onBack, onSend, onInvoiceUpdate, se
           <p className="workspace-eyebrow">Invoice detail</p>
           <h2>{invoice.invoiceNumber}</h2>
         </div>
-        {invoice.status === 'DRAFT' && <button className="button button-primary" type="button" onClick={onSend}>Send invoice</button>}
+        {canManageFinancials && invoice.status === 'DRAFT' && <button className="button button-primary" type="button" onClick={onSend}>Send invoice</button>}
       </div>
 
       <section className="workspace-panel">
@@ -372,7 +406,7 @@ function InvoiceDetail({ invoice, customers, onBack, onSend, onInvoiceUpdate, se
             <h2>Payments</h2>
             <p>Record payments received against this invoice</p>
           </div>
-          {invoice.status !== 'CANCELLED' && invoice.status !== 'PAID' && <button className="button button-secondary" type="button" onClick={() => setShowPaymentForm(!showPaymentForm)}>{showPaymentForm ? 'Cancel' : 'Record payment'}</button>}
+          <div className="table-action-group">{canManageFinancials && hasReconciliationMismatch && <button className="quiet-button" type="button" onClick={() => void reconcileInvoice()}>Reconcile totals</button>}{canManageFinancials && invoice.status !== 'CANCELLED' && invoice.status !== 'PAID' && <button className="button button-secondary" type="button" onClick={() => setShowPaymentForm(!showPaymentForm)}>{showPaymentForm ? 'Cancel' : 'Record payment'}</button>}</div>
         </div>
         <div className="cost-list">
           {payments.length > 0 ? (
@@ -406,6 +440,7 @@ function InvoiceDetail({ invoice, customers, onBack, onSend, onInvoiceUpdate, se
           </form>
         )}
       </section>
+      {(invoice.reconciliations?.length ?? 0) > 0 && <section className="workspace-panel"><div className="panel-heading"><div><h2>Reconciliation history</h2><p>Reason-recorded adjustments to stored invoice totals</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>When</th><th>By</th><th>Reason</th><th>Paid total</th><th>Balance due</th></tr></thead><tbody>{invoice.reconciliations?.map((event) => <tr key={event.id}><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(event.createdAt))}</td><td>{event.actorName}</td><td>{event.reason}</td><td>{formatMoney(event.previousAmountPaid, invoice.currency)} → {formatMoney(event.correctedAmountPaid, invoice.currency)}</td><td>{formatMoney(event.previousBalanceDue, invoice.currency)} → {formatMoney(event.correctedBalanceDue, invoice.currency)}</td></tr>)}</tbody></table></div></section>}
     </section>
   )
 }

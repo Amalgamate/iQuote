@@ -1,41 +1,65 @@
 import { useEffect, useState } from 'react'
 import './App.css'
-import { apiRequest, setSessionExpiredHandler } from './api'
+import { apiRequest, setSessionExpiredHandler, setSubscriptionPaymentRequiredHandler } from './api'
 import MarketingSite from './MarketingSite'
 import QuoteWorkspace from './QuoteWorkspace'
 import SuperadminDashboard from './SuperadminDashboard'
 import PublicQuote from './PublicQuote'
+import PublicJobProgress from './PublicJobProgress'
+import BillingGate from './BillingGate'
 
 type User = {
   id: string
   name: string
   email: string
   role: string
+  teamRole?: string
 }
 
 function App() {
   const publicMatch = window.location.pathname.match(/^\/quote\/([^/]+)\/?$/)
+  const publicJobMatch = window.location.pathname.match(/^\/job-progress\/([^/]+)\/?$/)
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  const [adminMfaLogin, setAdminMfaLogin] = useState(false)
+  const [billingLocked, setBillingLocked] = useState(false)
 
   // Global session expiry handler — clears user state when the API returns 401
   useEffect(() => {
     setSessionExpiredHandler(() => {
       setUser(null)
     })
-    return () => setSessionExpiredHandler(null)
+    setSubscriptionPaymentRequiredHandler(() => setBillingLocked(true))
+    return () => {
+      setSessionExpiredHandler(null)
+      setSubscriptionPaymentRequiredHandler(null)
+    }
   }, [])
 
   useEffect(() => {
-    if (publicMatch) {
+    if (publicMatch || publicJobMatch) {
       setLoading(false)
       return
     }
 
     const loadSession = async () => {
       try {
-        const response = await apiRequest<{ user?: User }>('/api/auth/me')
-        setUser(response.user ?? null)
+        const response = await apiRequest<{ user?: User; mfaRequired?: boolean; mfaSetupRequired?: boolean }>('/api/auth/me')
+        if (response.mfaRequired || response.mfaSetupRequired) {
+          setAdminMfaLogin(true)
+          setUser(null)
+        } else {
+          const activeUser = response.user ?? null
+          setUser(activeUser)
+          if (activeUser && activeUser.role !== 'SUPERADMIN') {
+            try {
+              const billing = await apiRequest<{ locked: boolean }>('/api/billing/status')
+              setBillingLocked(billing.locked)
+            } catch {
+              setBillingLocked(false)
+            }
+          }
+        }
       } catch {
         setUser(null)
       } finally {
@@ -53,11 +77,15 @@ function App() {
       // Ignore logout request issues and clear the UI.
     } finally {
       setUser(null)
+      setBillingLocked(false)
     }
   }
 
   if (publicMatch) {
     return <PublicQuote token={decodeURIComponent(publicMatch[1])} />
+  }
+  if (publicJobMatch) {
+    return <PublicJobProgress token={decodeURIComponent(publicJobMatch[1])} />
   }
 
   if (loading) {
@@ -68,10 +96,14 @@ function App() {
     )
   }
 
-  if (!user) return <MarketingSite />
+  if (!user) return <MarketingSite initialScreen={adminMfaLogin ? 'login' : undefined} />
 
   if (user.role === 'SUPERADMIN') {
     return <SuperadminDashboard user={user} onLogout={handleLogout} />
+  }
+
+  if (billingLocked) {
+    return <BillingGate isOwner={user.teamRole === 'OWNER'} onUnlocked={() => setBillingLocked(false)} onLogout={handleLogout} />
   }
 
   // QuoteWorkspace handles business profile loading, settings, and all workspace pages.

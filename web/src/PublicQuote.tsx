@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiRequest } from './api'
 import QuoteDocument, { type QuoteDocumentData } from './QuoteDocument'
 import { QuotePdfDownloadLink } from './QuotePdf'
+import QuoteChatter from './QuoteChatter'
 
 type PublicQuoteRecord = QuoteDocumentData & {
   status: string
@@ -56,14 +57,14 @@ export default function PublicQuote({ token }: { token: string }) {
   }
 
   if (loading) return <main className="public-quote-page"><p className="loading-state">Loading quotation…</p></main>
-  if (!quote) return <main className="public-quote-page"><section className="public-message"><div className="brand"><span className="brand-mark">iQ</span><span>iQuote<span className="brand-period">.</span></span></div><h1>Quote unavailable</h1><p>{error || 'This quote link may have expired or been removed.'}</p></section></main>
+  if (!quote) return <main className="public-quote-page"><section className="public-message"><div className="brand"><span className="brand-mark">iQ</span><span className="brand-word">i<span className="brand-q">Q</span>uote<span className="brand-period">.</span></span></div><h1>Quote unavailable</h1><p>{error || 'This quote link may have expired or been removed.'}</p></section></main>
 
   const canDecide = ['SENT', 'VIEWED'].includes(quote.status)
 
   return (
     <main className="public-quote-page">
       <div className="public-quote-topbar no-print">
-        <div className="brand"><span className="brand-mark">iQ</span><span>iQuote<span className="brand-period">.</span></span></div>
+        <div className="brand"><span className="brand-mark">iQ</span><span className="brand-word">i<span className="brand-q">Q</span>uote<span className="brand-period">.</span></span></div>
         <div className="public-quote-actions">
           <span className={`quote-status status-${quote.status.toLowerCase()}`}>{decisionLabel[quote.status] ?? quote.status}</span>
           <QuotePdfDownloadLink className="secondary-button" quote={quote} />
@@ -92,9 +93,10 @@ export default function PublicQuote({ token }: { token: string }) {
               </button>
             </form>
           )}
-          <p className="decision-caption">Questions? Contact {quote.organisation.email || quote.organisation.phone || quote.organisation.name}.</p>
+          <p className="decision-caption">Questions? Use the conversation below or contact {quote.organisation.email || quote.organisation.phone || quote.organisation.name}.</p>
         </aside>
       </div>
+      <div className="public-conversation no-print"><QuoteChatter token={token} mode="customer" readOnly={quote.status === 'EXPIRED'} /></div>
     </main>
   )
 }

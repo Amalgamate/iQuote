@@ -88,7 +88,7 @@
   text-decoration: none;
   font-family: var(--font-display);
   font-size: 21px;
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: -0.04em;
   border: 0;
   background: transparent;
@@ -113,6 +113,9 @@
   color: var(--blue-primary);
   font-weight: 900;
 }
+
+.site-brand-word { font-weight: 800; }
+.site-brand-q { color: var(--blue-primary); font-weight: 900; }
 
 .site-nav, .site-header-actions {
   display: flex;
@@ -399,17 +402,31 @@
   object-fit: cover;
 }
 
-.quote-paper {
+.marketing-quote-paper {
   position: relative;
   z-index: 1;
   width: min(100%, 450px);
-  min-height: 470px;
+  min-height: 0;
+  overflow: hidden;
   background: var(--blue-surface);
   border: 1px solid var(--blue-line);
   border-radius: 14px;
-  padding: 28px 30px 22px;
+  padding: 22px 30px 36px;
   box-shadow: 0 20px 50px rgba(10, 25, 47, 0.1);
   transform: rotate(-1deg);
+}
+
+.marketing-quote-paper::after {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 13px;
+  background: var(--blue-canvas);
+  clip-path: polygon(0 100%, 4% 24%, 8% 100%, 12% 24%, 16% 100%, 20% 24%, 24% 100%, 28% 24%, 32% 100%, 36% 24%, 40% 100%, 44% 24%, 48% 100%, 52% 24%, 56% 100%, 60% 24%, 64% 100%, 68% 24%, 72% 100%, 76% 24%, 80% 100%, 84% 24%, 88% 100%, 92% 24%, 96% 100%, 100% 24%, 100% 100%);
+  pointer-events: none;
 }
 
 .paper-top, .paper-meta, .paper-table-head, .paper-table>div:not(.paper-table-head), .paper-total, .paper-sign {
@@ -433,7 +450,7 @@
 .paper-label {
   text-align: right;
   font-family: var(--font-ui);
-  font-size: 8px;
+  font-size: 9px;
   line-height: 1.7;
   letter-spacing: 0.1em;
   color: var(--blue-muted);
@@ -441,7 +458,7 @@
 
 .paper-label b {
   color: var(--blue-ink);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.02em;
 }
 
@@ -462,7 +479,7 @@
 
 .paper-meta small, .paper-title small {
   font-family: var(--font-ui);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.12em;
   color: var(--blue-muted);
@@ -470,13 +487,13 @@
 
 .paper-meta b {
   font-family: var(--font-display);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--blue-ink);
 }
 
 .paper-meta span {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--blue-muted);
 }
 
@@ -507,7 +524,7 @@
   padding: 9px 0 7px;
   color: var(--blue-muted);
   font-family: var(--font-ui);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
 }
@@ -516,13 +533,13 @@
   padding: 8px 0;
   border-top: 1px solid #f0f4fa;
   font-family: var(--font-ui);
-  font-size: 9px;
+  font-size: 11px;
   color: var(--blue-ink);
 }
 
 .paper-table>div b {
   font-family: var(--font-ui);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   color: var(--blue-ink);
 }
@@ -534,13 +551,13 @@
 
 .paper-total>span {
   font-family: var(--font-ui);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--blue-ink);
 }
 
 .paper-total small {
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 500;
   color: var(--blue-muted);
 }
@@ -556,7 +573,7 @@
 .paper-sign {
   padding-top: 14px;
   font-family: var(--font-ui);
-  font-size: 8px;
+  font-size: 10px;
   color: var(--blue-muted);
 }
 
@@ -566,7 +583,7 @@
   color: white;
   padding: 9px 14px;
   font-family: var(--font-display);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   border-radius: 6px;
   cursor: pointer;
@@ -746,12 +763,13 @@
   left: 0;
   right: 0;
   height: 64px;
-  padding: 0 clamp(24px, 10.2vw, 166px);
+  width: 100%;
+  padding: 0 clamp(24px, 5vw, 84px);
   border-top: 1px solid var(--blue-line);
   background: var(--blue-surface);
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   gap: 28px;
   color: var(--blue-muted);
   font-family: var(--font-ui);
@@ -762,7 +780,9 @@
 
 .hero-personas {
   display: flex;
+  flex: 1;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   flex-wrap: nowrap;
 }
@@ -781,6 +801,7 @@
   color: var(--blue-ink);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
   transition: transform 0.2s ease, border-color 0.2s ease;
+  white-space: nowrap;
 }
 
 .persona-chip:hover {
@@ -801,6 +822,8 @@
   background: var(--blue-primary);
   border-radius: 50%;
 }
+
+.hero-personas > span:last-child { white-space: nowrap; }
 
 /* ─── Intro Section: Editorial Photo & Stats ─────────────────────── */
 .site-intro {
@@ -2013,6 +2036,9 @@
     gap: 3vw;
   }
   .hero-copy h1 { font-size: 52px; }
+  .hero-bottom { padding-inline: 24px; gap: 16px; }
+  .hero-personas { gap: 8px; }
+  .persona-chip { gap: 6px; padding-right: 8px; font-size: 10px; }
   .site-intro, .site-steps { padding-left: 9vw; padding-right: 9vw; }
   .site-plans { padding-left: 6vw; padding-right: 6vw; grid-template-columns: 0.6fr 1.4fr; gap: 4%; }
   .onboarding-layout { grid-template-columns: minmax(455px, 1fr) minmax(365px, 0.9fr); }
@@ -2031,7 +2057,7 @@
   .hero-copy { max-width: 100%; padding-bottom: 0; }
   .hero-copy h1 { font-size: clamp(40px, 11vw, 56px); }
   .quote-stage { min-height: 480px; margin: 35px 0 0; }
-  .quote-paper { width: 100%; min-height: 430px; padding: 22px; }
+  .marketing-quote-paper { width: 100%; min-height: 0; padding: 22px 22px 36px; }
   .quote-stage:before { width: 490px; }
   .quote-stage:after { width: 390px; }
   .badge-top { right: 0; top: 10px; }
@@ -2040,7 +2066,7 @@
   .stage-controls { right: 10px; top: 8px; }
   .hero-bottom { height: auto; min-height: 56px; padding: 12px 20px; gap: 10px; justify-content: center; }
   .hero-bottom > span { display: none; }
-  .hero-bottom > div { flex-wrap: wrap; justify-content: center; gap: 8px; }
+  .hero-bottom > div { flex: initial; flex-wrap: wrap; justify-content: center; gap: 8px; }
   .site-intro, .site-steps { padding: 64px 20px; grid-template-columns: 1fr; gap: 28px; }
   .site-intro h2, .steps-intro h2 { font-size: 38px; }
   .intro-stats { flex-wrap: wrap; gap: 16px; }
@@ -2087,6 +2113,30 @@
 /* ─── iQuote Market public-site concept preview ───────────────────── */
 .market-nav-badge { margin-left: 4px; padding: 3px 6px; border-radius: 999px; background: #e8f1ff; color: var(--blue-primary); font-size: 8px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; vertical-align: 1px; }
 .site-market { padding: 94px clamp(24px, 8vw, 118px) 100px; background: #edf4fc; border-block: 1px solid #e1ebf6; }
+.site-africa { position: relative; display: grid; grid-template-columns: minmax(300px,.82fr) minmax(0,1.18fr); align-items: center; gap: clamp(28px,5vw,72px); overflow: hidden; padding: 88px clamp(24px,8vw,118px); border-block: 1px solid #e3ece4; background: #f3f8f4; }
+.site-africa::before { content: ''; position: absolute; width: 310px; aspect-ratio: 1; left: -205px; bottom: -230px; border: 1px solid #cfe2d2; border-radius: 50%; box-shadow: 0 0 0 26px #d9eadb55, 0 0 0 62px #d9eadb33; }
+.site-africa > * { position: relative; z-index: 1; }
+.africa-copy { max-width: 490px; }
+.africa-copy h2 { margin: 14px 0 15px; color: var(--blue-ink); font: 800 clamp(36px,4vw,49px)/1.08 var(--font-display); letter-spacing: -.05em; }
+.africa-copy h2 em { color: var(--blue-primary); font-style: normal; }
+.africa-copy > p:not(.site-kicker) { margin: 0; color: var(--blue-muted); font-size: 16px; line-height: 1.7; }
+.africa-payments { display: grid; grid-template-columns: 34px minmax(0,1fr); gap: 11px; margin-top: 25px; padding: 16px; border: 1px solid #dce9df; border-radius: 11px; background: #fff; }
+.africa-payments-icon { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 9px; background: #eaf5ef; color: #176b4b; font-size: 18px; }
+.africa-payments strong { color: #294536; font-size: 13px; }
+.africa-payments p { margin: 5px 0 11px; color: #718078; font-size: 13px; line-height: 1.55; }
+.africa-provider-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.africa-provider-list span { padding: 5px 8px; border: 1px solid #e2ebe4; border-radius: 999px; color: #3e6851; background: #f7faf7; font-size: 11px; font-weight: 650; }
+.africa-availability-note { display: block; margin: 10px 0 0; color: #8a968e; font-size: 11px; line-height: 1.5; }
+.africa-market-panel { padding: 19px; border: 1px solid #e1e9e2; border-radius: 14px; background: #fff; box-shadow: 0 15px 40px rgb(23 66 41 / 6%); }
+.africa-market-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; color: #698073; font-size: 10px; font-weight: 750; letter-spacing: .1em; }
+.africa-market-panel-heading strong { color: #176b4b; font: 800 18px/1 var(--font-display); letter-spacing: -.04em; white-space: nowrap; }
+.africa-market-panel-heading strong small { color: #8a968e; font: 500 10px var(--font-body); letter-spacing: 0; }
+.africa-currency-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 10px; }
+.africa-currency-chip { display: grid; min-width: 0; justify-items: center; gap: 6px; padding: 12px 8px; border: 1px solid #edf1ed; border-radius: 10px; background: #fbfcfb; text-align: center; }
+.africa-country-flag { display: block; width: 44px; height: 44px; aspect-ratio: 1; overflow: hidden; border: 1px solid #e7ede8; border-radius: 50%; background: #fff; object-fit: cover; }
+.africa-currency-chip .africa-country-name { max-width: 100%; overflow: hidden; color: #586b5e; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.africa-currency-chip > strong { color: #176b4b; font: 750 11px var(--font-display); }
+.africa-market-panel > p { margin: 12px 0 0; color: #8a968e; font-size: 11px; line-height: 1.5; }
 .market-heading { max-width: 1160px; margin: 0 auto 38px; display: flex; align-items: end; justify-content: space-between; gap: 55px; }
 .market-heading h2 { margin: 12px 0 0; color: var(--blue-ink); font: 750 clamp(34px, 4vw, 48px)/1.12 var(--font-display); letter-spacing: -.055em; }
 .market-heading h2 em { color: var(--blue-primary); font-style: normal; }
@@ -2118,6 +2168,7 @@
 .market-flow-list { display: grid; gap: 0; margin-top: 20px; }.market-flow-list > div { display: flex; gap: 12px; padding: 12px 0; border-top: 1px solid #dbe6f1; }.market-flow-list > div > span { width: 25px; height: 25px; flex: 0 0 25px; display: grid; place-items: center; border-radius: 7px; background: #fff; color: #3c78c5; font-size: 9px; font-weight: 750; }.market-flow-list b,.market-flow-list small { display: block; }.market-flow-list b { color: #34485f; font-size: 11px; }.market-flow-list small { margin-top: 4px; color: #7e8d9d; font-size: 10px; line-height: 1.4; }
 .market-status-note { display: flex; align-items: center; gap: 8px; margin: 17px 0 0; color: #75879a; font-size: 9px; line-height: 1.5; }.market-status-note span { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #d79b43; }
 @media(max-width: 980px) { .market-heading { gap: 28px; }.market-demo-layout { grid-template-columns: 1fr; }.market-request-window { width: 100%; }.market-side-note { padding: 14px 8px 0; }.market-flow-list { grid-template-columns: repeat(3,1fr); gap: 12px; }.market-flow-list > div { border-bottom: 1px solid #dbe6f1; } }
+@media(max-width: 980px) { .site-africa { grid-template-columns: 1fr; gap: 28px; }.africa-copy { max-width: 720px; } }
 @media(max-width: 760px) { .site-market { padding: 65px 20px 70px; }.market-heading { display: block; margin-bottom: 28px; }.market-heading h2 { font-size: 36px; }.market-intro-copy { margin-top: 15px; font-size: 12px; }.market-request-body { padding: 18px 15px 15px; }.market-request-title-row { display: block; }.market-request-amount { display: inline-block; margin-top: 13px; text-align: left; }.market-request-details { grid-template-columns: 1fr 1fr; }.market-flow-list { grid-template-columns: 1fr; gap: 0; }.market-side-note { padding-inline: 3px; }.market-side-note h3 { font-size: 22px; } }
 
 
@@ -2136,6 +2187,7 @@
 .market-customer-steps { padding: 72px clamp(24px,9vw,132px); background: #fff; }.market-customer-steps > div:first-child { max-width: 1160px; margin: 0 auto 25px; }.market-customer-steps h2 { margin: 10px 0; color: #20354d; font: 730 27px var(--font-display); letter-spacing: -.04em; }.market-customer-flow { max-width: 1160px; margin: auto; display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }.market-customer-flow > div { display: grid; grid-template-columns: 32px 1fr; column-gap: 10px; align-items: center; padding: 16px; border: 1px solid #e3eaf0; border-radius: 8px; }.market-customer-flow > div > span { grid-row: span 2; }.market-customer-flow b { color: #34485f; font-size: 11px; }.market-customer-flow small { margin-top: 4px; color: #8391a0; font-size: 9px; line-height: 1.5; }
 @media(max-width: 980px) { .market-page-hero { grid-template-columns: 1fr 1fr; padding-inline: 6vw; }.market-audience { grid-template-columns: 1fr; gap: 28px; padding-inline: 7vw; }.market-vendor-steps { grid-template-columns: repeat(2,1fr); } }
 @media(max-width: 760px) { .market-preview-label { display: none; }.market-page-hero { grid-template-columns: 1fr; gap: 32px; padding: 57px 20px 65px; }.market-page-copy h1 { font-size: clamp(40px,11vw,56px); }.market-page-copy > p:not(.site-kicker) { font-size: 13px; }.market-page-card .market-request-body { padding: 18px 15px; }.market-page-card .market-request-details { grid-template-columns: 1fr 1fr; }.market-audience { padding: 62px 20px; }.market-audience-cards { grid-template-columns: 1fr; }.market-audience-cards article { min-height: 0; }.market-audience-cards article > p:not(.market-audience-kicker) { min-height: 0; }.market-journeys { padding: 65px 20px; }.market-journey-heading { text-align: left; }.market-journey-heading .site-kicker { justify-content: flex-start; }.market-vendor-steps { grid-template-columns: 1fr 1fr; gap: 9px; }.market-vendor-steps article { padding: 16px; min-height: 175px; }.market-vendor-steps h3 { margin-top: 16px; }.market-vendor-callout { display: block; padding: 21px; }.market-back-link { display: inline-block; margin-top: 17px; }.market-customer-steps { padding: 58px 20px; }.market-customer-flow { grid-template-columns: 1fr; } }
+@media(max-width: 760px) { .site-africa { padding: 64px 20px; }.africa-copy h2 { font-size: 36px; }.africa-market-panel { padding: 13px; }.africa-currency-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }.africa-currency-chip { padding: 8px; }.site-africa .site-kicker { font-size: 10px; } }
 
 
 /* ─── Illustrated sample RFQ and RFS feed ────────────────────────── */
@@ -2250,3 +2302,22 @@
   .site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::before,
   .site-page :is(.site-hero,.site-intro,.site-testimonials,.site-features,.site-market,.site-steps,.site-plans,.site-final-cta,.site-footer,.market-page-hero,.market-opportunity-board)::after { transition: none; }
 }
+
+/* Comfortable public-site reading sizes and consistent Q-period wordmark. */
+.site-page { font-size: 16px; line-height: 1.6; }
+.site-page .site-brand,.site-page .site-brand-word { font-weight: 800; }
+.site-page .site-brand-q,.site-page .site-brand-dot { color: #176b4b; font-weight: 900; }
+.onboarding-page .site-brand-q,.onboarding-page .site-brand-dot { color: #176b4b; font-weight: 900; }
+.site-page .site-footer .site-brand-q,.site-page .site-footer .site-brand-dot { color: #c6ecce; }
+.site-page .site-nav a,.site-page .site-login,.site-page .hero-secondary { font-size: 14px; }
+.site-page .hero-reassurance { font-size: 13px; }
+.site-page .hero-lede { font-size: 17px; line-height: 1.7; }
+.site-page .intro-copy > p,.site-page .feature-card p,.site-page .testimonial-quote,.site-page .steps-intro > p:not(.site-kicker),.site-page .step-list p,.site-page .plan-note,.site-page .plan-tile > p,.site-page .plan-tile li,.site-page .market-intro-copy,.site-page .market-side-note > p:not(.market-status-note),.site-page .market-flow-list small { font-size: 15px; line-height: 1.65; }
+.site-page .feature-card a,.site-page .market-explore-link { font-size: 13px; }
+.site-page .site-footer { font-size: 13px; }
+.site-page .market-request-title-row p { font-size: 13px; }
+.site-page .market-request-details b,.site-page .market-matched-row b,.site-page .market-flow-list b { font-size: 12px; }
+.site-page .market-matched-row small { font-size: 11px; }
+.site-page .market-opportunity-scope { font-size: 12px; }
+.site-page .market-opportunity-facts b { font-size: 11px; }
+.site-page .market-feed-footnote { font-size: 12px; }
