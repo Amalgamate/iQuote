@@ -174,7 +174,7 @@
 .workspace-root .app-navigation { display: grid; width: 100%; min-width: 0; min-height: 0; flex: 0 1 auto; align-content: start; gap: 4px; overflow: hidden; padding: 0 0 8px; }
 .workspace-root .sidebar-nav-group { display: contents; }
 .workspace-root .sidebar-section-label { display: none; }
-.workspace-root .app-navigation > .app-nav-item { display: none; }
+.workspace-root:not(.superadmin-root) .app-navigation > .app-nav-item { display: none; }
 .workspace-root .app-navigation .app-nav-item { width: 100%; min-width: 0; min-height: 36px; gap: 9px; overflow: hidden; padding-inline: 10px; border-radius: 8px; color: #64736b; font-family: Inter, 'Segoe UI', sans-serif; font-size: 12px; font-weight: 450; letter-spacing: 0; white-space: nowrap; }
 .workspace-root .app-navigation .app-nav-item > span:not(.nav-icon) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-root .app-navigation .app-nav-item:hover { background: #f3f7f4; color: #176b4b; }
