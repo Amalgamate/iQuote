@@ -1808,7 +1808,7 @@ app.get('/api/quotes', requireAuth, async (req, res) => {
   const [quotes, totalCount] = await Promise.all([
     prisma.quote.findMany({
       where,
-      include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } } },
+      include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } }, invoice: { select: { id: true, invoiceNumber: true, status: true } } },
       orderBy: { updatedAt: 'desc' },
       skip: offset,
       take: limit,
@@ -1865,6 +1865,58 @@ app.post('/api/quotes', requireAuth, async (req, res) => {
   } catch {
     res.status(500).json({ message: 'Unable to create this quote.' })
   }
+})
+
+app.post('/api/quotes/:id/revisions', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
+  const source = await prisma.quote.findFirst({
+    where: { id: String(req.params.id ?? ''), organisationId },
+    include: { lines: { orderBy: { position: 'asc' } }, customer: { select: { id: true, name: true, phone: true, email: true } } },
+  })
+  if (!source) return res.status(404).json({ message: 'Quote not found.' })
+  if (source.status === 'DRAFT') return res.status(409).json({ message: 'This quote is already a draft. Open it directly to edit.' })
+
+  const existingDraft = await prisma.quote.findFirst({
+    where: { organisationId, parentQuoteId: source.id, status: 'DRAFT' },
+    include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } } },
+    orderBy: { version: 'desc' },
+  })
+  if (existingDraft) return res.json({ quote: serializeQuote(existingDraft), revisedFrom: serializeQuote(source) })
+
+  const organisation = await prisma.organisation.findUnique({ where: { id: organisationId } })
+  if (!organisation) return res.status(404).json({ message: 'Business workspace not found.' })
+  const revision = await prisma.$transaction(async (tx) => {
+    const year = new Date().getFullYear()
+    const sequence = await tx.quoteSequence.upsert({
+      where: { organisationId_year: { organisationId, year } },
+      update: { nextNumber: { increment: 1 } },
+      create: { organisationId, year, nextNumber: 1 },
+    })
+    const documentNumber = `${organisation.quotePrefix || 'QT'}-${year}-${String(sequence.nextNumber).padStart(4, '0')}`
+    return tx.quote.create({
+      data: {
+        organisationId,
+        ownerId: user.id,
+        customerId: source.customerId,
+        documentNumber,
+        parentQuoteId: source.id,
+        version: source.version + 1,
+        currency: source.currency,
+        validUntil: source.validUntil,
+        notes: source.notes,
+        terms: source.terms,
+        subtotal: source.subtotal,
+        taxTotal: source.taxTotal,
+        total: source.total,
+        lines: { create: source.lines.map((line) => ({ description: line.description, quantity: line.quantity, unit: line.unit, unitPrice: line.unitPrice, taxRate: line.taxRate, position: line.position })) },
+      },
+      include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } } },
+    })
+  })
+  return res.status(201).json({ quote: serializeQuote(revision), revisedFrom: serializeQuote(source) })
 })
 
 app.get('/api/quotes/:id', requireAuth, async (req, res) => {
@@ -3914,62 +3966,51 @@ app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) =>
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const organisationId = await getOrganisationId(user.id)
   if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
-
-  const customerId = String(req.body?.customerId ?? '').trim()
-  const jobId = req.body?.jobId ? String(req.body.jobId).trim() : null
-  const subtotal = Number(req.body?.subtotal ?? 0)
-  const taxTotal = Number(req.body?.taxTotal ?? 0)
-  const notes = String(req.body?.notes ?? '').trim() || null
+  const quoteId = String(req.body?.quoteId ?? '').trim()
   const dueDate = req.body?.dueDate ? new Date(req.body.dueDate) : null
   const depositRequired = req.body?.depositRequired !== undefined && req.body?.depositRequired !== null ? Number(req.body.depositRequired) : null
-
-  const customer = await prisma.customer.findFirst({ where: { id: customerId, organisationId } })
-  if (!customer) return res.status(400).json({ message: 'Choose a valid customer for this invoice.' })
-
-  let currency = 'KES'
-  if (jobId) {
-    const job = await prisma.job.findFirst({ where: { id: jobId, organisationId } })
-    if (!job) return res.status(404).json({ message: 'Job not found.' })
-    currency = job.currency
-  } else {
-    const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { currency: true, quotePrefix: true } })
-    currency = org?.currency ?? 'KES'
+  const notesInput = String(req.body?.notes ?? '').trim()
+  if (!quoteId) return res.status(400).json({ message: 'Invoices must be created from an approved quote.' })
+  const quote = await prisma.quote.findFirst({ where: { id: quoteId, organisationId }, include: { lines: { orderBy: { position: 'asc' } }, customer: { select: { id: true } } } })
+  if (!quote) return res.status(404).json({ message: 'Quote not found.' })
+  if (quote.status !== 'APPROVED') return res.status(409).json({ message: 'Only customer-approved quotes can be converted to invoices.' })
+  const existing = await prisma.invoice.findUnique({ where: { sourceQuoteId: quote.id }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
+  if (existing) return res.json({ invoice: { ...existing, subtotal: Number(existing.subtotal), taxTotal: Number(existing.taxTotal), total: Number(existing.total), amountPaid: Number(existing.amountPaid), balanceDue: Number(existing.balanceDue), depositRequired: existing.depositRequired ? Number(existing.depositRequired) : null, depositPaid: Number(existing.depositPaid) }, alreadyConverted: true })
+  const job = await prisma.job.findFirst({ where: { organisationId, quoteId: quote.id }, orderBy: { updatedAt: 'desc' }, select: { id: true } })
+  if (job) {
+    const legacyInvoice = await prisma.invoice.findFirst({ where: { organisationId, jobId: job.id, sourceQuoteId: null }, select: { invoiceNumber: true } })
+    if (legacyInvoice) return res.status(409).json({ message: `This job already has invoice ${legacyInvoice.invoiceNumber}, which was created outside the quote conversion flow. Review it before creating another invoice.` })
   }
-
-  if (!Number.isFinite(subtotal) || subtotal < 0) return res.status(400).json({ message: 'Subtotal must be a non-negative number.' })
-  if (!Number.isFinite(taxTotal) || taxTotal < 0) return res.status(400).json({ message: 'Tax total must be a non-negative number.' })
+  const subtotal = Number(quote.subtotal)
+  const taxTotal = Number(quote.taxTotal)
+  const total = Number(quote.total)
+  if (![subtotal, taxTotal, total].every(Number.isFinite) || subtotal < 0 || taxTotal < 0 || Math.abs(roundMoney(subtotal + taxTotal) - roundMoney(total)) > 0.01) return res.status(409).json({ message: 'The accepted quote totals need review before invoicing.' })
   if (depositRequired !== null) {
     if (!Number.isFinite(depositRequired) || depositRequired < 0) return res.status(400).json({ message: 'Deposit required must be a non-negative number.' })
-    if (depositRequired > roundMoney(subtotal + taxTotal)) return res.status(400).json({ message: 'Deposit required cannot exceed the invoice total.' })
+    if (depositRequired > total) return res.status(400).json({ message: 'Deposit required cannot exceed the invoice total.' })
   }
-
-  const total = roundMoney(subtotal + taxTotal)
   const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { quotePrefix: true } })
   const invoiceNumber = await generateInvoiceNumber(organisationId, org?.quotePrefix ?? 'INV')
-
-  const invoice = await prisma.invoice.create({
-    data: {
-      organisationId,
-      jobId,
-      customerId,
-      invoiceNumber,
-      status: 'DRAFT',
-      currency,
-      subtotal,
-      taxTotal,
-      total,
-      balanceDue: total,
-      depositRequired: depositRequired !== null ? depositRequired : undefined,
-      dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null,
-      notes,
-    },
-    include: {
-      customer: { select: { id: true, name: true, phone: true, email: true } },
-      job: { select: { id: true, title: true } },
-    },
-  })
-
-  res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) } })
+  try {
+    const invoice = await prisma.invoice.create({
+      data: {
+        organisationId, jobId: job?.id ?? null, sourceQuoteId: quote.id, customerId: quote.customerId, invoiceNumber,
+        status: 'DRAFT', currency: quote.currency, subtotal, taxTotal, total, balanceDue: total,
+        lineItems: quote.lines.map((line) => ({ description: line.description, quantity: Number(line.quantity), unit: line.unit, unitPrice: Number(line.unitPrice), taxRate: line.taxRate === null ? null : Number(line.taxRate) })),
+        depositRequired: depositRequired !== null ? depositRequired : undefined,
+        dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null,
+        notes: notesInput || [quote.notes, quote.terms].filter(Boolean).join('\n\n') || null,
+      },
+      include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } },
+    })
+    return res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) }, alreadyConverted: false })
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      const raced = await prisma.invoice.findUnique({ where: { sourceQuoteId: quote.id }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
+      if (raced) return res.json({ invoice: { ...raced, subtotal: Number(raced.subtotal), taxTotal: Number(raced.taxTotal), total: Number(raced.total), amountPaid: Number(raced.amountPaid), balanceDue: Number(raced.balanceDue), depositRequired: raced.depositRequired ? Number(raced.depositRequired) : null, depositPaid: Number(raced.depositPaid) }, alreadyConverted: true })
+    }
+    throw error
+  }
 })
 
 app.post('/api/jobs/:id/invoice-draft', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
@@ -4036,7 +4077,7 @@ app.get('/api/invoices', requireAuth, async (req, res) => {
       orderBy: { updatedAt: 'desc' },
       take: limit,
       skip: offset,
-      include: { customer: { select: { id: true, name: true } }, job: { select: { id: true, title: true } } },
+      include: { customer: { select: { id: true, name: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } },
     }),
     prisma.invoice.count({ where: where as never }),
   ])

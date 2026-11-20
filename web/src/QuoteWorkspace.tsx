@@ -45,6 +45,7 @@ type Quote = QuoteDocumentData & {
   viewedAt: string | null
   decidedAt: string | null
   decisionComment: string | null
+  invoice?: { id: string; invoiceNumber: string; status: string } | null
 }
 type QuoteDraft = {
   customerId: string
@@ -412,6 +413,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [templateDescription, setTemplateDescription] = useState('')
   const [editor, setEditor] = useState<QuoteDraft | null>(null)
   const [editorQuoteId, setEditorQuoteId] = useState<string | null>(null)
+  const [editorRevisionSource, setEditorRevisionSource] = useState<{ documentNumber: string; publicToken: string | null } | null>(null)
   const [conversationQuote, setConversationQuote] = useState<{ id: string; documentNumber: string; publicToken: string | null; status: QuoteStatus } | null>(null)
   const [editorNumber, setEditorNumber] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
@@ -439,6 +441,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   const [sending, setSending] = useState(false)
   const [deliveries, setDeliveries] = useState<QuoteDelivery[]>([])
   const [revoking, setRevoking] = useState(false)
+  const [invoiceConvertingId, setInvoiceConvertingId] = useState<string | null>(null)
   const editorRef = useRef<QuoteDraft | null>(null)
 
   useEffect(() => { editorRef.current = editor }, [editor])
@@ -600,6 +603,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     }
     setEditor({ customerId: customers[0].id, validUntil: '', notes: '', terms: business?.terms ?? '', lines: [{ description: '', quantity: 1, unit: 'unit', unitPrice: 0, taxRate: Number(business?.defaultTaxRate ?? 0) }] })
     setEditorQuoteId(null)
+    setEditorRevisionSource(null)
     setEditorNumber(`${business?.quotePrefix || 'QT'}-${new Date().getFullYear()}-Draft`)
     setEditorDirty(false)
     setSaveState('')
@@ -608,24 +612,42 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   }
 
   const openQuote = async (quote: Quote) => {
-    if (quote.status !== 'DRAFT' && quote.publicToken) {
-      window.open(`/quote/${encodeURIComponent(quote.publicToken)}`, '_blank', 'noopener,noreferrer')
-      return
-    }
     setError('')
     setSaveState('Loading quote…')
     try {
-      const response = await apiRequest<{ quote: Quote }>(`/api/quotes/${quote.id}`)
+      const response = quote.status === 'DRAFT'
+        ? await apiRequest<{ quote: Quote }>(`/api/quotes/${encodeURIComponent(quote.id)}`)
+        : await apiRequest<{ quote: Quote; revisedFrom: Quote }>(`/api/quotes/${encodeURIComponent(quote.id)}/revisions`, { method: 'POST', body: JSON.stringify({}) })
       setEditor(quoteDraftFrom(response.quote))
       setEditorQuoteId(response.quote.id)
       setEditorNumber(response.quote.documentNumber)
+      setEditorRevisionSource(quote.status === 'DRAFT' ? null : { documentNumber: quote.documentNumber, publicToken: quote.publicToken })
       setEditorDirty(false)
+      setQuotes((current) => [response.quote, ...current.filter((item) => item.id !== response.quote.id)])
       setPage('editor')
       setSharedUrl('')
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to open quote.')
     } finally {
       setSaveState('')
+    }
+  }
+
+  const convertQuoteToInvoice = async (quote: Quote) => {
+    if (quote.status !== 'APPROVED' || quote.invoice || invoiceConvertingId) return
+    setError('')
+    setInvoiceConvertingId(quote.id)
+    try {
+      const { invoice } = await apiRequest<{ invoice: { id: string; invoiceNumber: string; status: string } }>('/api/invoices', {
+        method: 'POST',
+        body: JSON.stringify({ quoteId: quote.id }),
+      })
+      setQuotes((current) => current.map((item) => item.id === quote.id ? { ...item, invoice } : item))
+      setPage('invoices')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to convert this quote to an invoice.')
+    } finally {
+      setInvoiceConvertingId(null)
     }
   }
 
@@ -1009,6 +1031,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
       setQuotes((current) => current.filter((quote) => quote.id !== editorQuoteId))
       setEditor(null)
       setEditorQuoteId(null)
+      setEditorRevisionSource(null)
       setPage('quotes')
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to delete draft.')
@@ -1023,6 +1046,10 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     setQuotesPage(1)
     setQuoteStatusFilter('ALL')
     setIncludeArchived(false)
+  }
+  const openApprovedQuotes = () => {
+    changePage('quotes')
+    setQuoteStatusFilter('APPROVED')
   }
   const heading = page === 'dashboard' ? 'Overview' : page === 'quotes' ? 'Quotes' : page === 'customers' ? 'Customers' : page === 'services' ? 'Services & products' : page === 'jobs' ? 'Jobs' : page === 'invoices' ? 'Finance' : page === 'reports' ? 'Reports' : page === 'team' ? 'Team' : page === 'settings' ? 'Settings' : page === 'conversation' ? 'Quote conversation' : 'Quote editor'
 
@@ -1122,7 +1149,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           <section className="workspace-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Documents</p><h2>All quotes</h2></div><button className="button button-primary" type="button" onClick={startNewQuote}>New quote</button></div>
             <div className="filter-row"><input className="input-control search-control" type="search" placeholder="Search by quote or customer" value={search} onChange={(event) => setSearch(event.target.value)} /><select className="input-control filter-control" value={quoteStatusFilter} onChange={(event) => setQuoteStatusFilter(event.target.value)}><option value="ALL">All statuses</option>{Object.entries(statusNames).map(([status, label]) => <option key={status} value={status}>{label}</option>)}</select></div>
-            <section className="workspace-panel quote-list-panel"><QuoteTable quotes={filteredQuotes} currency={business.currency} onOpen={openQuote} /><Pagination page={quotesPage} limit={quotesLimit} total={quotesTotal} onPageChange={setQuotesPage} />{quotes.length === 0 ? <div className="panel-empty"><h3>No quotes yet</h3><p>Create a quotation and send a public link to your customer.</p><button className="button button-primary" type="button" onClick={startNewQuote}>Create your first quote</button></div> : <EmptyRows hasQuotes={filteredQuotes.length > 0} label="No quotes match this search" />}</section>
+            <section className="workspace-panel quote-list-panel"><QuoteTable quotes={filteredQuotes} currency={business.currency} onOpen={openQuote} onConvert={convertQuoteToInvoice} onViewInvoices={() => changePage('invoices')} convertingId={invoiceConvertingId} canConvert={user.teamRole === 'OWNER' || user.teamRole === 'ADMIN'} /><Pagination page={quotesPage} limit={quotesLimit} total={quotesTotal} onPageChange={setQuotesPage} />{quotes.length === 0 ? <div className="panel-empty"><h3>No quotes yet</h3><p>Create a quotation and send a public link to your customer.</p><button className="button button-primary" type="button" onClick={startNewQuote}>Create your first quote</button></div> : <EmptyRows hasQuotes={filteredQuotes.length > 0} label="No quotes match this search" />}</section>
           </section>
         )}
 
@@ -1219,7 +1246,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
 
         {page === 'jobs' && business && <JobsPanel business={business} customers={customers} currency={business.currency} canManageJobs={user.teamRole === 'OWNER' || user.teamRole === 'ADMIN'} onInvoiceCreated={() => setPage('invoices')} />}
 
-        {page === 'invoices' && business && <InvoicesPanel business={business} customers={customers} currency={business.currency} canManageFinancials={user.teamRole !== 'MEMBER'} />}
+        {page === 'invoices' && business && <InvoicesPanel business={business} customers={customers} currency={business.currency} canManageFinancials={user.teamRole !== 'MEMBER'} onOpenQuotes={openApprovedQuotes} />}
 
         {page === 'reports' && business && <ReportsPanel />}
 
@@ -1228,6 +1255,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
         {page === 'editor' && editor && business && (
           <section className="editor-content">
             <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={openSendModal}>Send email</button>}<button className="button button-primary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Mark as sent</button></div></div>
+            {editorRevisionSource && <div className="workspace-alert" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><span>Editing a new draft based on {editorRevisionSource.documentNumber}. The original quote remains unchanged.</span>{editorRevisionSource.publicToken && <a href={`/quote/${encodeURIComponent(editorRevisionSource.publicToken)}`} target="_blank" rel="noreferrer">View original customer copy</a>}</div>}
             {sharedUrl && <div className="share-callout"><div><strong>Quote link is ready</strong><span>{sharedUrl}</span></div><div className="share-actions"><button className="button button-secondary" type="button" onClick={() => { void navigator.clipboard.writeText(sharedUrl).then(() => setCopied(true)).catch(() => setError('Copy the quote link from the address shown.')) }}>{copied ? 'Copied' : 'Copy link'}</button><a className="button button-secondary" href={`https://wa.me/?text=${encodeURIComponent(`Here is your quotation: ${sharedUrl}`)}`} target="_blank" rel="noreferrer">WhatsApp</a><button className="quiet-button danger-button" type="button" onClick={() => void revokeQuoteLink()} disabled={revoking}>{revoking ? 'Revoking…' : 'Revoke link'}</button></div></div>}
             {sendMessage && <div className={sendStatus === 'success' ? 'workspace-alert workspace-alert-success' : 'workspace-alert'} role="status"><span>{sendMessage}</span><button type="button" onClick={() => { setSendMessage(''); setSendStatus(null) }} aria-label="Dismiss">×</button></div>}
             {deliveries.length > 0 && (
@@ -1559,9 +1587,9 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   )
 }
 
-function QuoteTable({ quotes, currency, onOpen }: { quotes: Quote[]; currency: string; onOpen: (quote: Quote) => void }) {
+function QuoteTable({ quotes, currency, onOpen, onConvert, onViewInvoices, convertingId, canConvert }: { quotes: Quote[]; currency: string; onOpen: (quote: Quote) => void; onConvert: (quote: Quote) => void; onViewInvoices: () => void; convertingId: string | null; canConvert: boolean }) {
   if (!quotes.length) return null
-  return <div className="table-scroll"><table className="data-table"><thead><tr><th>Quote</th><th>Customer</th><th>Valid until</th><th>Total</th><th>Status</th><th /></tr></thead><tbody>{quotes.map((quote) => <tr key={quote.id} onClick={() => onOpen(quote)}><td><strong>{quote.documentNumber}</strong><small>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.updatedAt))}</small></td><td>{quote.customer.name}</td><td>{quote.validUntil ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.validUntil)) : '—'}</td><td>{formatMoney(quote.total, currency)}</td><td><span className={statusClass(quote.status)}>{statusNames[quote.status]}</span></td><td><button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onOpen(quote) }}>{quote.status === 'DRAFT' ? 'Edit' : 'View'}</button></td></tr>)}</tbody></table></div>
+  return <div className="table-scroll"><table className="data-table"><thead><tr><th>Quote</th><th>Customer</th><th>Valid until</th><th>Total</th><th>Status</th><th /></tr></thead><tbody>{quotes.map((quote) => <tr key={quote.id} onClick={() => onOpen(quote)}><td><strong>{quote.documentNumber}</strong><small>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.updatedAt))}</small></td><td>{quote.customer.name}</td><td>{quote.validUntil ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.validUntil)) : '—'}</td><td>{formatMoney(quote.total, currency)}</td><td><span className={statusClass(quote.status)}>{statusNames[quote.status]}</span></td><td><div className="table-action-group"><button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onOpen(quote) }}>{quote.status === 'DRAFT' ? 'Edit' : 'Revise'}</button>{quote.invoice ? <button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onViewInvoices() }}>View invoice</button> : quote.status === 'APPROVED' && canConvert ? <button className="quiet-button" type="button" disabled={convertingId === quote.id} onClick={(event) => { event.stopPropagation(); onConvert(quote) }}>{convertingId === quote.id ? 'Converting…' : 'Convert to invoice'}</button> : null}</div></td></tr>)}</tbody></table></div>
 }
 
 function EmptyRows({ hasQuotes, label }: { hasQuotes: boolean; label: string }) {
@@ -1602,7 +1630,7 @@ function DashboardQuoteTable({ quotes, currency, onOpen }: { quotes: Quote[]; cu
               <td className="muted-cell">{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.updatedAt))}</td>
               <td className="amount-cell">{formatMoney(quote.total, currency)}</td>
               <td><span className={statusClass(quote.status)}>{statusNames[quote.status]}</span></td>
-              <td><button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onOpen(quote) }}>{quote.status === 'DRAFT' ? 'Edit' : 'View'}</button></td>
+              <td><button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onOpen(quote) }}>{quote.status === 'DRAFT' ? 'Edit' : 'Revise'}</button></td>
             </tr>
           ))}
         </tbody>

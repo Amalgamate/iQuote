@@ -84,24 +84,6 @@ const paymentMethodNames: Record<string, string> = {
   OTHER: 'Other',
 }
 
-type InvoiceForm = {
-  customerId: string
-  subtotal: string
-  taxTotal: string
-  dueDate: string
-  notes: string
-  depositRequired: string
-}
-
-const blankInvoiceForm: InvoiceForm = {
-  customerId: '',
-  subtotal: '0',
-  taxTotal: '0',
-  dueDate: '',
-  notes: '',
-  depositRequired: '',
-}
-
 type PaymentForm = {
   amount: string
   method: string
@@ -127,16 +109,12 @@ function formatDate(date: string | null | undefined): string {
   }
 }
 
-export default function InvoicesPanel({ business, customers, currency, canManageFinancials }: { business: Business; customers: Customer[]; currency: string; canManageFinancials: boolean }) {
+export default function InvoicesPanel({ business, customers, currency, canManageFinancials, onOpenQuotes }: { business: Business; customers: Customer[]; currency: string; canManageFinancials: boolean; onOpenQuotes: () => void }) {
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null)
-  const [invoiceModal, setInvoiceModal] = useState(false)
-  const [invoiceForm, setInvoiceForm] = useState<InvoiceForm>(blankInvoiceForm)
-  const [invoiceError, setInvoiceError] = useState('')
-  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     void loadInvoices()
@@ -167,40 +145,6 @@ export default function InvoicesPanel({ business, customers, currency, canManage
       setSelectedInvoice(response.invoice)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to load invoice details.')
-    }
-  }
-
-  const openInvoiceModal = () => {
-    if (!customers.length) {
-      setError('Add a customer first before creating an invoice.')
-      return
-    }
-    setInvoiceForm({ ...blankInvoiceForm, customerId: customers[0].id })
-    setInvoiceError('')
-    setInvoiceModal(true)
-  }
-
-  const submitInvoice = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    setInvoiceError('')
-    setSaving(true)
-    try {
-      const payload = {
-        customerId: invoiceForm.customerId,
-        subtotal: Number(invoiceForm.subtotal) || 0,
-        taxTotal: Number(invoiceForm.taxTotal) || 0,
-        dueDate: invoiceForm.dueDate || undefined,
-        notes: invoiceForm.notes || undefined,
-        depositRequired: invoiceForm.depositRequired ? Number(invoiceForm.depositRequired) : undefined,
-      }
-      const response = await apiRequest<InvoiceResponse>('/api/invoices', { method: 'POST', body: JSON.stringify(payload) })
-      setInvoices((current) => [response.invoice, ...current])
-      setInvoiceModal(false)
-      setInvoiceForm(blankInvoiceForm)
-    } catch (requestError) {
-      setInvoiceError(requestError instanceof Error ? requestError.message : 'Unable to create invoice.')
-    } finally {
-      setSaving(false)
     }
   }
 
@@ -238,7 +182,7 @@ export default function InvoicesPanel({ business, customers, currency, canManage
           <p className="workspace-eyebrow">Money &amp; insights</p>
           <h2>Invoices</h2>
         </div>
-        {canManageFinancials && <button className="button button-primary" type="button" onClick={openInvoiceModal}>New invoice</button>}
+        {canManageFinancials && <button className="button button-secondary" type="button" onClick={onOpenQuotes}>Create from quote</button>}
       </div>
 
       {error && <div className="workspace-alert" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
@@ -259,6 +203,7 @@ export default function InvoicesPanel({ business, customers, currency, canManage
               <thead>
                 <tr>
                   <th>Invoice</th>
+                  <th>Source quote</th>
                   <th>Customer</th>
                   <th>Status</th>
                   <th>Total</th>
@@ -272,6 +217,7 @@ export default function InvoicesPanel({ business, customers, currency, canManage
                 {filteredInvoices.map((invoice) => (
                   <tr key={invoice.id} onClick={() => void openInvoiceDetail(invoice)}>
                     <td><strong>{invoice.invoiceNumber}</strong></td>
+                    <td>{invoice.sourceQuote?.documentNumber ?? '—'}</td>
                     <td>{invoice.customer?.name ?? '—'}</td>
                     <td><span className={invoiceStatusClasses[invoice.status]}>{invoiceStatusNames[invoice.status]}</span></td>
                     <td>{formatMoney(invoice.total, invoice.currency)}</td>
@@ -287,38 +233,11 @@ export default function InvoicesPanel({ business, customers, currency, canManage
         ) : (
           <div className="panel-empty">
             <h3>{invoices.length === 0 ? 'No invoices yet' : 'No invoices match this filter'}</h3>
-            <p>{invoices.length === 0 ? 'Create an invoice to track payments and balances.' : 'Try a different status filter.'}</p>
-            {invoices.length === 0 && <button className="button button-primary" type="button" onClick={openInvoiceModal}>Create your first invoice</button>}
+            <p>{invoices.length === 0 ? 'Invoices are created from approved quotes so the customer, line items, and totals stay connected.' : 'Try a different status filter.'}</p>
+            {invoices.length === 0 && canManageFinancials && <button className="button button-primary" type="button" onClick={onOpenQuotes}>View approved quotes</button>}
           </div>
         )}
       </section>
-
-      {invoiceModal && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setInvoiceModal(false) }}>
-          <form className="customer-modal" onSubmit={(event) => void submitInvoice(event)}>
-            <div className="modal-heading">
-              <div>
-                <p className="workspace-eyebrow">Money &amp; insights</p>
-                <h2>New invoice</h2>
-              </div>
-              <button className="quiet-button" type="button" onClick={() => setInvoiceModal(false)} aria-label="Close">×</button>
-            </div>
-            <label className="field-label">Customer<select className="input-control" required value={invoiceForm.customerId} onChange={(event) => setInvoiceForm((current) => ({ ...current, customerId: event.target.value }))}>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
-            <div className="settings-grid">
-              <label className="field-label">Subtotal<input className="input-control" type="number" min="0" step="0.01" required value={invoiceForm.subtotal} onChange={(event) => setInvoiceForm((current) => ({ ...current, subtotal: event.target.value }))} /></label>
-              <label className="field-label">Tax total<input className="input-control" type="number" min="0" step="0.01" value={invoiceForm.taxTotal} onChange={(event) => setInvoiceForm((current) => ({ ...current, taxTotal: event.target.value }))} /></label>
-            </div>
-            <label className="field-label">Deposit required (optional)<input className="input-control" type="number" min="0" step="0.01" value={invoiceForm.depositRequired} onChange={(event) => setInvoiceForm((current) => ({ ...current, depositRequired: event.target.value }))} placeholder="0" /><small style={{ display: 'block', marginTop: '4px', color: '#62736b', fontSize: '12px' }}>Amount the customer must pay before work starts.</small></label>
-            <label className="field-label">Due date<input className="input-control" type="date" value={invoiceForm.dueDate} onChange={(event) => setInvoiceForm((current) => ({ ...current, dueDate: event.target.value }))} /></label>
-            <label className="field-label">Notes<textarea className="input-control" rows={2} value={invoiceForm.notes} onChange={(event) => setInvoiceForm((current) => ({ ...current, notes: event.target.value }))} placeholder="Optional notes for the customer" /></label>
-            {invoiceError && <p className="form-error" role="alert">{invoiceError}</p>}
-            <div className="modal-actions">
-              <button type="button" className="button button-secondary" onClick={() => setInvoiceModal(false)}>Cancel</button>
-              <button type="submit" className="button button-primary" disabled={saving}>{saving ? 'Creating…' : 'Create invoice'}</button>
-            </div>
-          </form>
-        </div>
-      )}
     </section>
   )
 }
