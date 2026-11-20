@@ -219,11 +219,12 @@ export default function MarketingSite({ initialScreen }: { initialScreen?: 'logi
     setError('')
     try {
       const result = await apiRequest<{ mfaRequired?: boolean; mfaSetupRequired?: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: loginEmail, password: loginPassword }) })
-      if (result.mfaRequired) setLoginMfaRequired(true)
+      if (result.mfaRequired) { setLoginMfaRequired(true); setBusy(false) }
       else if (result.mfaSetupRequired) {
         const setup = await apiRequest<{ secret: string; otpauth: string }>('/api/superadmin/mfa/setup')
         setLoginMfaSecret(setup.secret)
         setLoginMfaSetupRequired(true)
+        setBusy(false)
       } else window.location.reload()
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to sign in.')
