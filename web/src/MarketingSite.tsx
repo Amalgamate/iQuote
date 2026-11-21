@@ -8,6 +8,7 @@ import featLink from './assets/feat-link.jpg'
 import featTracking from './assets/feat-tracking.jpg'
 import personaStudio from './assets/persona-studio.jpg'
 import personaTrades from './assets/persona-trades.jpg'
+import googlePlayBadge from './assets/google-play-badge.svg'
 
 // Real face photos via Unsplash CDN (royalty-free)
 const FACES = {
@@ -487,7 +488,7 @@ export default function MarketingSite({ initialScreen }: { initialScreen?: 'logi
         <section className="site-plans" id="plans"><div><p className="site-kicker">A PLAN FOR YOUR NEXT CHAPTER</p><h2>Start simple.<br /><em>Grow when ready.</em></h2><p className="plan-note">Every plan begins with a 14-day local preview. Pick the workspace shape you want to explore; billing can be connected later.</p></div><div className="plan-tiles">{planCards.map((item, index) => <article key={item.id} className={index === 1 ? 'plan-tile plan-featured' : 'plan-tile'}><div className="plan-tile-top"><span>{item.name}</span>{index === 1 && <small>GOOD PLACE TO START</small>}</div><p>{item.detail}</p><ul>{item.features.map(feature => <li key={feature}><span>✓</span>{feature}</li>)}</ul><button className={index === 1 ? 'site-cta' : 'site-plan-link'} onClick={startSignup}>Explore this plan <span>↗</span></button></article>)}</div></section>
         <section className="site-final-cta"><div><p className="site-kicker">A CALMER QUOTING DESK STARTS HERE</p><h2>Make your next quote<br />your best one yet.</h2></div><button className="site-cta site-cta-light" onClick={startSignup}>Set up iQuote <span>↗</span></button></section>
       </main>
-      <footer className="site-footer"><a href="#top" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>Thoughtful quoting for growing businesses.</span><span>© iQuote · Local preview</span></footer>
+      <footer className="site-footer"><a href="#top" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>Thoughtful quoting for growing businesses.</span><div className="site-footer-badge"><a href="https://play.google.com/store" target="_blank" rel="noopener noreferrer" aria-label="Get it on Google Play"><img src={googlePlayBadge} alt="Get it on Google Play" /></a></div><span>© iQuote · Local preview</span></footer>
       <ChatbotWidget onStartTrial={startSignup} />
     </div>
   }
@@ -581,7 +582,7 @@ function MarketLanding() {
       </section>
       <section className="market-customer-steps" id="customer-steps"><div><p className="site-kicker">FOR CUSTOMERS</p><h2>From a request to a confident choice.</h2></div><div className="market-customer-flow"><div><span>01</span><b>Post the essentials</b><small>Scope, location, budget guide, and deadline.</small></div><div><span>02</span><b>Compare proposals</b><small>Invited businesses respond privately.</small></div><div><span>03</span><b>Choose who to work with</b><small>Continue into a quote and delivery workflow.</small></div></div></section>
     </main>
-    <footer className="site-footer"><a href="/" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>iQuote Market · Concept preview</span><a href="/">Return to iQuote</a></footer>
+    <footer className="site-footer"><a href="/" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>iQuote Market · Concept preview</span><div className="site-footer-badge"><a href="https://play.google.com/store" target="_blank" rel="noopener noreferrer" aria-label="Get it on Google Play"><img src={googlePlayBadge} alt="Get it on Google Play" /></a></div><a href="/">Return to iQuote</a></footer>
   </div>
 }
 
