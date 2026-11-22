@@ -63,6 +63,8 @@ model Organisation {
   defaultTaxRate      Decimal?             @db.Decimal(5, 2)
   quotePrefix         String?
   logoUrl             String?
+  logoWidth           Int?
+  logoHeight          Int?
   website             String?
   paymentInstructions String?
   terms               String?

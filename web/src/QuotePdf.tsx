@@ -26,8 +26,10 @@ const dot = '#b8c4be'
 const styles = StyleSheet.create({
   page: { paddingTop: 44, paddingBottom: 110, paddingHorizontal: 48, color: ink, fontFamily: 'Helvetica', fontSize: 9 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 24, borderBottomWidth: 1, borderBottomColor: headerRule },
-  brand: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, flex: 1, paddingRight: 24, minWidth: 0 },
+  brand: { flexDirection: 'column', alignItems: 'flex-start', gap: 12, flex: 1, paddingRight: 24, minWidth: 0 },
   logo: { width: 60, height: 60, objectFit: 'contain' },
+  logoSquare: { width: 72, height: 72, objectFit: 'contain' },
+  logoLandscape: { width: 160, height: 60, objectFit: 'contain' },
   logoFallback: { width: 60, height: 60, borderWidth: 1, borderColor: hairline, alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 800, color: ink },
   businessDetails: { flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 },
   businessName: { fontSize: 14, fontWeight: 700, color: ink, marginBottom: 2 },
@@ -119,13 +121,17 @@ function QuotePdfDocument({ quote }: { quote: QuoteDocumentData }) {
   const contacts = [org.email, org.phone, org.country, cleanUrl(org.website)]
   const hasFooterDetails = contacts.some(Boolean) || org.paymentInstructions
 
+  // Detect logo aspect ratio
+  const logoAspect = (org.logoWidth && org.logoHeight) ? org.logoWidth / org.logoHeight : 1
+  const logoStyle = logoAspect > 1.3 ? styles.logoLandscape : styles.logoSquare
+
   return (
     <Document title={`Quotation ${quote.documentNumber}`} author={org.name} subject="Business quotation">
       <Page size="A4" style={styles.page} wrap>
         <View style={styles.header}>
           <View style={styles.brand}>
             {org.logoUrl
-              ? <Image src={assetUrl(org.logoUrl) ?? undefined} style={styles.logo} />
+              ? <Image src={assetUrl(org.logoUrl) ?? undefined} style={logoStyle} />
               : <View style={styles.logoFallback}><Text>{org.name.slice(0, 1).toUpperCase()}</Text></View>}
             <View style={styles.businessDetails}>
               <Text style={styles.businessName}>{org.name}</Text>

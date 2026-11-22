@@ -685,13 +685,14 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
 .mobile-preview-toggle,.mobile-preview-close { display: none; }
 .quote-paper { display: flex; flex-direction: column; width: 100%; aspect-ratio: 210 / 297; padding: 42px 40px 0; border: 1px solid #e2e8e4; border-radius: 4px; background: #fff; box-shadow: 0 10px 32px rgb(23 44 34 / 5%); color: #1c1c1e; transform: none !important; rotate: 0deg !important; }
 .document-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 24px; border-bottom: 1px solid #d8e4de; }
-.document-brand { display: flex; flex-direction: row; align-items: flex-start; gap: 12px; flex: 1; min-width: 0; }
+.document-brand { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; flex: 1; min-width: 0; }
 .document-business-details { display: grid; gap: 5px; min-width: 0; }
 .document-business-details > strong { color: #1c1c1e; font-size: 14px; font-weight: 700; letter-spacing: -0.015em; }
 .document-business-meta { display: flex; flex-wrap: wrap; gap: 3px 14px; color: #4a5e54; font-size: 9px; }
 .document-business-meta span { position: relative; }
 .document-business-meta span:not(:last-child)::after { content: '•'; position: absolute; right: -10px; color: #b8c4be; }
-.document-brand img,.document-logo-placeholder { width: 60px; height: 60px; flex: 0 0 auto; object-fit: contain; }
+.document-brand img[data-logo-type="square"],.document-brand img:not([data-logo-type]),.document-logo-placeholder { width: 72px; height: 72px; flex: 0 0 auto; object-fit: contain; }
+.document-brand img[data-logo-type="landscape"] { width: 160px; height: 60px; flex: 0 0 auto; object-fit: contain; }
 .document-logo-placeholder { display: grid; place-items: center; border: 1px solid #e2e8e4; border-radius: 0; background: #fff; color: #1c1c1e; font-size: 22px; font-weight: 800; }
 .document-title { display: grid; justify-items: end; gap: 5px; text-align: right; }
 .document-title p { margin: 0; color: #1a5c3f; font-size: 23px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
@@ -800,7 +801,8 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
 .public-quote-layout .document-total { color: #1a5c3f; }
 .public-quote-layout .document-total strong { color: #1a5c3f; }
 .public-quote-layout .document-footer { margin-inline: -44px; padding-inline: 44px; background: #f7faf8; }
-.public-quote-layout .document-brand img,.public-quote-layout .document-logo-placeholder { width: 68px; height: 68px; }
+.public-quote-layout .document-brand img[data-logo-type="square"],.public-quote-layout .document-brand img:not([data-logo-type]),.public-quote-layout .document-logo-placeholder { width: 86px; height: 86px; }
+.public-quote-layout .document-brand img[data-logo-type="landscape"] { width: 180px; height: 68px; }
 .public-quote-layout .document-business-details > strong { font-size: 16px; }
 .public-quote-layout .document-business-meta { font-size: 10px; }
 .public-quote-layout .document-recipient strong { font-size: 14px; }
@@ -1041,7 +1043,8 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
   .document-header { gap: 7px; }
   .document-title p { font-size: 16px; }
   .document-brand { gap: 6px; }
-  .document-brand img,.document-logo-placeholder { width: 44px; height: 44px; }
+  .document-brand img[data-logo-type="square"],.document-brand img:not([data-logo-type]),.document-logo-placeholder { width: 52px; height: 52px; }
+  .document-brand img[data-logo-type="landscape"] { width: 120px; height: 45px; }
   .document-business-details > strong { font-size: 12px; }
   .document-lines th,.document-lines td { padding-left: 3px; padding-right: 3px; font-size: 8px; }
   .document-footer { padding: 12px 14px; }
@@ -1054,7 +1057,8 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
   .quote-paper,.quote-paper * { visibility: visible !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .quote-paper { position: absolute; inset: 0 auto auto 0; display: flex; flex-direction: column; width: 186mm; min-height: 262mm; aspect-ratio: auto; margin: 0; padding: 0; border: 0; border-radius: 0; box-shadow: none; color: #1c1c1e; transform: none !important; rotate: 0deg !important; }
   .document-header { padding: 0 0 22px; }
-  .document-brand img,.document-logo-placeholder { width: 60px; height: 60px; }
+  .document-brand img[data-logo-type="square"],.document-brand img:not([data-logo-type]),.document-logo-placeholder { width: 72px; height: 72px; }
+  .document-brand img[data-logo-type="landscape"] { width: 160px; height: 60px; }
   .document-business-details > strong { font-size: 14px; }
   .document-business-meta { font-size: 8.5px; }
   .document-recipient { padding: 18px 0; }

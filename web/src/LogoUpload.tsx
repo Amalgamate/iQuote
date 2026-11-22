@@ -76,7 +76,7 @@ export default function LogoUpload({ logoUrl, onUploaded, onRemoved }: LogoUploa
   return (
     <div className="logo-upload-section">
       <label className="settings-label">Business logo</label>
-      <p className="settings-hint">Upload a PNG, JPEG, WebP, SVG, or GIF. Maximum 5&nbsp;MB.</p>
+      <p className="settings-hint">Upload a square logo (e.g., 400×400px) or landscape/wordmark logo (e.g., 800×300px). PNG, JPEG, WebP, SVG, or GIF. Maximum 5&nbsp;MB.</p>
 
       <div className="logo-upload-row">
         <div

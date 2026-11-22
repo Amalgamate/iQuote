@@ -10,6 +10,7 @@ import { generateSecret, generateURI, verifySync } from 'otplib'
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
+import sizeOf from 'image-size'
 import { getIndustryPack } from './industry-packs.js'
 import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush, setPlatformNcbaConfig } from './ncba-client.js'
 import { initiateMerchantStkPush, NcbaMerchantRequestError, normalizeCustomerPhone, normalizeMerchantCode, queryMerchantStkPush, verifyNotificationHash } from './customer-mpesa.js'
@@ -807,7 +808,7 @@ app.get('/api/tenant/current', async (req, res) => {
   if (!subdomain) return res.json({ tenant: null })
   const organisation = await prisma.organisation.findUnique({
     where: { subdomain },
-    select: { name: true, subdomain: true, logoUrl: true, country: true, currency: true },
+    select: { name: true, subdomain: true, logoUrl: true, logoWidth: true, logoHeight: true, country: true, currency: true },
   })
   if (!organisation) return res.status(404).json({ tenant: null })
   res.json({ tenant: organisation })
@@ -2087,7 +2088,7 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
     where: { id: quoteId, organisationId: organisationId ?? '__none__' },
     include: {
       customer: { select: { id: true, name: true, email: true, phone: true } },
-      organisation: { select: { id: true, name: true, currency: true, logoUrl: true } },
+      organisation: { select: { id: true, name: true, currency: true, logoUrl: true, logoWidth: true, logoHeight: true } },
       lines: { orderBy: { position: 'asc' } },
     },
   })
@@ -2407,7 +2408,7 @@ app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
     where: { publicToken },
     include: {
       customer: { select: { name: true } },
-      organisation: { select: { name: true, email: true, phone: true, country: true, currency: true, logoUrl: true, website: true, paymentInstructions: true } },
+      organisation: { select: { name: true, email: true, phone: true, country: true, currency: true, logoUrl: true, logoWidth: true, logoHeight: true, website: true, paymentInstructions: true } },
       lines: { orderBy: { position: 'asc' } },
       jobs: { orderBy: { createdAt: 'desc' }, take: 1, select: { title: true, status: true, updatedAt: true, milestones: { where: { customerVisible: true }, orderBy: { position: 'asc' }, select: { id: true, title: true, dueDate: true, completedAt: true } } } },
       invoice: { select: { invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, issueDate: true, dueDate: true, lineItems: true } },
@@ -2555,6 +2556,8 @@ app.get('/api/business/me', requireAuth, async (req, res) => {
       defaultTaxRate: true,
       quotePrefix: true,
       logoUrl: true,
+      logoWidth: true,
+      logoHeight: true,
       website: true,
       paymentInstructions: true,
       terms: true,
@@ -2758,7 +2761,22 @@ app.post('/api/settings/logo', requireAuth, async (req, res) => {
       await writeFile(join(uploadsDir, filename), buffer)
 
       const logoUrl = `/uploads/${filename}`
-      await prisma.organisation.update({ where: { id: organisationId }, data: { logoUrl } })
+      
+      // Extract logo dimensions
+      let logoWidth: number | undefined
+      let logoHeight: number | undefined
+      try {
+        const dimensions = sizeOf(buffer)
+        logoWidth = dimensions.width
+        logoHeight = dimensions.height
+      } catch {
+        // If dimension extraction fails (e.g., unsupported SVG variant), leave dimensions undefined
+      }
+
+      await prisma.organisation.update({ 
+        where: { id: organisationId }, 
+        data: { logoUrl, logoWidth, logoHeight } 
+      })
 
       res.json({ logoUrl })
     } catch {
@@ -2777,7 +2795,7 @@ app.delete('/api/settings/logo', requireAuth, async (req, res) => {
   const organisationId = await getOrganisationId(user.id)
   if (!organisationId) return res.status(409).json({ message: 'No workspace found.' })
 
-  await prisma.organisation.update({ where: { id: organisationId }, data: { logoUrl: null } })
+  await prisma.organisation.update({ where: { id: organisationId }, data: { logoUrl: null, logoWidth: null, logoHeight: null } })
   res.json({ success: true })
 })
 
@@ -4945,7 +4963,7 @@ app.get('/api/export/workspace.json', requireTeamRole('OWNER', 'ADMIN'), async (
   if (!organisationId) return res.status(409).json({ message: 'Set up a business workspace first.' })
 
   const [organisation, members, customers, quotes, jobs, invoices, paymentAttempts, serviceItems, quoteTemplates, subscription, emailSettings] = await Promise.all([
-    prisma.organisation.findUnique({ where: { id: organisationId }, select: { id: true, name: true, email: true, phone: true, country: true, businessType: true, currency: true, defaultTaxRate: true, quotePrefix: true, logoUrl: true, website: true, paymentInstructions: true, terms: true, createdAt: true, updatedAt: true } }),
+    prisma.organisation.findUnique({ where: { id: organisationId }, select: { id: true, name: true, email: true, phone: true, country: true, businessType: true, currency: true, defaultTaxRate: true, quotePrefix: true, logoUrl: true, logoWidth: true, logoHeight: true, website: true, paymentInstructions: true, terms: true, createdAt: true, updatedAt: true } }),
     prisma.user.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, email: true, role: true, teamRole: true, emailVerifiedAt: true, createdAt: true } }),
     prisma.customer.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, phone: true, email: true, archivedAt: true, createdAt: true, updatedAt: true } }),
     prisma.quote.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, documentNumber: true, status: true, currency: true, validUntil: true, notes: true, terms: true, subtotal: true, taxTotal: true, total: true, viewedAt: true, decisionComment: true, decidedAt: true, tokenRevokedAt: true, version: true, parentQuoteId: true, createdAt: true, updatedAt: true, customerId: true, lines: { orderBy: { position: 'asc' }, select: { id: true, description: true, quantity: true, unit: true, unitPrice: true, taxRate: true, position: true } } } }),

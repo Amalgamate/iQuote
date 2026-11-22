@@ -29,6 +29,8 @@ export type QuoteDocumentData = {
     country?: string | null
     website?: string | null
     logoUrl?: string | null
+    logoWidth?: number | null
+    logoHeight?: number | null
     paymentInstructions?: string | null
   }
 }
@@ -47,12 +49,18 @@ function cleanUrl(url?: string | null) {
 export default function QuoteDocument({ quote }: { quote: QuoteDocumentData }) {
   const hasFooterDetails = quote.organisation.email || quote.organisation.phone || quote.organisation.country || quote.organisation.website || quote.organisation.paymentInstructions
 
+  // Detect logo aspect ratio
+  const logoAspect = (quote.organisation.logoWidth && quote.organisation.logoHeight) 
+    ? quote.organisation.logoWidth / quote.organisation.logoHeight 
+    : 1
+  const logoType = logoAspect > 1.3 ? 'landscape' : 'square'
+
   return (
     <article className="quote-paper" aria-label={`Quotation ${quote.documentNumber}`}>
       <header className="document-header">
         <div className="document-brand">
           {quote.organisation.logoUrl ? (
-            <img src={assetUrl(quote.organisation.logoUrl) ?? undefined} alt={`${quote.organisation.name} logo`} />
+            <img src={assetUrl(quote.organisation.logoUrl) ?? undefined} alt={`${quote.organisation.name} logo`} data-logo-type={logoType} />
           ) : (
             <div className="document-logo-placeholder" aria-hidden="true">{quote.organisation.name.slice(0, 1).toUpperCase()}</div>
           )}
