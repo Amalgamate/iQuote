@@ -114,7 +114,7 @@ export default function QuoteDocument({ quote }: { quote: QuoteDocumentData }) {
 
       <footer className="document-footer">
         <div className="document-footer-main">
-          <span>Thank you for considering this quotation.</span>
+          <span>Thank you for your consideration.</span>
           {hasFooterDetails && (
             <div className="document-footer-contacts">
               {quote.organisation.email && <span>{quote.organisation.email}</span>}
