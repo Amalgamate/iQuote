@@ -130,10 +130,26 @@ echo ""
 echo ""
 echo "[5/6] Configuring Nginx reverse proxy..."
 if command -v nginx >/dev/null 2>&1; then
-    sudo cp deploy/nginx-iquote.conf /etc/nginx/sites-available/iquote.trendscore.co.ke
-    sudo ln -sfn /etc/nginx/sites-available/iquote.trendscore.co.ke /etc/nginx/sites-enabled/
-    sudo nginx -t && sudo systemctl reload nginx
-    echo "  Nginx site enabled for iquote.trendscore.co.ke"
+    # This host serves several sites on 443. Stage the new config, test it, and
+    # only then make it live — a bad TLS block must never break the host.
+    sudo cp deploy/nginx-iquote.conf /etc/nginx/sites-available/iquote.trendscore.co.ke.staged
+    if sudo test -f /etc/letsencrypt/live/iquote.trendscore.co.ke/fullchain.pem; then
+        sudo mv /etc/nginx/sites-available/iquote.trendscore.co.ke.staged /etc/nginx/sites-available/iquote.trendscore.co.ke
+        sudo ln -sfn /etc/nginx/sites-available/iquote.trendscore.co.ke /etc/nginx/sites-enabled/
+        if sudo nginx -t; then
+            sudo systemctl reload nginx
+            echo "  Nginx site enabled for iquote.trendscore.co.ke (HTTP + HTTPS)"
+        else
+            echo "  ERROR: staged Nginx config failed validation — NOT reloaded." >&2
+            echo "  The server keeps running the previous config. Fix deploy/nginx-iquote.conf." >&2
+            exit 1
+        fi
+    else
+        echo "  WARNING: certificate for iquote.trendscore.co.ke is missing."
+        echo "  Keeping the existing Nginx config so HTTPS does not fall back to another site."
+        echo "  Run: sudo bash deploy/provision-ssl.sh"
+        sudo rm -f /etc/nginx/sites-available/iquote.trendscore.co.ke.staged
+    fi
 else
     echo "  Nginx not found on this server. The web container is on port 5180."
 fi
