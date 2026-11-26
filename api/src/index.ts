@@ -693,9 +693,10 @@ async function getEntitlements(organisationId: string) {
   return entitlementsFor(subscription?.plan, subscription?.status)
 }
 
-// New quotes this calendar month (East Africa Time). Revisions of an existing quote do not count.
+// Quotes created this calendar month (East Africa Time), counting revisions too: a revision is a
+// new Quote row and costs a slot, so a workspace cannot revise its way past the monthly limit.
 async function countQuotesThisMonth(organisationId: string) {
-  return prisma.quote.count({ where: { organisationId, parentQuoteId: null, createdAt: { gte: startOfMonthEAT() } } })
+  return prisma.quote.count({ where: { organisationId, createdAt: { gte: startOfMonthEAT() } } })
 }
 
 // Returns the plan's daily email limit when it has been reached, otherwise null.
@@ -1966,6 +1967,12 @@ app.post('/api/quotes/:id/revisions', requireTeamRole('OWNER', 'ADMIN'), async (
 
   const organisation = await prisma.organisation.findUnique({ where: { id: organisationId } })
   if (!organisation) return res.status(404).json({ message: 'Business workspace not found.' })
+
+  // A revision is a new document, so it counts against the monthly plan limit as well as the trial cap.
+  const revisionLimits = await getEntitlements(organisationId)
+  if (!quotaState(await countQuotesThisMonth(organisationId), revisionLimits.quotesPerMonth).allowed) {
+    return res.status(403).json({ message: limitReachedMessage('quotes', revisionLimits.quotesPerMonth), code: PLAN_LIMIT_CODE })
+  }
   let revision
   try {
     revision = await prisma.$transaction(async (tx) => {

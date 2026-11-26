@@ -21,13 +21,25 @@ Prices (set 25 Nov 2026): **Starter KES 800, Growth KES 1,500, Team KES 4,500** 
 
 **Free-trial cap (owner decision, 26 Nov 2026):** a workspace whose subscription status is `TRIALING`
 may create **7 quotes and 7 invoices in total** (not per month). Enforced in `POST /api/quotes`,
-`POST /api/invoices` and `POST /api/jobs/:id/invoice-draft` (403 with code `PLAN_LIMIT_CODE`).
-Revisions of an existing quote and invoices that already exist (idempotent conversions) do not
-count as new. Paying (status `ACTIVE`) removes the trial cap and applies the plan limits instead.
+`POST /api/quotes/:id/revisions`, `POST /api/invoices` and `POST /api/jobs/:id/invoice-draft`
+(403 with code `PLAN_LIMIT_CODE`).
+
+**Revisions count as quotes (owner decision, 26 Nov 2026).** A revision creates a new `Quote` row, so
+it consumes a trial quote slot, the same as a new quote. Invoices that already exist (idempotent
+conversions) still do not count. Paying (status `ACTIVE`) removes the trial cap and applies the plan
+limits instead, and the same "revisions count" rule applies to the monthly plan limit.
+
+Usage is a **monotonic counter**, not a row count: `Subscription.trialQuotesUsed` and
+`Subscription.trialInvoicesUsed`. A slot is claimed by `reserveTrialSlot` inside the same transaction
+that creates the document, and the subscription row is locked with `SELECT ... FOR UPDATE`, so
+concurrent creates cannot overrun the cap. Because the counters only increment, deleting a document
+does **not** restore a slot. The migration `20261126120000_trial_usage_counters` backfills the
+counters from existing rows for `TRIALING` workspaces.
+
 The limits live in `TRIAL_LIMITS` in `plans.ts`, are returned by `GET /api/public/plans` and
-`GET /api/billing/status`, and are shown on the pricing page. Known gaps: a trial user could free
-up slots by deleting quotes; and if sign-up seeds any sample quotes they would use up slots (I did
-not check the registration route).
+`GET /api/billing/status`, and are shown on the pricing page. The workspace header shows a
+"Quotes n/7 · Invoices n/7" chip while on trial. Sign-up may seed starter service items and quote
+templates, but no sample quotes or invoices, so registration does not consume trial slots.
 
 ## Why these lines
 
@@ -58,7 +70,7 @@ not check the registration route).
 Rules that keep this fair and simple:
 1. **Trials get Growth** (`TRIALING` maps to Growth) so new users experience the money features, then choose a plan.
 2. **Never hold data hostage.** Limits only block **creating** new things. Existing quotes, invoices, jobs and exports stay readable and downloadable on any plan.
-3. **Revisions do not count** against the monthly quote limit (they are edits of an existing quote).
+3. **Revisions count** as quotes (owner decision, 26 Nov 2026). A revision is a new `Quote` row and consumes a slot, on both the trial cap and the monthly plan limit, so a workspace cannot revise its way around a limit. Idempotent invoice conversions of an existing invoice still do not count.
 4. **Use 403 with a code**, not 402. `402` is already used for "subscription ended, workspace locked", and the web app may treat it as a full lock.
 5. Show limits **before** users hit them (a "12 of 30 quotes used" meter), and always name the plan that unlocks the thing.
 

@@ -1,6 +1,6 @@
 import { describe, beforeAll, afterAll, it, expect } from 'vitest'
 import { PrismaClient } from '@prisma/client'
-import { TRIAL_LIMITS } from '../src/plans'
+import { TRIAL_LIMITS, quotaState, startOfMonthEAT } from '../src/plans'
 
 // ---------------------------------------------------------------------------
 // Trial usage counters
@@ -21,6 +21,12 @@ const SUFFIX = `trial-counter-${Date.now()}`
 // Mirrors reserveTrialSlot in src/index.ts. Kept deliberately close: if the
 // production helper changes shape, this test should change with it.
 class TrialLimitReached extends Error {}
+
+// Mirrors countQuotesThisMonth in src/index.ts. The monthly plan limit counts every Quote row,
+// revisions included, so a workspace cannot revise past the limit.
+async function countQuotesThisMonth(organisationId: string) {
+  return prisma.quote.count({ where: { organisationId, createdAt: { gte: startOfMonthEAT() } } })
+}
 
 async function reserveTrialSlot(
   tx: PrismaClient,
@@ -100,6 +106,43 @@ describe('trial usage counters', { skip: !TEST_DB && 'No DATABASE_URL — skippi
     expect(subscription?.trialInvoicesUsed).toBe(TRIAL_LIMITS.invoices)
     expect(succeeded).toBe(TRIAL_LIMITS.invoices)
     expect(blocked).toBe(attempts - TRIAL_LIMITS.invoices)
+  })
+
+  it('counts revisions toward the monthly plan limit', async () => {
+    // Separate workspace so the counters above are unaffected.
+    const monthlyOwner = await prisma.user.create({
+      data: { name: `TEST-${SUFFIX}-m`, email: `${SUFFIX}-m@test.com`, passwordHash: 'x', emailVerifiedAt: new Date(), role: 'USER' },
+    })
+    const monthlyOrg = await prisma.organisation.create({
+      data: {
+        name: `TEST-${SUFFIX}-m`,
+        subdomain: `test-${SUFFIX}-m`.slice(0, 50),
+        ownerId: monthlyOwner.id,
+        subscription: { create: { plan: 'STARTER', status: 'ACTIVE', trialEndsAt: new Date(Date.now() + 864e5), currentPeriodEndsAt: new Date(Date.now() + 864e5), simulated: true } },
+      },
+    })
+    const cust = await prisma.customer.create({ data: { organisationId: monthlyOrg.id, ownerId: monthlyOwner.id, name: `TEST-${SUFFIX}-mc` } })
+    const base = await prisma.quote.create({
+      data: { organisationId: monthlyOrg.id, ownerId: monthlyOwner.id, customerId: cust.id, documentNumber: `TEST-${SUFFIX}-mb`, currency: 'KES', subtotal: 1, taxTotal: 0, total: 1 },
+    })
+    // Two revisions of one quote: under the old rule these were invisible to the monthly count.
+    for (let i = 0; i < 2; i += 1) {
+      await prisma.quote.create({
+        data: { organisationId: monthlyOrg.id, ownerId: monthlyOwner.id, customerId: cust.id, documentNumber: `TEST-${SUFFIX}-rv${i}`, parentQuoteId: base.id, version: i + 2, currency: 'KES', subtotal: 1, taxTotal: 0, total: 1 },
+      })
+    }
+
+    // 1 new quote + 2 revisions = 3 documents against a limit of 3.
+    expect(await countQuotesThisMonth(monthlyOrg.id)).toBe(3)
+    expect(quotaState(await countQuotesThisMonth(monthlyOrg.id), 3).allowed).toBe(false)
+    // Excluding revisions would have reported 1 and let the user keep going.
+    expect(await prisma.quote.count({ where: { organisationId: monthlyOrg.id, parentQuoteId: null } })).toBe(1)
+
+    await prisma.quote.deleteMany({ where: { organisationId: monthlyOrg.id } })
+    await prisma.customer.deleteMany({ where: { organisationId: monthlyOrg.id } })
+    await prisma.subscription.deleteMany({ where: { organisationId: monthlyOrg.id } })
+    await prisma.organisation.deleteMany({ where: { id: monthlyOrg.id } })
+    await prisma.user.deleteMany({ where: { id: monthlyOwner.id } })
   })
 
   it('keeps slots consumed after documents are deleted', async () => {
