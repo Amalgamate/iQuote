@@ -707,16 +707,27 @@ async function dailyEmailLimitReached(organisationId: string): Promise<number | 
   return quotaState(sent, entitlements.emailsPerDay).allowed ? null : entitlements.emailsPerDay
 }
 
-// Free-trial cap: a workspace on its trial may create only a few quotes and invoices in total.
-// Returns the message to show when the cap is reached, otherwise null. Paid workspaces are never affected.
-async function trialLimitReached(organisationId: string, kind: 'quotes' | 'invoices'): Promise<string | null> {
-  const subscription = await refreshSubscriptionState(organisationId)
-  if (subscription?.status !== 'TRIALING') return null
-  const limit = TRIAL_LIMITS[kind]
-  const used = kind === 'quotes'
-    ? await prisma.quote.count({ where: { organisationId, parentQuoteId: null } })
-    : await prisma.invoice.count({ where: { organisationId } })
-  return quotaState(used, limit).allowed ? null : trialLimitReachedMessage(kind, limit)
+class TrialLimitReachedError extends Error {
+  constructor(readonly kind: 'quotes' | 'invoices') {
+    super(trialLimitReachedMessage(kind, TRIAL_LIMITS[kind]))
+    this.name = 'TrialLimitReachedError'
+  }
+}
+
+// Claim the trial slot in the same transaction as document creation. Locking
+// the subscription row serializes concurrent creates, while the monotonic
+// counter keeps deletions and cancellations from restoring trial capacity.
+async function reserveTrialSlot(tx: PrismaTypes.TransactionClient, organisationId: string, kind: 'quotes' | 'invoices') {
+  const rows = kind === 'quotes'
+    ? await tx.$queryRaw<Array<{ status: string; used: number }>>`SELECT "status", "trialQuotesUsed" AS used FROM "Subscription" WHERE "organisationId" = ${organisationId} FOR UPDATE`
+    : await tx.$queryRaw<Array<{ status: string; used: number }>>`SELECT "status", "trialInvoicesUsed" AS used FROM "Subscription" WHERE "organisationId" = ${organisationId} FOR UPDATE`
+  const subscription = rows[0]
+  if (subscription?.status !== 'TRIALING') return
+  if (!quotaState(Number(subscription.used), TRIAL_LIMITS[kind]).allowed) throw new TrialLimitReachedError(kind)
+  await tx.subscription.update({
+    where: { organisationId },
+    data: kind === 'quotes' ? { trialQuotesUsed: { increment: 1 } } : { trialInvoicesUsed: { increment: 1 } },
+  })
 }
 
 const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
@@ -1406,7 +1417,7 @@ app.get('/api/billing/status', requireAuth, async (req, res) => {
   const state = subscription?.status ?? 'NO_SUBSCRIPTION'
   const quotesThisMonth = await countQuotesThisMonth(organisationId)
   const trialUsage = state === 'TRIALING'
-    ? { quotes: await prisma.quote.count({ where: { organisationId, parentQuoteId: null } }), invoices: await prisma.invoice.count({ where: { organisationId } }) }
+    ? { quotes: subscription?.trialQuotesUsed ?? 0, invoices: subscription?.trialInvoicesUsed ?? 0 }
     : null
   return res.json({
     plan: subscription?.plan ?? 'STARTER', status: state, trialEndsAt: subscription?.trialEndsAt ?? null,
@@ -1889,9 +1900,6 @@ app.post('/api/quotes', requireAuth, async (req, res) => {
   const customer = await prisma.customer.findFirst({ where: { id: customerId, organisationId: organisationId ?? '__none__' } })
   if (!customer) return res.status(400).json({ message: 'Choose a customer for this quote.' })
 
-  const trialQuoteBlock = await trialLimitReached(organisation.id, 'quotes')
-  if (trialQuoteBlock) return res.status(403).json({ message: trialQuoteBlock, code: PLAN_LIMIT_CODE })
-
   const planLimits = await getEntitlements(organisation.id)
   if (!quotaState(await countQuotesThisMonth(organisation.id), planLimits.quotesPerMonth).allowed) {
     return res.status(403).json({ message: limitReachedMessage('quotes', planLimits.quotesPerMonth), code: PLAN_LIMIT_CODE })
@@ -1904,6 +1912,7 @@ app.post('/api/quotes', requireAuth, async (req, res) => {
 
   try {
     const quote = await prisma.$transaction(async (transaction) => {
+      await reserveTrialSlot(transaction, organisation.id, 'quotes')
       const year = new Date().getFullYear()
       const sequence = await transaction.quoteSequence.upsert({
         where: { organisationId_year: { organisationId: organisation.id, year } },
@@ -1930,7 +1939,8 @@ app.post('/api/quotes', requireAuth, async (req, res) => {
       })
     })
     res.status(201).json({ quote: serializeQuote(quote) })
-  } catch {
+  } catch (error) {
+    if (error instanceof TrialLimitReachedError) return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
     res.status(500).json({ message: 'Unable to create this quote.' })
   }
 })
@@ -1956,7 +1966,10 @@ app.post('/api/quotes/:id/revisions', requireTeamRole('OWNER', 'ADMIN'), async (
 
   const organisation = await prisma.organisation.findUnique({ where: { id: organisationId } })
   if (!organisation) return res.status(404).json({ message: 'Business workspace not found.' })
-  const revision = await prisma.$transaction(async (tx) => {
+  let revision
+  try {
+    revision = await prisma.$transaction(async (tx) => {
+    await reserveTrialSlot(tx, organisationId, 'quotes')
     const year = new Date().getFullYear()
     const sequence = await tx.quoteSequence.upsert({
       where: { organisationId_year: { organisationId, year } },
@@ -1983,7 +1996,11 @@ app.post('/api/quotes/:id/revisions', requireTeamRole('OWNER', 'ADMIN'), async (
       },
       include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } } },
     })
-  })
+    })
+  } catch (error) {
+    if (error instanceof TrialLimitReachedError) return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
+    throw error
+  }
   return res.status(201).json({ quote: serializeQuote(revision), revisedFrom: serializeQuote(source) })
 })
 
@@ -4200,23 +4217,25 @@ app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) =>
     if (depositRequired > total) return res.status(400).json({ message: 'Deposit required cannot exceed the invoice total.' })
   }
   const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { quotePrefix: true } })
-  const trialInvoiceBlock = await trialLimitReached(organisationId, 'invoices')
-  if (trialInvoiceBlock) return res.status(403).json({ message: trialInvoiceBlock, code: PLAN_LIMIT_CODE })
   const invoiceNumber = await generateInvoiceNumber(organisationId, org?.quotePrefix ?? 'INV')
   try {
-    const invoice = await prisma.invoice.create({
-      data: {
-        organisationId, jobId: job?.id ?? null, sourceQuoteId: quote.id, customerId: quote.customerId, invoiceNumber,
-        status: 'DRAFT', currency: quote.currency, subtotal, taxTotal, total, balanceDue: total,
-        lineItems: quote.lines.map((line) => ({ description: line.description, quantity: Number(line.quantity), unit: line.unit, unitPrice: Number(line.unitPrice), taxRate: line.taxRate === null ? null : Number(line.taxRate) })),
-        depositRequired: depositRequired !== null ? depositRequired : undefined,
-        dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null,
-        notes: notesInput || [quote.notes, quote.terms].filter(Boolean).join('\n\n') || null,
-      },
-      include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } },
+    const invoice = await prisma.$transaction(async (tx) => {
+      await reserveTrialSlot(tx, organisationId, 'invoices')
+      return tx.invoice.create({
+        data: {
+          organisationId, jobId: job?.id ?? null, sourceQuoteId: quote.id, customerId: quote.customerId, invoiceNumber,
+          status: 'DRAFT', currency: quote.currency, subtotal, taxTotal, total, balanceDue: total,
+          lineItems: quote.lines.map((line) => ({ description: line.description, quantity: Number(line.quantity), unit: line.unit, unitPrice: Number(line.unitPrice), taxRate: line.taxRate === null ? null : Number(line.taxRate) })),
+          depositRequired: depositRequired !== null ? depositRequired : undefined,
+          dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : null,
+          notes: notesInput || [quote.notes, quote.terms].filter(Boolean).join('\n\n') || null,
+        },
+        include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } },
+      })
     })
     return res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) }, alreadyConverted: false })
   } catch (error) {
+    if (error instanceof TrialLimitReachedError) return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       const raced = await prisma.invoice.findUnique({ where: { sourceQuoteId: quote.id }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
       if (raced) return res.json({ invoice: { ...raced, subtotal: Number(raced.subtotal), taxTotal: Number(raced.taxTotal), total: Number(raced.total), amountPaid: Number(raced.amountPaid), balanceDue: Number(raced.balanceDue), depositRequired: raced.depositRequired ? Number(raced.depositRequired) : null, depositPaid: Number(raced.depositPaid) }, alreadyConverted: true })
@@ -4250,11 +4269,10 @@ app.post('/api/jobs/:id/invoice-draft', requireTeamRole('OWNER', 'ADMIN'), async
     return res.status(409).json({ message: 'The saved accepted quote snapshot is incomplete. Create the invoice manually after reviewing the quote.' })
   }
   const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { quotePrefix: true } })
-  const trialInvoiceBlock = await trialLimitReached(organisationId, 'invoices')
-  if (trialInvoiceBlock) return res.status(403).json({ message: trialInvoiceBlock, code: PLAN_LIMIT_CODE })
   const invoiceNumber = await generateInvoiceNumber(organisationId, org?.quotePrefix ?? 'INV')
   try {
     const invoice = await prisma.$transaction(async (tx) => {
+      await reserveTrialSlot(tx, organisationId, 'invoices')
       const created = await tx.invoice.create({
         data: {
           organisationId, jobId: job.id, sourceQuoteId: job.quoteId, customerId: job.customerId, invoiceNumber,
@@ -4269,6 +4287,7 @@ app.post('/api/jobs/:id/invoice-draft', requireTeamRole('OWNER', 'ADMIN'), async
     })
     return res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) } })
   } catch (error) {
+    if (error instanceof TrialLimitReachedError) return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       const raced = await prisma.invoice.findUnique({ where: { sourceQuoteId: job.quoteId }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
       if (raced && (!raced.jobId || raced.jobId === job.id)) {

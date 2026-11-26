@@ -15,6 +15,7 @@ import './Workspace.css'
 import googlePlayBadge from './assets/google-play-badge.svg'
 
 type User = { id: string; name: string; email: string; teamRole?: string }
+type TrialUsage = { status: string; trialLimits: { quotes: number; invoices: number } | null; trialUsage: { quotes: number; invoices: number } | null }
 type Business = {
   id: string
   name: string
@@ -387,6 +388,7 @@ export default function QuoteWorkspace({ user, onLogout }: { user: User; onLogou
 function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [page, setPage] = useState<Page>('dashboard')
   const [business, setBusiness] = useState<Business | null>(null)
+  const [trialUsage, setTrialUsage] = useState<TrialUsage | null>(null)
   const [businessForm, setBusinessForm] = useState(emptyBusiness)
   const [customers, setCustomers] = useState<Customer[]>([])
   const [serviceItems, setServiceItems] = useState<ServiceItem[]>([])
@@ -459,6 +461,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     setServiceItems(serviceResponse.items)
     setQuoteTemplates(templateResponse.templates)
     await Promise.all([loadCustomers(1, '', false), loadQuotes(1, 'ALL', '')])
+    try { setTrialUsage(await apiRequest<TrialUsage>('/api/billing/status')) } catch { /* billing usage is supplemental */ }
     try {
       const emailResponse = await apiRequest<EmailSettings>('/api/settings/email')
       setEmailSettings(emailResponse)
@@ -575,6 +578,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
     setEditorQuoteId(response.quote.id)
     setEditorNumber(response.quote.documentNumber)
     setQuotes((current) => [response.quote, ...current.filter((quote) => quote.id !== response.quote.id)])
+    if (!id) setTrialUsage((current) => current?.trialUsage && current.trialLimits ? { ...current, trialUsage: { ...current.trialUsage, quotes: Math.min(current.trialLimits.quotes, current.trialUsage.quotes + 1) } } : current)
     return response.quote
   }
 
@@ -597,6 +601,10 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   }, [page, editor, editorDirty, editorQuoteId])
 
   const startNewQuote = () => {
+    if (trialUsage?.status === 'TRIALING' && trialUsage.trialUsage && trialUsage.trialLimits && trialUsage.trialUsage.quotes >= trialUsage.trialLimits.quotes) {
+      setError(`Your free trial includes up to ${trialUsage.trialLimits.quotes} quotes, and you have used them all. Choose a plan and pay by M-Pesa to keep creating quotes. Your existing work is still available.`)
+      return
+    }
     if (!customers.length) {
       setPage('customers')
       setError('Add a customer first, then create a quote.')
@@ -613,6 +621,10 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
   }
 
   const openQuote = async (quote: Quote) => {
+    if (quote.status !== 'DRAFT' && trialUsage?.status === 'TRIALING' && trialUsage.trialUsage && trialUsage.trialLimits && trialUsage.trialUsage.quotes >= trialUsage.trialLimits.quotes) {
+      setError(`Your free trial includes up to ${trialUsage.trialLimits.quotes} quotes, and you have used them all. Choose a plan to create quote revisions. Your existing quotes remain available.`)
+      return
+    }
     setError('')
     setSaveState('Loading quote…')
     try {
@@ -625,6 +637,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
       setEditorRevisionSource(quote.status === 'DRAFT' ? null : { documentNumber: quote.documentNumber, publicToken: quote.publicToken })
       setEditorDirty(false)
       setQuotes((current) => [response.quote, ...current.filter((item) => item.id !== response.quote.id)])
+      if (quote.status !== 'DRAFT' && response.quote.id !== quote.id) setTrialUsage((current) => current?.trialUsage && current.trialLimits ? { ...current, trialUsage: { ...current.trialUsage, quotes: Math.min(current.trialLimits.quotes, current.trialUsage.quotes + 1) } } : current)
       setPage('editor')
       setSharedUrl('')
     } catch (requestError) {
@@ -636,6 +649,10 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
 
   const convertQuoteToInvoice = async (quote: Quote) => {
     if (quote.status !== 'APPROVED' || quote.invoice || invoiceConvertingId) return
+    if (trialUsage?.status === 'TRIALING' && trialUsage.trialUsage && trialUsage.trialLimits && trialUsage.trialUsage.invoices >= trialUsage.trialLimits.invoices) {
+      setError(`Your free trial includes up to ${trialUsage.trialLimits.invoices} invoices, and you have used them all. Choose a plan to create more invoices. Your existing work remains available.`)
+      return
+    }
     setError('')
     setInvoiceConvertingId(quote.id)
     try {
@@ -644,6 +661,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
         body: JSON.stringify({ quoteId: quote.id }),
       })
       setQuotes((current) => current.map((item) => item.id === quote.id ? { ...item, invoice } : item))
+      setTrialUsage((current) => current?.trialUsage && current.trialLimits ? { ...current, trialUsage: { ...current.trialUsage, invoices: Math.min(current.trialLimits.invoices, current.trialUsage.invoices + 1) } } : current)
       setPage('invoices')
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to convert this quote to an invoice.')
@@ -1130,6 +1148,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
             <h1>{heading}</h1>
           </div>
           <div className="topbar-right">
+            {trialUsage?.status === 'TRIALING' && trialUsage.trialUsage && trialUsage.trialLimits && <div className="trial-usage-chip" title="Trial document usage"><span>Trial</span><b>Quotes {trialUsage.trialUsage.quotes}/{trialUsage.trialLimits.quotes}</b><i /><b>Invoices {trialUsage.trialUsage.invoices}/{trialUsage.trialLimits.invoices}</b></div>}
             {business?.subdomain && <a className="topbar-domain-link" href={`https://${business.subdomain}.trendscore.co.ke`} target="_blank" rel="noreferrer">{business.subdomain}.trendscore.co.ke</a>}
             <PwaControls />
             <NotificationCenter onOpenQuote={(id) => void openConversation(id)} />
@@ -1246,7 +1265,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           </section>
         )}
 
-        {page === 'jobs' && business && <JobsPanel business={business} customers={customers} currency={business.currency} canManageJobs={user.teamRole === 'OWNER' || user.teamRole === 'ADMIN'} onInvoiceCreated={() => setPage('invoices')} />}
+        {page === 'jobs' && business && <JobsPanel business={business} customers={customers} currency={business.currency} canManageJobs={user.teamRole === 'OWNER' || user.teamRole === 'ADMIN'} onInvoiceCreated={() => { setPage('invoices'); void apiRequest<TrialUsage>('/api/billing/status').then(setTrialUsage).catch(() => undefined) }} />}
 
         {page === 'invoices' && business && <InvoicesPanel business={business} customers={customers} currency={business.currency} canManageFinancials={user.teamRole !== 'MEMBER'} onOpenQuotes={openApprovedQuotes} />}
 
