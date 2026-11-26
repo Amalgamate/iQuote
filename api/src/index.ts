@@ -14,7 +14,7 @@ import sizeOf from 'image-size'
 import { getIndustryPack } from './industry-packs.js'
 import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush, setPlatformNcbaConfig } from './ncba-client.js'
 import { initiateMerchantStkPush, NcbaMerchantRequestError, normalizeCustomerPhone, normalizeMerchantCode, queryMerchantStkPush, verifyNotificationHash } from './customer-mpesa.js'
-import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, invoiceDeliveryEmailHtml, receiptDeliveryEmailHtml, emailSubjects } from './email-templates.js'
+import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, invoiceDeliveryEmailHtml, receiptDeliveryEmailHtml, trialLimitEmailHtml, trialEndedEmailHtml, emailSubjects } from './email-templates.js'
 import { entitlementsFor, limitReachedMessage, quotaState, startOfMonthEAT, trialLimitReachedMessage, PLAN_ENTITLEMENTS, PLAN_LIMIT_CODE, TRIAL_LIMITS } from './plans.js'
 
 const prisma = new PrismaClient()
@@ -715,6 +715,21 @@ class TrialLimitReachedError extends Error {
   }
 }
 
+// Cap emails must go out once per workspace per document kind, no matter how
+// many concurrent creates trip the limit. The marker row rides in the same
+// transaction that raises the error, so the loser of the race inserts nothing
+// and only the winner's marker survives the rollback of the throw itself.
+const TRIAL_CAP_NOTIFICATION = (kind: 'quotes' | 'invoices') => `trial-cap:${kind}`
+
+/**
+ * Id for rows written with raw SQL. Prisma's @default(cuid()) only applies to
+ * its own inserts, so the marker needs an id up front. The column is plain
+ * TEXT, so any unique value works; this keeps the shape of a cuid.
+ */
+function notificationRowId() {
+  return `c${Date.now().toString(36)}${randomBytes(12).toString('hex')}`
+}
+
 // Claim the trial slot in the same transaction as document creation. Locking
 // the subscription row serializes concurrent creates, while the monotonic
 // counter keeps deletions and cancellations from restoring trial capacity.
@@ -729,6 +744,160 @@ async function reserveTrialSlot(tx: PrismaTypes.TransactionClient, organisationI
     where: { organisationId },
     data: kind === 'quotes' ? { trialQuotesUsed: { increment: 1 } } : { trialInvoicesUsed: { increment: 1 } },
   })
+}
+
+/**
+ * Create the once-only marker for a trial cap or expiry notice.
+ * Returns true when this call created the marker (so the caller owns the email).
+ *
+ * The marker is written with ON CONFLICT DO NOTHING rather than a caught unique
+ * violation: inside a PostgreSQL transaction a failed statement aborts the whole
+ * transaction, which would take the caller's quota claim down with it.
+ */
+async function claimTrialNoticeMarker(
+  tx: PrismaTypes.TransactionClient,
+  organisationId: string,
+  kind: 'quotes' | 'invoices' | 'expired',
+): Promise<boolean> {
+  const owner = await tx.organisation.findUnique({ where: { id: organisationId }, select: { ownerId: true } })
+  if (!owner) return false
+  const sourceKey = `${kind === 'expired' ? 'trial-expired' : TRIAL_CAP_NOTIFICATION(kind)}:${organisationId}`
+  const title = kind === 'expired' ? 'Trial ended' : `Trial ${kind} allowance used`
+  const body = kind === 'expired'
+    ? 'Your trial has ended. Choose a package to reopen the workspace.'
+    : `You have used all ${TRIAL_LIMITS[kind]} trial ${kind}. Choose a package to keep creating them.`
+  const inserted = await tx.$queryRaw<Array<{ id: string }>>`
+    INSERT INTO "Notification" ("id", "recipientUserId", "organisationId", "type", "title", "body", "sourceKey", "createdAt")
+    VALUES (${notificationRowId()}, ${owner.ownerId}, ${organisationId}, ${kind === 'expired' ? 'TRIAL_EXPIRED' : 'TRIAL_LIMIT'}, ${title}, ${body}, ${sourceKey}, ${new Date()})
+    ON CONFLICT ("sourceKey") DO NOTHING
+    RETURNING "id"
+  `
+  return inserted.length > 0
+}
+
+/** Who receives trial notices: the workspace owner. */
+async function trialNoticeRecipient(organisationId: string) {
+  const organisation = await prisma.organisation.findUnique({
+    where: { id: organisationId },
+    select: { name: true, owner: { select: { id: true, name: true, email: true } } },
+  })
+  if (!organisation?.owner) return null
+  return { businessName: organisation.name ?? 'your business', ...organisation.owner }
+}
+
+async function trialBillingContext(organisationId: string) {
+  const subscription = await prisma.subscription.findUnique({ where: { organisationId }, select: { plan: true } })
+  const plan = subscription?.plan ?? 'STARTER'
+  const price = await platformPlanPrice(plan)
+  return { plan, planPrice: price }
+}
+
+/** Absolute URL owners land on to pay. Billing lives in the main app, not the tenant subdomain. */
+function billingUrl() {
+  const platformUrl = (process.env.PLATFORM_URL ?? 'http://localhost:5174').replace(/\/$/, '')
+  return `${platformUrl}/`
+}
+
+// Trial expiry is normally applied lazily when someone next touches the
+// subscription. That means an abandoned trial never flips to EXPIRED and its
+// owner never hears about it, so a sweep closes that gap.
+async function expireDueTrials(now = new Date()) {
+  const due = await prisma.subscription.findMany({
+    where: { status: 'TRIALING', trialEndsAt: { lte: now } },
+    select: { organisationId: true },
+    take: 200,
+  })
+  let notified = 0
+  for (const { organisationId } of due) {
+    const claimed = await prisma.$transaction(async (tx) => {
+      const updated = await tx.subscription.updateMany({
+        where: { organisationId, status: 'TRIALING', trialEndsAt: { lte: now } },
+        data: { status: 'EXPIRED' },
+      })
+      if (updated.count === 0) return false
+      return claimTrialNoticeMarker(tx, organisationId, 'expired')
+    })
+    if (!claimed) continue
+    const recipient = await trialNoticeRecipient(organisationId)
+    if (!recipient) continue
+    await sendTrialExpiryEmail(organisationId, recipient)
+    notified += 1
+  }
+  return { due: due.length, notified }
+}
+
+async function sendTrialExpiryEmail(organisationId: string, recipient: { businessName: string; name: string; email: string }) {
+  if (!platformEmailReady()) return false
+  const subscription = await prisma.subscription.findUnique({ where: { organisationId }, select: { trialEndsAt: true } })
+  const { plan, planPrice } = await trialBillingContext(organisationId)
+  return sendEmail(
+    recipient.email,
+    emailSubjects.trialEnded(recipient.businessName),
+    trialEndedEmailHtml({
+      ownerName: recipient.name,
+      businessName: recipient.businessName,
+      trialEndsAt: subscription?.trialEndsAt ?? new Date(),
+      plan,
+      planPrice,
+      currency: 'KES',
+      billingUrl: billingUrl(),
+    }),
+    `trial-expired/${organisationId}`,
+    organisationId,
+  ).then(() => true).catch(() => false)
+}
+
+async function sendTrialLimitEmail(organisationId: string, kind: 'quotes' | 'invoices') {
+  if (!platformEmailReady()) return false
+  const recipient = await trialNoticeRecipient(organisationId)
+  if (!recipient) return false
+  const { plan, planPrice } = await trialBillingContext(organisationId)
+  return sendEmail(
+    recipient.email,
+    emailSubjects.trialLimit(recipient.businessName, kind),
+    trialLimitEmailHtml({
+      ownerName: recipient.name,
+      businessName: recipient.businessName,
+      kind,
+      limit: TRIAL_LIMITS[kind],
+      plan,
+      planPrice,
+      currency: 'KES',
+      billingUrl: billingUrl(),
+    }),
+    `trial-cap/${organisationId}/${kind}`,
+    organisationId,
+  ).then(() => true).catch(() => false)
+}
+
+/**
+ * Called after a failed create rolls back, so nothing from that transaction is
+ * visible. The notice is claimed by sending it first and recording the marker
+ * only when delivery succeeds: the notice is worth more than perfect
+ * deduplication, and a Resend idempotency key plus the marker keep duplicates
+ * rare. Read-only work happens before the write so a missing Resend key cannot
+ * leave a marker for an email that was never sent.
+ * Never throws — a missing email must not turn a 403 into a 500.
+ */
+async function notifyTrialCap(organisationId: string, kind: 'quotes' | 'invoices') {
+  try {
+    const alreadySent = await prisma.notification.findUnique({
+      where: { sourceKey: `${TRIAL_CAP_NOTIFICATION(kind)}:${organisationId}` },
+      select: { id: true },
+    })
+    if (alreadySent) return
+    const delivered = await sendTrialLimitEmail(organisationId, kind)
+    if (!delivered) return
+    await prisma.$executeRaw`
+      INSERT INTO "Notification" ("id", "recipientUserId", "organisationId", "type", "title", "body", "sourceKey", "createdAt")
+      SELECT ${notificationRowId()}, "ownerId", "id", 'TRIAL_LIMIT', ${`Trial ${kind} allowance used`},
+             ${`You have used all ${TRIAL_LIMITS[kind]} trial ${kind}.`}, ${`${TRIAL_CAP_NOTIFICATION(kind)}:${organisationId}`}, ${new Date()}
+      FROM "Organisation" WHERE "id" = ${organisationId}
+      ON CONFLICT ("sourceKey") DO NOTHING
+    `
+  } catch (error) {
+    console.error('[trial] cap notice failed', error)
+  }
 }
 
 const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
@@ -1941,7 +2110,10 @@ app.post('/api/quotes', requireAuth, async (req, res) => {
     })
     res.status(201).json({ quote: serializeQuote(quote) })
   } catch (error) {
-    if (error instanceof TrialLimitReachedError) return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
+    if (error instanceof TrialLimitReachedError) {
+      await notifyTrialCap(organisation.id, error.kind)
+      return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
+    }
     res.status(500).json({ message: 'Unable to create this quote.' })
   }
 })
@@ -2005,7 +2177,10 @@ app.post('/api/quotes/:id/revisions', requireTeamRole('OWNER', 'ADMIN'), async (
     })
     })
   } catch (error) {
-    if (error instanceof TrialLimitReachedError) return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
+    if (error instanceof TrialLimitReachedError) {
+      await notifyTrialCap(organisationId, error.kind)
+      return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
+    }
     throw error
   }
   return res.status(201).json({ quote: serializeQuote(revision), revisedFrom: serializeQuote(source) })
@@ -4242,7 +4417,10 @@ app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) =>
     })
     return res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) }, alreadyConverted: false })
   } catch (error) {
-    if (error instanceof TrialLimitReachedError) return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
+    if (error instanceof TrialLimitReachedError) {
+      await notifyTrialCap(organisationId, error.kind)
+      return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
+    }
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       const raced = await prisma.invoice.findUnique({ where: { sourceQuoteId: quote.id }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
       if (raced) return res.json({ invoice: { ...raced, subtotal: Number(raced.subtotal), taxTotal: Number(raced.taxTotal), total: Number(raced.total), amountPaid: Number(raced.amountPaid), balanceDue: Number(raced.balanceDue), depositRequired: raced.depositRequired ? Number(raced.depositRequired) : null, depositPaid: Number(raced.depositPaid) }, alreadyConverted: true })
@@ -4294,7 +4472,10 @@ app.post('/api/jobs/:id/invoice-draft', requireTeamRole('OWNER', 'ADMIN'), async
     })
     return res.status(201).json({ invoice: { ...invoice, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue), depositRequired: invoice.depositRequired ? Number(invoice.depositRequired) : null, depositPaid: Number(invoice.depositPaid) } })
   } catch (error) {
-    if (error instanceof TrialLimitReachedError) return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
+    if (error instanceof TrialLimitReachedError) {
+      await notifyTrialCap(organisationId, error.kind)
+      return res.status(403).json({ message: error.message, code: PLAN_LIMIT_CODE, kind: error.kind, limit: TRIAL_LIMITS[error.kind] })
+    }
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       const raced = await prisma.invoice.findUnique({ where: { sourceQuoteId: job.quoteId }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
       if (raced && (!raced.jobId || raced.jobId === job.id)) {
@@ -5467,12 +5648,38 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   })
 })
 
-export { app, prisma, issueSession, hashToken, checkLoginRateLimit, recordFailedLogin, clearLoginAttempts }
+export { app, prisma, issueSession, hashToken, checkLoginRateLimit, recordFailedLogin, clearLoginAttempts, expireDueTrials }
+
+// The sweep is not time-critical, so a slow pass overlapping a fast one is
+// harmless. The flag only stops this process from stacking runs.
+const TRIAL_SWEEP_INTERVAL_MS = Number(process.env.TRIAL_SWEEP_INTERVAL_MS ?? 15 * 60 * 1000)
+
+function startTrialExpirySweep() {
+  if (process.env.TRIAL_SWEEP_DISABLED === '1') return
+  let running = false
+  const run = async () => {
+    if (running) return
+    running = true
+    try {
+      const result = await expireDueTrials()
+      if (result.due > 0) console.log(`[trial] expired ${result.due} trial(s), sent ${result.notified} notice(s)`)
+    } catch (error) {
+      console.error('[trial] expiry sweep failed', error)
+    } finally {
+      running = false
+    }
+  }
+  // Run once on boot so restarts catch up, then on a timer. Multiple API
+  // instances are safe: the status transition and marker claim are atomic.
+  setTimeout(() => { void run() }, 20_000).unref?.()
+  setInterval(() => { void run() }, TRIAL_SWEEP_INTERVAL_MS).unref?.()
+}
 
 // Start the server only when this file is the entry point (not when imported by tests)
 const isMainModule = process.argv[1]?.endsWith('index.js') || process.argv[1]?.endsWith('index.ts') ||
   process.argv[1]?.includes('src/index') || process.argv[1]?.includes('dist/index')
 if (isMainModule) {
+  startTrialExpirySweep()
   void hydratePlatformNcbaConfig().catch((error: unknown) => console.error('[billing] Could not load saved NCBA configuration:', error instanceof Error ? error.message : 'unknown error')).finally(() => {
     app.listen(port, () => {
       console.log(`iQuote API listening on http://localhost:${port}`)

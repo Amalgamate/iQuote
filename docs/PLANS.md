@@ -41,6 +41,25 @@ The limits live in `TRIAL_LIMITS` in `plans.ts`, are returned by `GET /api/publi
 "Quotes n/7 · Invoices n/7" chip while on trial. Sign-up may seed starter service items and quote
 templates, but no sample quotes or invoices, so registration does not consume trial slots.
 
+**Trial notices (added 26 Nov 2026).** Two emails go to the workspace owner, in addition to the
+signup welcome email:
+
+| Event | Trigger | Deduplication |
+|---|---|---|
+| Trial document cap reached | After a create returns 403 `PLAN_LIMIT_REACHED`, `notifyTrialCap` runs per kind (`quotes`, `invoices`) | A `Notification` row with `sourceKey` `trial-cap:<kind>:<orgId>` is written only after delivery succeeds; its presence suppresses future sends. Resend also receives a stable `Idempotency-Key` |
+| Trial ended | `expireDueTrials()` sweep, every 15 min (plus once ~20s after boot) | The status change `TRIALING → EXPIRED` and the marker `trial-expired:<orgId>` commit in one transaction, so exactly one sweep sends |
+
+The sweep exists because expiry is otherwise **lazy**: `refreshSubscriptionState` only flips a row to
+`EXPIRED` when someone next touches the subscription, so an abandoned trial would stay `TRIALING`
+forever and its owner would hear nothing. The sweep is safe to run on several API instances: the
+conditional `updateMany` (still `TRIALING` and still due) decides the winner, and the marker rides in
+the same transaction. `TRIAL_SWEEP_DISABLED=1` turns it off; `TRIAL_SWEEP_INTERVAL_MS` retunes it.
+
+Cap notices are best-effort by design: the create has already rolled back when the email is sent, so
+marking first and sending second could record a notice that never went out. The order is therefore
+send, then mark. A Resend failure means the owner is not emailed for that event, and the next
+attempt tries again.
+
 ## Why these lines
 
 - **Starter must be enough to win a first customer** (quote, send, approve, invoice) but have a real ceiling, so a growing business hits it.

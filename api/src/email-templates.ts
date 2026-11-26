@@ -544,6 +544,116 @@ export function invoiceDeliveryEmailHtml(params: {
   return emailShell(content, { previewText: `${escapeText(params.businessName)} sent invoice ${escapeText(params.invoiceNumber)} — ${formatCurrency(params.balanceDue, params.currency)} due` })
 }
 
+// ---- Trial limit reached email (sent to the workspace owner) ----
+
+export function trialLimitEmailHtml(params: {
+  ownerName: string
+  businessName: string
+  kind: 'quotes' | 'invoices'
+  limit: number
+  plan: string
+  planPrice: number | null
+  currency: string
+  billingUrl: string
+}): string {
+  const { ownerName, businessName, kind, limit, planPrice, currency, billingUrl } = params
+  const documentWord = kind === 'quotes' ? 'quote' : 'invoice'
+  const priceText = planPrice === null ? '' : ` from ${formatCurrency(planPrice, currency)} a month`
+
+  const content = `
+    <p style="margin:0 0 4px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#0052FF">
+      Trial allowance used
+    </p>
+    <h1 style="margin:0 0 8px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:26px;font-weight:800;color:#0A1128;letter-spacing:-0.5px">
+      You have used all ${limit} trial ${documentWord}s
+    </h1>
+    <p style="margin:0 0 24px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:15px;line-height:1.6;color:#53647A">
+      Hi ${escapeText(ownerName.split(' ')[0] || 'there')}, ${escapeText(businessName)} has used its full trial
+      allowance of <strong style="color:#0A1128">${limit} ${documentWord}s</strong>. You cannot create another
+      ${documentWord} until you choose a package.
+    </p>
+
+    <div style="margin:0 0 24px;padding:16px 20px;background:#eaf5ee;border:1px solid #dce8df;border-radius:6px">
+      <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;line-height:1.6;color:#20362b">
+        <strong>Nothing has been deleted.</strong> Every ${documentWord}, customer and price you created is still
+        in your workspace, and you can still open, share and send what you already have.
+      </p>
+    </div>
+
+    ${button('Choose a package →', billingUrl)}
+
+    <p style="margin:16px 0 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;line-height:1.6;color:#53647A">
+      Packages start${priceText}. You can pay securely with M-Pesa from the Plans &amp; billing screen,
+      and your workspace reopens immediately after payment is confirmed.
+    </p>
+
+    <div style="margin:24px 0 0;padding:16px 20px;background:#f3f8f4;border-radius:6px">
+      <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;line-height:1.6;color:#64756b">
+        Questions about billing? Reply to this email or reach us at ${textLink(SUPPORT_EMAIL, `mailto:${SUPPORT_EMAIL}`)}.
+      </p>
+    </div>
+  `
+
+  return emailShell(content, {
+    previewText: `${escapeText(businessName)} has used all ${limit} trial ${documentWord}s`,
+  })
+}
+
+// ---- Trial ended email (sent to the workspace owner) ----
+
+export function trialEndedEmailHtml(params: {
+  ownerName: string
+  businessName: string
+  trialEndsAt: Date
+  plan: string
+  planPrice: number | null
+  currency: string
+  billingUrl: string
+}): string {
+  const { ownerName, businessName, trialEndsAt, planPrice, currency, billingUrl } = params
+  const endDate = trialEndsAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  const priceText = planPrice === null ? '' : ` from ${formatCurrency(planPrice, currency)} a month`
+
+  const content = `
+    <p style="margin:0 0 4px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#0052FF">
+      Subscription required
+    </p>
+    <h1 style="margin:0 0 8px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:26px;font-weight:800;color:#0A1128;letter-spacing:-0.5px">
+      Your trial has ended
+    </h1>
+    <p style="margin:0 0 24px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:15px;line-height:1.6;color:#53647A">
+      Hi ${escapeText(ownerName.split(' ')[0] || 'there')}, the trial for
+      <strong style="color:#0A1128">${escapeText(businessName)}</strong> ended on ${endDate}.
+      The workspace is now paused until you choose a package.
+    </p>
+
+    <div style="margin:0 0 24px;padding:16px 20px;background:#eaf5ee;border:1px solid #dce8df;border-radius:6px">
+      <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;line-height:1.6;color:#20362b">
+        <strong>Your data is safe.</strong> All your customers, quotes and invoices are kept exactly as you left
+        them, and they come back the moment you subscribe.
+      </p>
+    </div>
+
+    ${button('Choose a package →', billingUrl)}
+
+    <p style="margin:16px 0 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;line-height:1.6;color:#53647A">
+      Packages start${priceText}, paid securely with M-Pesa. Your workspace reopens immediately after the
+      payment is confirmed.
+    </p>
+
+    <div style="margin:24px 0 0;padding:16px 20px;background:#f3f8f4;border-radius:6px">
+      <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;line-height:1.6;color:#64756b">
+        Not ready to continue? Your workspace stays here, and you can subscribe whenever you need it.
+        Questions: ${textLink(SUPPORT_EMAIL, `mailto:${SUPPORT_EMAIL}`)}.
+      </p>
+    </div>
+  `
+
+  return emailShell(content, {
+    previewText: `The ${escapeText(businessName)} trial ended on ${endDate}`,
+  })
+}
+
 // ---- Helpers ----
 
 function escapeText(value: string): string {
@@ -568,6 +678,8 @@ export const emailSubjects = {
   quoteDelivery: (businessName: string, docNumber: string) => `${businessName.slice(0, 40)} sent you ${docNumber}`,
   invoiceDelivery: (businessName: string, invoiceNumber: string) => `Invoice ${invoiceNumber} from ${businessName.slice(0, 40)}`,
   receiptDelivery: (businessName: string, receiptNo: string) => `Receipt ${receiptNo} from ${businessName.slice(0, 40)}`,
+  trialLimit: (businessName: string, kind: 'quotes' | 'invoices') => `${businessName.slice(0, 40)} has used all trial ${kind}`,
+  trialEnded: (businessName: string) => `The ${businessName.slice(0, 40)} trial has ended`,
 }
 
 export function receiptDeliveryEmailHtml(params: {
