@@ -253,6 +253,20 @@ Each active screen must pass its acceptance criteria before its stage is marked 
 
 **Customer invoice collection status:** businesses can configure their own NCBA Till/Paybill STK credentials, send an invoice-linked customer STK prompt, and apply confirmed payments idempotently to the invoice ledger. Notification callbacks are authenticated and hash-verified; status queries are the fallback. Production use requires each business's NCBA activation, platform encryption configuration, the callback URL registered with NCBA where notifications are enabled, and controlled live acceptance. This flow is separate from platform subscription collection. Marketplace remains deferred.
 
+## Stage 16 — Document design, consistent branded documents, and automatic PDF attachments
+
+Full plan, architecture, risks and phase checklists: `docs/DOCUMENT_DESIGN_PLAN.md`. Added 27 Nov 2026 as **not started**. `progress.json` has not been changed; add this stage there before using `scripts/mark-stage.mjs` for it.
+
+- [ ] Phase 0: confirm builds and tests pass, tag a rollback point, back up the production database, decide the open decisions, create feature flags (`DOCUMENT_DESIGN_ENABLED`, `SERVER_PDF_ENABLED`, `EMAIL_PDF_ATTACH_ENABLED`), and visually check the new five-template renderer.
+- [ ] Phase 1: additive migration and validated `documentDesign` settings (template, colour, layout, wording, logo size), design snapshots on quotes, invoices and receipts, settings API for owners and admins, tenant-isolation tests.
+- [ ] Phase 2: server-side PDF rendering from shared blocks for quotes, invoices and receipts, with cache, timeout and safe fallback; render endpoints; numbers verified against the database; render time and memory measured.
+- [ ] Phase 3: Settings screen for documents and branding with template gallery, colour, logo upload and size, options, and a real-PDF preview for each document type.
+- [ ] Phase 4: every Download PDF action uses the server renderer; old browser renderer removed only after rollout.
+- [ ] Phase 5: quote, invoice and receipt emails attach the PDF automatically from the frozen snapshot; failures fall back to the link-only email and are recorded; deliverability tested.
+- [ ] Phase 6: load test, monitoring and alerts, staged rollout (own workspace, pilot, everyone), user notice, flag clean-up.
+
+**Exit checks:** one design controls the preview, download and emailed attachment for all three documents; documents sent earlier never change; a PDF failure never blocks sending; no cross-tenant access; build and tests pass.
+
 ## Automatic progress workflow
 
 1. Work on one stage at a time, in order. A later stage may be researched, but do not mark it complete while dependencies are open.

@@ -414,6 +414,7 @@ export function quoteDeliveryEmailHtml(params: {
   lineItems: Array<{ description: string; quantity: number; unitPrice: number; total: number }>
   customMessage: string | null
   quoteUrl: string
+  revision?: { previousDocumentNumber: string; previousTotal: number; version: number; changes: string[] } | null
 }): string {
   const { recipientName, businessName, documentNumber, total, currency, validUntil, lineItems, customMessage, quoteUrl } = params
 
@@ -429,10 +430,10 @@ export function quoteDeliveryEmailHtml(params: {
 
   const content = `
     <h1 style="margin:0 0 8px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:26px;font-weight:800;color:#0A1128;letter-spacing:-0.5px">
-      ${escapeText(businessName)} sent you a quote
+      ${params.revision ? `${escapeText(businessName)} updated your quote` : `${escapeText(businessName)} sent you a quote`}
     </h1>
     <p style="margin:0 0 24px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:15px;line-height:1.6;color:#53647A">
-      Hi ${escapeText(recipientName.split(' ')[0] || 'there')}, you have a new quotation to review.
+      ${params.revision ? `Hi ${escapeText(recipientName.split(' ')[0] || 'there')}, ${escapeText(businessName)} updated quotation ${escapeText(params.revision.previousDocumentNumber)}. Please review the latest version below.` : `Hi ${escapeText(recipientName.split(' ')[0] || 'there')}, you have a new quotation to review.`}
     </p>
 
     ${customMessage ? `
@@ -440,6 +441,12 @@ export function quoteDeliveryEmailHtml(params: {
         <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:14px;line-height:1.6;color:#0A1128">${escapeText(customMessage)}</p>
       </div>
     ` : ''}
+
+    ${params.revision ? `<div style="margin:0 0 20px;padding:16px 20px;background:#eaf5ee;border:1px solid #dce8df;border-radius:8px">
+      <p style="margin:0 0 8px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;font-weight:700;color:#176b4b">UPDATED QUOTATION · VERSION ${params.revision.version}</p>
+      <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;line-height:1.6;color:#20362b">Previous version: ${escapeText(params.revision.previousDocumentNumber)} (${formatCurrency(params.revision.previousTotal, currency)}). This latest version replaces the earlier quotation.</p>
+      <ul style="margin:8px 0 0;padding-left:20px;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;line-height:1.6;color:#20362b">${params.revision.changes.map((change) => `<li>${escapeText(change)}</li>`).join('')}</ul>
+    </div>` : ''}
 
     <!-- Quote summary card -->
     <div style="margin:0 0 20px;padding:24px;background:#F4F8FD;border:1px solid #D8E4F2;border-radius:8px">
@@ -477,7 +484,7 @@ export function quoteDeliveryEmailHtml(params: {
       </div>
     </div>
 
-    ${button(`Review your quote →`, quoteUrl)}
+    ${button(params.revision ? `Review updated quote →` : `Review your quote →`, quoteUrl)}
 
     <p style="margin:16px 0 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;line-height:1.6;color:#53647A">
       Click the button above to view the full quotation. You can approve or decline it directly from the link.
@@ -485,7 +492,9 @@ export function quoteDeliveryEmailHtml(params: {
   `
 
   return emailShell(content, {
-    previewText: `${escapeText(businessName)} sent you ${escapeText(documentNumber)} — ${formatCurrency(total, currency)}`,
+    previewText: params.revision
+      ? `${escapeText(businessName)} updated ${escapeText(documentNumber)} — ${formatCurrency(total, currency)}`
+      : `${escapeText(businessName)} sent you ${escapeText(documentNumber)} — ${formatCurrency(total, currency)}`,
   })
 }
 
@@ -676,6 +685,7 @@ export const emailSubjects = {
   quoteApproved: (docNumber: string) => `✓ ${docNumber} approved`,
   quoteDeclined: (docNumber: string) => `${docNumber} declined`,
   quoteDelivery: (businessName: string, docNumber: string) => `${businessName.slice(0, 40)} sent you ${docNumber}`,
+  quoteUpdated: (businessName: string, docNumber: string) => `${businessName.slice(0, 40)} updated ${docNumber}`,
   invoiceDelivery: (businessName: string, invoiceNumber: string) => `Invoice ${invoiceNumber} from ${businessName.slice(0, 40)}`,
   receiptDelivery: (businessName: string, receiptNo: string) => `Receipt ${receiptNo} from ${businessName.slice(0, 40)}`,
   trialLimit: (businessName: string, kind: 'quotes' | 'invoices') => `${businessName.slice(0, 40)} has used all trial ${kind}`,

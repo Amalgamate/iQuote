@@ -513,6 +513,23 @@ function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
+function quoteLineRevisionSummary(previous: Array<{ description: string; quantity: unknown; unit: string; unitPrice: unknown; taxRate: unknown }>, current: Array<{ description: string; quantity: unknown; unit: string; unitPrice: unknown; taxRate: unknown }>): string[] {
+  const shared = Math.min(previous.length, current.length)
+  let changed = 0
+  for (let index = 0; index < shared; index += 1) {
+    const before = previous[index]
+    const after = current[index]
+    if (before.description !== after.description || Number(before.quantity) !== Number(after.quantity) || before.unit !== after.unit || Number(before.unitPrice) !== Number(after.unitPrice) || Number(before.taxRate ?? 0) !== Number(after.taxRate ?? 0)) changed += 1
+  }
+  const summary: string[] = []
+  const added = current.length - shared
+  const removed = previous.length - shared
+  if (added) summary.push(`${added} line item${added === 1 ? '' : 's'} added`)
+  if (removed) summary.push(`${removed} line item${removed === 1 ? '' : 's'} removed`)
+  if (changed) summary.push(`${changed} existing line item${changed === 1 ? '' : 's'} changed`)
+  return summary.length ? summary : ['Quotation details reviewed']
+}
+
 async function getNetInvoiceAllocations(db: any, invoiceId: string, organisationId: string) {
   const [allocated, reversed] = await Promise.all([
     db.paymentAllocation.aggregate({ where: { invoiceId, organisationId, eventType: 'ALLOCATE' }, _sum: { amount: true } }),
@@ -2130,12 +2147,24 @@ app.post('/api/quotes/:id/revisions', requireTeamRole('OWNER', 'ADMIN'), async (
   if (!source) return res.status(404).json({ message: 'Quote not found.' })
   if (source.status === 'DRAFT') return res.status(409).json({ message: 'This quote is already a draft. Open it directly to edit.' })
 
+  let root = source
+  while (root.parentQuoteId) {
+    const parent = await prisma.quote.findFirst({ where: { id: root.parentQuoteId, organisationId }, select: { id: true, parentQuoteId: true } })
+    if (!parent) break
+    root = { ...root, ...parent } as typeof source
+  }
+  const rootPublication = await prisma.quote.findFirst({ where: { id: root.id, organisationId }, select: { publishedVersionId: true, publicToken: true } })
+  const publishedSourceId = rootPublication?.publishedVersionId
+  const revisionBase = publishedSourceId
+    ? await prisma.quote.findFirst({ where: { id: publishedSourceId, organisationId }, include: { lines: { orderBy: { position: 'asc' } }, customer: { select: { id: true, name: true, phone: true, email: true } } } }) ?? source
+    : source
   const existingDraft = await prisma.quote.findFirst({
-    where: { organisationId, parentQuoteId: source.id, status: 'DRAFT' },
+    where: { organisationId, parentQuoteId: revisionBase.id, status: 'DRAFT' },
     include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } } },
     orderBy: { version: 'desc' },
   })
-  if (existingDraft) return res.json({ quote: serializeQuote(existingDraft), revisedFrom: serializeQuote(source) })
+  const revisedFrom = serializeQuote({ ...revisionBase, publicToken: rootPublication?.publicToken ?? revisionBase.publicToken })
+  if (existingDraft) return res.json({ quote: serializeQuote(existingDraft), revisedFrom })
 
   const organisation = await prisma.organisation.findUnique({ where: { id: organisationId } })
   if (!organisation) return res.status(404).json({ message: 'Business workspace not found.' })
@@ -2160,18 +2189,18 @@ app.post('/api/quotes/:id/revisions', requireTeamRole('OWNER', 'ADMIN'), async (
       data: {
         organisationId,
         ownerId: user.id,
-        customerId: source.customerId,
+        customerId: revisionBase.customerId,
         documentNumber,
-        parentQuoteId: source.id,
-        version: source.version + 1,
-        currency: source.currency,
-        validUntil: source.validUntil,
-        notes: source.notes,
-        terms: source.terms,
-        subtotal: source.subtotal,
-        taxTotal: source.taxTotal,
-        total: source.total,
-        lines: { create: source.lines.map((line) => ({ description: line.description, quantity: line.quantity, unit: line.unit, unitPrice: line.unitPrice, taxRate: line.taxRate, position: line.position })) },
+        parentQuoteId: revisionBase.id,
+        version: revisionBase.version + 1,
+        currency: revisionBase.currency,
+        validUntil: revisionBase.validUntil,
+        notes: revisionBase.notes,
+        terms: revisionBase.terms,
+        subtotal: revisionBase.subtotal,
+        taxTotal: revisionBase.taxTotal,
+        total: revisionBase.total,
+        lines: { create: revisionBase.lines.map((line) => ({ description: line.description, quantity: line.quantity, unit: line.unit, unitPrice: line.unitPrice, taxRate: line.taxRate, position: line.position })) },
       },
       include: { customer: { select: { id: true, name: true, phone: true, email: true } }, lines: { orderBy: { position: 'asc' } } },
     })
@@ -2183,7 +2212,7 @@ app.post('/api/quotes/:id/revisions', requireTeamRole('OWNER', 'ADMIN'), async (
     }
     throw error
   }
-  return res.status(201).json({ quote: serializeQuote(revision), revisedFrom: serializeQuote(source) })
+  return res.status(201).json({ quote: serializeQuote(revision), revisedFrom })
 })
 
 app.get('/api/quotes/:id', requireAuth, async (req, res) => {
@@ -2224,8 +2253,17 @@ app.get('/api/quotes/:id/messages', requireAuth, async (req, res) => {
   const user = getRequestUser(req)
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const quote = await prisma.quote.findFirst({ where: { id: String(req.params.id), organisationId: await getOrganisationId(user.id) ?? '__none__' } })
-  if (!quote || quote.status === 'DRAFT' || !quote.publicToken) return res.status(404).json({ message: 'Conversation is not available.' })
-  const messages = await prisma.quoteMessage.findMany({ where: { quoteId: quote.id }, orderBy: { createdAt: 'asc' }, take: 100 })
+  if (!quote || quote.status === 'DRAFT') return res.status(404).json({ message: 'Conversation is not available.' })
+  let rootId = quote.id
+  let parentId = quote.parentQuoteId
+  while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: quote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
+  const root = await prisma.quote.findFirst({ where: { id: rootId, organisationId: quote.organisationId }, select: { publicToken: true } })
+  if (!root?.publicToken) return res.status(404).json({ message: 'Conversation is not available.' })
+  const ids = await prisma.quote.findMany({ where: { organisationId: quote.organisationId }, select: { id: true, parentQuoteId: true } })
+  const lineageIds = new Set([rootId])
+  let grew = true
+  while (grew) { grew = false; for (const row of ids) if (row.parentQuoteId && lineageIds.has(row.parentQuoteId) && !lineageIds.has(row.id)) { lineageIds.add(row.id); grew = true } }
+  const messages = await prisma.quoteMessage.findMany({ where: { quoteId: { in: [...lineageIds] } }, orderBy: { createdAt: 'asc' }, take: 100 })
   res.json({ messages })
 })
 
@@ -2233,11 +2271,16 @@ app.post('/api/quotes/:id/messages', requireAuth, async (req, res) => {
   const user = getRequestUser(req)
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const quote = await prisma.quote.findFirst({ where: { id: String(req.params.id), organisationId: await getOrganisationId(user.id) ?? '__none__' }, include: { owner: { select: { name: true } }, customer: { select: { name: true } } } })
-  if (!quote || quote.status === 'DRAFT' || !quote.publicToken) return res.status(404).json({ message: 'Conversation is not available.' })
+  if (!quote || quote.status === 'DRAFT') return res.status(404).json({ message: 'Conversation is not available.' })
   if (quote.status === 'EXPIRED') return res.status(409).json({ message: 'This quote has expired; messaging is closed.' })
   const content = String(req.body?.content ?? '').trim()
   if (!content || content.length > 4000) return res.status(400).json({ message: 'Write a message up to 4,000 characters.' })
-  const message = await prisma.quoteMessage.create({ data: { quoteId: quote.id, organisationId: quote.organisationId, authorUserId: user.id, authorType: 'BUSINESS', authorName: user.name, content } })
+  let rootId = quote.id
+  let parentId = quote.parentQuoteId
+  while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: quote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
+  const root = await prisma.quote.findFirst({ where: { id: rootId, organisationId: quote.organisationId }, select: { publicToken: true } })
+  if (!root?.publicToken) return res.status(404).json({ message: 'Conversation is not available.' })
+  const message = await prisma.quoteMessage.create({ data: { quoteId: rootId, organisationId: quote.organisationId, authorUserId: user.id, authorType: 'BUSINESS', authorName: user.name, content } })
   res.status(201).json({ message })
 })
 
@@ -2298,14 +2341,23 @@ app.post('/api/quotes/:id/share', requireAuth, async (req, res) => {
   const quoteId = String(req.params.id ?? '')
   const quote = await prisma.quote.findFirst({ where: { id: quoteId, organisationId: await getOrganisationId(user.id) ?? '__none__' } })
   if (!quote) return res.status(404).json({ message: 'Quote not found.' })
+  if (quote.parentQuoteId) return res.status(409).json({ message: 'Email the updated quote so the customer is notified.' })
   if (quote.status !== 'DRAFT') return res.status(409).json({ message: 'This quote has already been shared.' })
   const lineCount = await prisma.quoteLine.count({ where: { quoteId: quote.id } })
   if (!lineCount) return res.status(400).json({ message: 'Add at least one line item before sharing this quote.' })
 
-  const shared = await prisma.quote.update({
-    where: { id: quote.id },
-    data: { status: 'SENT', publicToken: randomBytes(24).toString('base64url') },
-    select: { id: true, documentNumber: true, publicToken: true, status: true },
+  let root = quote
+  while (root.parentQuoteId) {
+    const parent = await prisma.quote.findFirst({ where: { id: root.parentQuoteId, organisationId: root.organisationId } })
+    if (!parent) break
+    root = parent
+  }
+  const publicToken = root.publicToken ?? randomBytes(24).toString('base64url')
+  const shared = await prisma.$transaction(async (tx) => {
+    const updated = await tx.quote.update({ where: { id: quote.id }, data: { status: 'SENT', publicToken: quote.publicToken ?? null }, select: { id: true, documentNumber: true, status: true } })
+    await tx.quote.update({ where: { id: root.id }, data: { publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } })
+    if (quote.id === root.id) await tx.quote.update({ where: { id: quote.id }, data: { publicToken } })
+    return { ...updated, publicToken }
   })
   res.json({ quote: shared })
 })
@@ -2360,9 +2412,31 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
   })
   if (!quote) return res.status(404).json({ message: 'Quote not found.' })
 
-  // Allow sending from DRAFT or SENT status
-  if (!['DRAFT', 'SENT'].includes(quote.status)) {
+  const isRevision = Boolean(quote.parentQuoteId)
+  // Allow first delivery from DRAFT, or explicit updates to a revision draft.
+  if (quote.status !== 'DRAFT' && !(isRevision && quote.status === 'SENT')) {
     return res.status(409).json({ message: 'This quote cannot be sent in its current state.' })
+  }
+
+  let rootId = quote.id
+  let parentId = quote.parentQuoteId
+  while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: quote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
+  const root = await prisma.quote.findFirst({ where: { id: rootId, organisationId: quote.organisationId } })
+  if (!root) return res.status(409).json({ message: 'The original quote thread could not be found.' })
+  const lineageRows = await prisma.quote.findMany({ where: { organisationId: quote.organisationId }, select: { id: true, parentQuoteId: true } })
+  const lineageIds = new Set<string>([root.id])
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const row of lineageRows) if (row.parentQuoteId && lineageIds.has(row.parentQuoteId) && !lineageIds.has(row.id)) { lineageIds.add(row.id); grew = true }
+  }
+  const previousPublished = await prisma.quote.findFirst({ where: { id: root.publishedVersionId ?? root.id, organisationId: quote.organisationId }, include: { lines: { orderBy: { position: 'asc' } } } })
+  if (isRevision && previousPublished && previousPublished.id !== quote.id) {
+    const [committedInvoice, committedJob] = await Promise.all([
+      prisma.invoice.findFirst({ where: { organisationId: quote.organisationId, sourceQuoteId: { in: [...lineageIds] } }, select: { invoiceNumber: true } }),
+      prisma.job.findFirst({ where: { organisationId: quote.organisationId, quoteId: { in: [...lineageIds] } }, select: { title: true } }),
+    ])
+    if (committedInvoice || committedJob) return res.status(409).json({ message: 'This quotation already has a linked invoice or job. Send a change order for any new work so the approved terms stay intact.' })
   }
 
   const recipientEmail = String(req.body?.recipientEmail ?? '').trim().toLowerCase()
@@ -2413,8 +2487,9 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
     return res.status(400).json({ message: 'Add at least one line item before sending this quote.' })
   }
 
-  // Generate or regenerate public token
-  const publicToken = quote.publicToken ?? randomBytes(24).toString('base64url')
+  // Keep the root token stable so every previously shared customer link resolves
+  // to the latest version. A revision token is never used as the emailed URL.
+  const publicToken = root.publicToken ?? randomBytes(24).toString('base64url')
   const now = new Date()
 
   const deliveryMessage = ccList.length > 0
@@ -2432,11 +2507,7 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
     },
   })
 
-  // Update quote status to SENT and set publicToken
-  await prisma.quote.update({
-    where: { id: quote.id },
-    data: { status: 'SENT', publicToken, tokenRevokedAt: null, tokenRevokedBy: null },
-  })
+  if (!isRevision) await prisma.quote.update({ where: { id: quote.id }, data: { status: 'SENT', publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } })
 
   // Build the public quote URL
   const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
@@ -2454,7 +2525,7 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
   try {
     const result = await sendEmail(
       recipientEmail,
-      emailSubjects.quoteDelivery(quote.organisation.name ?? 'iQuote', quote.documentNumber),
+      isRevision ? emailSubjects.quoteUpdated(quote.organisation.name ?? 'iQuote', quote.documentNumber) : emailSubjects.quoteDelivery(quote.organisation.name ?? 'iQuote', quote.documentNumber),
       quoteDeliveryEmailHtml({
         recipientName: recipientName ?? quote.customer.name,
         businessName: quote.organisation.name ?? 'iQuote',
@@ -2465,6 +2536,7 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
         lineItems,
         customMessage: message,
         quoteUrl,
+        revision: isRevision ? { previousDocumentNumber: previousPublished?.documentNumber ?? root.documentNumber, previousTotal: Number(previousPublished?.total ?? root.total), version: quote.version, changes: quoteLineRevisionSummary(previousPublished?.lines ?? [], quote.lines) } : null,
       }),
       `quote-delivery/${delivery.id}`,
       quote.organisationId,
@@ -2482,6 +2554,13 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
       },
     })
 
+    if (isRevision) {
+      await prisma.$transaction([
+        prisma.quote.update({ where: { id: quote.id }, data: { status: 'SENT', publicToken: quote.publicToken, tokenRevokedAt: null, tokenRevokedBy: null } }),
+        prisma.quote.update({ where: { id: root.id }, data: { publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } }),
+      ])
+    }
+
     res.json({
       delivery: {
         id: delivery.id,
@@ -2491,7 +2570,7 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
         providerMessageId: result !== false ? (result.messageId ?? null) : null,
         sentAt: now.toISOString(),
       },
-      quote: { id: quote.id, status: 'SENT', publicToken },
+      quote: { id: quote.id, status: 'SENT', publicToken, updated: isRevision },
       customerUpdated: syncCustomerEmail,
     })
   } catch (error) {
@@ -2530,9 +2609,14 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
   // Drafts have no live public link (the public page returns 404 for them), so they cannot be resent.
   if (quote.status === 'DRAFT') return res.status(409).json({ message: 'Send this quote first. Drafts cannot be resent.' })
 
-  // Keep the existing public link so links already emailed keep working.
-  // A new token is only created when the link was revoked (publicToken is null).
-  const publicToken = quote.publicToken ?? randomBytes(24).toString('base64url')
+  let rootId = quote.id
+  let parentId = quote.parentQuoteId
+  while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: quote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
+  const root = await prisma.quote.findFirst({ where: { id: rootId, organisationId: quote.organisationId } })
+  if (!root) return res.status(409).json({ message: 'The original quote thread could not be found.' })
+  const previousPublished = await prisma.quote.findFirst({ where: { id: root.publishedVersionId ?? root.id, organisationId: quote.organisationId }, include: { lines: { orderBy: { position: 'asc' } } } })
+  const isRevision = Boolean(quote.parentQuoteId)
+  const publicToken = root.publicToken ?? randomBytes(24).toString('base64url')
   const now = new Date()
 
   const emailLimit = await dailyEmailLimitReached(quote.organisationId)
@@ -2549,10 +2633,7 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
     },
   })
 
-  await prisma.quote.update({
-    where: { id: quote.id },
-    data: { publicToken, tokenRevokedAt: null, tokenRevokedBy: null },
-  })
+  if (!isRevision) await prisma.quote.update({ where: { id: quote.id }, data: { publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } })
 
   const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
   const quoteUrl = `${platformUrl}/quote/${encodeURIComponent(publicToken)}`
@@ -2567,7 +2648,7 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
   try {
     const result = await sendEmail(
       recipientEmail,
-      emailSubjects.quoteDelivery(quote.organisation.name ?? 'iQuote', quote.documentNumber),
+      isRevision ? emailSubjects.quoteUpdated(quote.organisation.name ?? 'iQuote', quote.documentNumber) : emailSubjects.quoteDelivery(quote.organisation.name ?? 'iQuote', quote.documentNumber),
       quoteDeliveryEmailHtml({
         recipientName: recipientName ?? quote.customer.name,
         businessName: quote.organisation.name ?? 'iQuote',
@@ -2578,6 +2659,7 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
         lineItems,
         customMessage: message,
         quoteUrl,
+        revision: isRevision ? { previousDocumentNumber: previousPublished?.documentNumber ?? root.documentNumber, previousTotal: Number(previousPublished?.total ?? root.total), version: quote.version, changes: quoteLineRevisionSummary(previousPublished?.lines ?? [], quote.lines) } : null,
       }),
       `quote-delivery/${delivery.id}`,
       quote.organisationId,
@@ -2594,6 +2676,13 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
         sentAt: now,
       },
     })
+
+    if (isRevision) {
+      await prisma.$transaction([
+        prisma.quote.update({ where: { id: quote.id }, data: { publicToken: quote.publicToken, tokenRevokedAt: null, tokenRevokedBy: null } }),
+        prisma.quote.update({ where: { id: root.id }, data: { publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } }),
+      ])
+    }
 
     res.json({
       delivery: {
@@ -2658,22 +2747,24 @@ app.post('/api/quotes/:id/revoke-link', requireAuth, async (req, res) => {
 
   const quote = await prisma.quote.findFirst({
     where: { id: quoteId, organisationId: organisationId ?? '__none__' },
-    select: { id: true, publicToken: true },
+    select: { id: true, organisationId: true, parentQuoteId: true },
   })
   if (!quote) return res.status(404).json({ message: 'Quote not found.' })
-  if (!quote.publicToken) return res.status(409).json({ message: 'This quote has no active public link.' })
+  let rootId = quote.id
+  let parentId = quote.parentQuoteId
+  while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: quote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
+  const root = await prisma.quote.findFirst({ where: { id: rootId, organisationId: quote.organisationId } })
+  if (!root?.publicToken) return res.status(409).json({ message: 'This quote has no active public link.' })
 
   const generateNew = Boolean(req.body?.generateNew)
   const newToken = generateNew ? randomBytes(24).toString('base64url') : null
 
-  await prisma.quote.update({
-    where: { id: quote.id },
-    data: {
-      publicToken: newToken,
-      tokenRevokedAt: new Date(),
-      tokenRevokedBy: user.id,
-    },
-  })
+  const lineageRows = await prisma.quote.findMany({ where: { organisationId: quote.organisationId }, select: { id: true, parentQuoteId: true } })
+  const lineageIds = new Set([rootId])
+  let grew = true
+  while (grew) { grew = false; for (const row of lineageRows) if (row.parentQuoteId && lineageIds.has(row.parentQuoteId) && !lineageIds.has(row.id)) { lineageIds.add(row.id); grew = true } }
+  await prisma.quote.updateMany({ where: { id: { in: [...lineageIds] }, organisationId: quote.organisationId }, data: { publicToken: null, tokenRevokedAt: new Date(), tokenRevokedBy: user.id } })
+  if (newToken) await prisma.quote.update({ where: { id: rootId }, data: { publicToken: newToken, tokenRevokedAt: null, tokenRevokedBy: null } })
 
   res.json({
     revoked: true,
@@ -2685,8 +2776,18 @@ app.post('/api/quotes/:id/revoke-link', requireAuth, async (req, res) => {
 
 app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
   const publicToken = String(req.params.token ?? '')
-  const quote = await prisma.quote.findUnique({
-    where: { publicToken },
+  const tokenQuote = await prisma.quote.findUnique({ where: { publicToken }, select: { id: true, organisationId: true, parentQuoteId: true, publishedVersionId: true } })
+  if (!tokenQuote) return res.status(404).json({ message: 'This quote link is not available.' })
+  let rootId = tokenQuote.id
+  let parentId = tokenQuote.parentQuoteId
+  while (parentId) {
+    rootId = parentId
+    const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: tokenQuote.organisationId }, select: { parentQuoteId: true } })
+    parentId = parent?.parentQuoteId ?? null
+  }
+  const root = await prisma.quote.findFirst({ where: { id: rootId, organisationId: tokenQuote.organisationId }, select: { publishedVersionId: true } })
+  const quote = await prisma.quote.findFirst({
+    where: { id: root?.publishedVersionId ?? rootId, organisationId: tokenQuote.organisationId },
     include: {
       customer: { select: { name: true } },
       organisation: { select: { name: true, email: true, phone: true, country: true, currency: true, logoUrl: true, logoWidth: true, logoHeight: true, website: true, paymentInstructions: true } },
@@ -2712,6 +2813,8 @@ app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
   res.json({
     quote: {
       documentNumber: quote.documentNumber,
+      version: quote.version,
+      updatedFrom: quote.parentQuoteId ? (await prisma.quote.findFirst({ where: { id: quote.parentQuoteId }, select: { documentNumber: true } }))?.documentNumber ?? null : null,
       status: quote.status,
       currency: quote.currency,
       validUntil: quote.validUntil,
@@ -2737,7 +2840,13 @@ app.post('/api/public/quotes/:token/decision', publicRateLimit, async (req, res)
   const decision = String(req.body?.decision ?? '').toUpperCase()
   if (!['APPROVED', 'DECLINED'].includes(decision)) return res.status(400).json({ message: 'Choose approve or decline.' })
   const publicToken = String(req.params.token ?? '')
-  const quote = await prisma.quote.findUnique({ where: { publicToken } })
+  const tokenQuote = await prisma.quote.findUnique({ where: { publicToken }, select: { id: true, organisationId: true, parentQuoteId: true } })
+  if (!tokenQuote) return res.status(404).json({ message: 'This quote link is not available.' })
+  let rootId = tokenQuote.id
+  let parentId = tokenQuote.parentQuoteId
+  while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: tokenQuote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
+  const root = await prisma.quote.findFirst({ where: { id: rootId, organisationId: tokenQuote.organisationId }, select: { publishedVersionId: true } })
+  const quote = await prisma.quote.findFirst({ where: { id: root?.publishedVersionId ?? rootId, organisationId: tokenQuote.organisationId } })
   if (!quote) return res.status(404).json({ message: 'This quote link is not available.' })
   if (!['SENT', 'VIEWED'].includes(quote.status)) return res.status(409).json({ message: 'This quote can no longer be changed.' })
   if (quote.validUntil && quote.validUntil < new Date()) {
@@ -2773,7 +2882,10 @@ app.post('/api/public/quotes/:token/decision', publicRateLimit, async (req, res)
     }
     await prisma.notification.upsert({ where: { sourceKey: `quote-decision:${quote.id}` }, update: {}, create: { recipientUserId: fullQuote.owner.id, organisationId: fullQuote.organisationId, quoteId: quote.id, type: 'QUOTE_DECISION', title: decision === 'APPROVED' ? 'Quote approved' : 'Quote declined', body: `${fullQuote.customer.name} ${decision === 'APPROVED' ? 'approved' : 'declined'} ${fullQuote.documentNumber}.`, sourceKey: `quote-decision:${quote.id}` } }).catch(() => {})
     const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
-    const quoteUrl = `${platformUrl}/quote/${encodeURIComponent(fullQuote.publicToken ?? '')}`
+    let quoteRoot = quote
+    while (quoteRoot.parentQuoteId) { const parent = await prisma.quote.findFirst({ where: { id: quoteRoot.parentQuoteId, organisationId: quote.organisationId } }); if (!parent) break; quoteRoot = parent }
+    const quoteRootToken = await prisma.quote.findFirst({ where: { id: quoteRoot.id, organisationId: quote.organisationId }, select: { publicToken: true } })
+    const quoteUrl = `${platformUrl}/quote/${encodeURIComponent(quoteRootToken?.publicToken ?? fullQuote.publicToken ?? '')}`
     sendEmail(
       fullQuote.owner.email,
       decision === 'APPROVED' ? emailSubjects.quoteApproved(fullQuote.documentNumber) : emailSubjects.quoteDeclined(fullQuote.documentNumber),
@@ -2799,7 +2911,14 @@ app.post('/api/public/quotes/:token/decision', publicRateLimit, async (req, res)
 app.get('/api/public/quotes/:token/messages', publicRateLimit, async (req, res) => {
   const quote = await prisma.quote.findUnique({ where: { publicToken: String(req.params.token ?? '') } })
   if (!quote || quote.status === 'DRAFT') return res.status(404).json({ message: 'Conversation is not available.' })
-  const messages = await prisma.quoteMessage.findMany({ where: { quoteId: quote.id }, orderBy: { createdAt: 'asc' }, take: 100 })
+  let rootId = quote.id
+  let parentId = quote.parentQuoteId
+  while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: quote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
+  const rows = await prisma.quote.findMany({ where: { organisationId: quote.organisationId }, select: { id: true, parentQuoteId: true } })
+  const ids = new Set([rootId])
+  let grew = true
+  while (grew) { grew = false; for (const row of rows) if (row.parentQuoteId && ids.has(row.parentQuoteId) && !ids.has(row.id)) { ids.add(row.id); grew = true } }
+  const messages = await prisma.quoteMessage.findMany({ where: { quoteId: { in: [...ids] } }, orderBy: { createdAt: 'asc' }, take: 100 })
   res.json({ messages })
 })
 
@@ -2809,9 +2928,12 @@ app.post('/api/public/quotes/:token/messages', publicRateLimit, async (req, res)
   if (quote.status === 'EXPIRED' || (quote.validUntil && quote.validUntil < new Date() && ['SENT', 'VIEWED'].includes(quote.status))) return res.status(409).json({ message: 'This quote has expired; messaging is closed.' })
   const content = String(req.body?.content ?? '').trim()
   if (!content || content.length > 4000) return res.status(400).json({ message: 'Write a message up to 4,000 characters.' })
+  let rootId = quote.id
+  let parentId = quote.parentQuoteId
+  while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: quote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
   const message = await prisma.$transaction(async (tx) => {
-    const created = await tx.quoteMessage.create({ data: { quoteId: quote.id, organisationId: quote.organisationId, authorType: 'CUSTOMER', authorName: quote.customer.name, content } })
-    await tx.notification.create({ data: { recipientUserId: quote.ownerId, organisationId: quote.organisationId, quoteId: quote.id, quoteMessageId: created.id, type: 'QUOTE_MESSAGE', title: 'New quote message', body: `${quote.customer.name} sent a message about ${quote.documentNumber}.`, sourceKey: `quote-message:${created.id}` } })
+    const created = await tx.quoteMessage.create({ data: { quoteId: rootId, organisationId: quote.organisationId, authorType: 'CUSTOMER', authorName: quote.customer.name, content } })
+    await tx.notification.create({ data: { recipientUserId: quote.ownerId, organisationId: quote.organisationId, quoteId: rootId, quoteMessageId: created.id, type: 'QUOTE_MESSAGE', title: 'New quote message', body: `${quote.customer.name} sent a message about ${quote.documentNumber}.`, sourceKey: `quote-message:${created.id}` } })
     return created
   })
   res.status(201).json({ message })

@@ -10,6 +10,11 @@ export type PlanName = (typeof PLAN_NAMES)[number]
 
 export type DocumentTemplateKey = 'classic' | 'modern' | 'minimal' | 'bold' | 'compact'
 const ALL_TEMPLATES: readonly DocumentTemplateKey[] = ['classic', 'modern', 'minimal', 'bold', 'compact']
+// Template tiers (owner decision, 27 Nov 2026): Starter gets the default plus Classic, Growth adds Minimal
+// and Compact, Team adds Bold. Each tier includes everything below it. Brand colour, logo and the other
+// design options are not gated by plan.
+const STARTER_TEMPLATES: readonly DocumentTemplateKey[] = ['modern', 'classic']
+const GROWTH_TEMPLATES: readonly DocumentTemplateKey[] = [...STARTER_TEMPLATES, 'minimal', 'compact']
 
 export type Entitlements = {
   /** New quotes per calendar month (EAT). Revisions of an existing quote do not count. */
@@ -34,7 +39,7 @@ export const PLAN_ENTITLEMENTS: Record<PlanName, Entitlements> = {
     quotesPerMonth: 30,
     teamMembers: 1,
     emailsPerDay: 25,
-    templates: ['modern', 'classic'],
+    templates: STARTER_TEMPLATES,
     invoices: true,
     jobs: false,
     customerMpesa: false,
@@ -45,7 +50,7 @@ export const PLAN_ENTITLEMENTS: Record<PlanName, Entitlements> = {
     quotesPerMonth: 500,
     teamMembers: 2,
     emailsPerDay: 100,
-    templates: ALL_TEMPLATES,
+    templates: GROWTH_TEMPLATES,
     invoices: true,
     jobs: true,
     customerMpesa: true,

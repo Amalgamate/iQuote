@@ -32,6 +32,11 @@ export type QuoteDocumentData = {
     logoWidth?: number | null
     logoHeight?: number | null
     paymentInstructions?: string | null
+    brandColor?: string | null
+    kraPin?: string | null
+    vatNumber?: string | null
+    address?: string | null
+    documentTemplate?: string | null
   }
 }
 

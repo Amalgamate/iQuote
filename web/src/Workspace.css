@@ -1242,3 +1242,22 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
 .admin-pricing-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; }
 .admin-pricing-actions [role="status"] { color: #22744d; font-size: 11px; }
 @media (max-width: 760px) { .admin-price-grid { grid-template-columns: 1fr; } .admin-pricing-actions { align-items: stretch; flex-direction: column; } .admin-pricing-actions .button { width: 100%; } }
+.public-update-notice {
+  max-width: 1320px;
+  margin: 18px auto 0;
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #176b4b;
+  background: #eaf5ee;
+  border: 1px solid #cfe5d6;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.public-update-notice strong { font-weight: 700; }
+
+@media (max-width: 640px) {
+  .public-update-notice { margin: 12px 16px 0; align-items: flex-start; flex-direction: column; gap: 3px; }
+}

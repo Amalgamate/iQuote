@@ -7,6 +7,8 @@ import PublicProjectDetails, { type PublicInvoice, type PublicProject } from './
 
 type PublicQuoteRecord = QuoteDocumentData & {
   status: string
+  version?: number
+  updatedFrom?: string | null
   viewedAt: string | null
   decisionComment: string | null
   decidedAt: string | null
@@ -79,6 +81,7 @@ export default function PublicQuote({ token }: { token: string }) {
           <button type="button" className="secondary-button" onClick={() => window.print()}>Print</button>
         </div>
       </div>
+      {quote.version && quote.version > 1 && <div className="public-update-notice"><strong>Updated quotation</strong><span>This is version {quote.version}, replacing {quote.updatedFrom ?? 'the previous quotation'}.</span></div>}
       <div className="public-quote-layout">
         <aside className="decision-panel no-print">
           <section className="public-quote-rail-summary">

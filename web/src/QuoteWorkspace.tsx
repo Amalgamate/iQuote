@@ -47,6 +47,8 @@ type Quote = QuoteDocumentData & {
   viewedAt: string | null
   decidedAt: string | null
   decisionComment: string | null
+  version?: number
+  parentQuoteId?: string | null
   invoice?: { id: string; invoiceNumber: string; status: string } | null
 }
 type QuoteDraft = {
@@ -92,6 +94,17 @@ function quoteTotals(lines: QuoteLine[]) {
   const subtotal = roundMoney(lines.reduce((sum, line) => sum + Number(line.quantity || 0) * Number(line.unitPrice || 0), 0))
   const taxTotal = roundMoney(lines.reduce((sum, line) => sum + Number(line.quantity || 0) * Number(line.unitPrice || 0) * Number(line.taxRate || 0) / 100, 0))
   return { subtotal, taxTotal, total: roundMoney(subtotal + taxTotal) }
+}
+
+function quoteRevisionChanges(previous: QuoteLine[], current: QuoteLine[]) {
+  const shared = Math.min(previous.length, current.length)
+  let changed = 0
+  for (let index = 0; index < shared; index += 1) {
+    const before = previous[index]
+    const after = current[index]
+    if (before.description !== after.description || Number(before.quantity) !== Number(after.quantity) || before.unit !== after.unit || Number(before.unitPrice) !== Number(after.unitPrice) || Number(before.taxRate ?? 0) !== Number(after.taxRate ?? 0)) changed += 1
+  }
+  return { added: Math.max(0, current.length - previous.length), removed: Math.max(0, previous.length - current.length), changed }
 }
 
 function quoteDraftFrom(quote: Quote): QuoteDraft {
@@ -416,7 +429,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
   const [templateDescription, setTemplateDescription] = useState('')
   const [editor, setEditor] = useState<QuoteDraft | null>(null)
   const [editorQuoteId, setEditorQuoteId] = useState<string | null>(null)
-  const [editorRevisionSource, setEditorRevisionSource] = useState<{ documentNumber: string; publicToken: string | null } | null>(null)
+  const [editorRevisionSource, setEditorRevisionSource] = useState<{ id: string; documentNumber: string; publicToken: string | null; total: number; lines: QuoteLine[]; version: number } | null>(null)
   const [conversationQuote, setConversationQuote] = useState<{ id: string; documentNumber: string; publicToken: string | null; status: QuoteStatus } | null>(null)
   const [editorNumber, setEditorNumber] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
@@ -628,13 +641,14 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
     setError('')
     setSaveState('Loading quote…')
     try {
-      const response = quote.status === 'DRAFT'
+      const response: { quote: Quote; revisedFrom?: Quote } = quote.status === 'DRAFT'
         ? await apiRequest<{ quote: Quote }>(`/api/quotes/${encodeURIComponent(quote.id)}`)
         : await apiRequest<{ quote: Quote; revisedFrom: Quote }>(`/api/quotes/${encodeURIComponent(quote.id)}/revisions`, { method: 'POST', body: JSON.stringify({}) })
       setEditor(quoteDraftFrom(response.quote))
       setEditorQuoteId(response.quote.id)
       setEditorNumber(response.quote.documentNumber)
-      setEditorRevisionSource(quote.status === 'DRAFT' ? null : { documentNumber: quote.documentNumber, publicToken: quote.publicToken })
+      const revisionBase = response.revisedFrom ?? quote
+      setEditorRevisionSource(quote.status === 'DRAFT' ? null : { id: revisionBase.id, documentNumber: revisionBase.documentNumber, publicToken: revisionBase.publicToken, total: revisionBase.total, lines: revisionBase.lines, version: response.quote.version ?? 2 })
       setEditorDirty(false)
       setQuotes((current) => [response.quote, ...current.filter((item) => item.id !== response.quote.id)])
       if (quote.status !== 'DRAFT' && response.quote.id !== quote.id) setTrialUsage((current) => current?.trialUsage && current.trialLimits ? { ...current, trialUsage: { ...current.trialUsage, quotes: Math.min(current.trialLimits.quotes, current.trialUsage.quotes + 1) } } : current)
@@ -954,7 +968,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
     const emailOnRecord = activeCustomer?.email || ''
     setSendEmail(emailOnRecord)
     setSendCc('')
-    setSendCustomMessage('')
+    setSendCustomMessage(editorRevisionSource ? `We’ve updated your quotation. Please review the latest version. It replaces the earlier copy.` : '')
     setSyncCustomerEmail(!emailOnRecord)
     setSendMessage('')
     setSendStatus(null)
@@ -965,13 +979,15 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
   }
 
   const sendQuoteEmail = async () => {
-    if (!editorQuoteId || !sendEmail.trim()) return
+    if (!editorQuoteId || !editor || !sendEmail.trim()) return
     setSending(true)
     setSendMessage('')
     setSendStatus(null)
     try {
+      const saved = await saveDraft(editor!, editorQuoteId)
+      setEditorQuoteId(saved.id)
       await apiRequest<{ delivery: QuoteDelivery; quote: Quote; customerUpdated?: boolean }>(
-        `/api/quotes/${editorQuoteId}/send`,
+        `/api/quotes/${saved.id}/send`,
         {
           method: 'POST',
           body: JSON.stringify({
@@ -982,7 +998,11 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
           }),
         }
       )
-      setSendMessage('Quote email sent. Delivery status will update below.')
+      setSendMessage(editorRevisionSource ? 'Updated quote email sent. The customer link now shows this version.' : 'Quote email sent. Delivery status will update below.')
+      if (editorRevisionSource) {
+        setQuotes((current) => current.map((item) => item.id === saved.id ? { ...item, status: 'SENT' } : item))
+        setSaveState('Updated quote sent')
+      }
       setSendStatus('success')
       setShowSendModal(false)
 
@@ -994,7 +1014,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
         )
       }
 
-      await loadDeliveries(editorQuoteId)
+      await loadDeliveries(saved.id)
     } catch (requestError) {
       setSendMessage(requestError instanceof Error ? requestError.message : 'Unable to send quote email.')
       setSendStatus('error')
@@ -1276,8 +1296,8 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
 
         {page === 'editor' && editor && business && (
           <section className="editor-content">
-            <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={openSendModal}>Send email</button>}<button className="button button-primary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Mark as sent</button></div></div>
-            {editorRevisionSource && <div className="workspace-alert" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><span>Editing a new draft based on {editorRevisionSource.documentNumber}. The original quote remains unchanged.</span>{editorRevisionSource.publicToken && <a href={`/quote/${encodeURIComponent(editorRevisionSource.publicToken)}`} target="_blank" rel="noreferrer">View original customer copy</a>}</div>}
+            <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button>{editorQuoteId && <button className="button button-primary" type="button" onClick={openSendModal} disabled={!editor.customerId}>{editorRevisionSource ? 'Send updated quote' : 'Send email'}</button>}{!editorRevisionSource && <button className="button button-secondary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Create share link</button>}</div></div>
+            {editorRevisionSource && <div className="workspace-alert" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><span><strong>Updated quotation · Version {editorRevisionSource.version}</strong><br />Based on {editorRevisionSource.documentNumber}. {(() => { const changes = quoteRevisionChanges(editorRevisionSource.lines, editor.lines); return `${changes.added} added · ${changes.removed} removed · ${changes.changed} changed · ${formatMoney(editorRevisionSource.total, editorRevisionSource.lines.length ? business.currency : business.currency)} → ${formatMoney(quoteTotals(editor.lines).total, business.currency)}.` })()} Saving does not notify the customer; use “Send updated quote” to email the update.</span>{editorRevisionSource.publicToken && <a href={`/quote/${encodeURIComponent(editorRevisionSource.publicToken)}`} target="_blank" rel="noreferrer">View current customer copy</a>}</div>}
             {sharedUrl && <div className="share-callout"><div><strong>Quote link is ready</strong><span>{sharedUrl}</span></div><div className="share-actions"><button className="button button-secondary" type="button" onClick={() => { void navigator.clipboard.writeText(sharedUrl).then(() => setCopied(true)).catch(() => setError('Copy the quote link from the address shown.')) }}>{copied ? 'Copied' : 'Copy link'}</button><a className="button button-secondary" href={`https://wa.me/?text=${encodeURIComponent(`Here is your quotation: ${sharedUrl}`)}`} target="_blank" rel="noreferrer">WhatsApp</a><button className="quiet-button danger-button" type="button" onClick={() => void revokeQuoteLink()} disabled={revoking}>{revoking ? 'Revoking…' : 'Revoke link'}</button></div></div>}
             {sendMessage && <div className={sendStatus === 'success' ? 'workspace-alert workspace-alert-success' : 'workspace-alert'} role="status"><span>{sendMessage}</span><button type="button" onClick={() => { setSendMessage(''); setSendStatus(null) }} aria-label="Dismiss">×</button></div>}
             {deliveries.length > 0 && (
@@ -1492,7 +1512,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
             <div className="modal-heading">
               <div>
                 <p className="workspace-eyebrow">Email delivery</p>
-                <h2>Send quote by email</h2>
+                <h2>{editorRevisionSource ? 'Send updated quote' : 'Send quote by email'}</h2>
                 {(() => {
                   const activeCustomer = customers.find((c) => c.id === editor?.customerId)
                   return activeCustomer ? (
@@ -1506,6 +1526,8 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
                 ×
               </button>
             </div>
+
+            {editorRevisionSource && editor && <div className="workspace-alert"><strong>Customer update</strong><br />This email tells the customer that {editorRevisionSource.documentNumber} has changed and links to the latest version. Previous total: {formatMoney(editorRevisionSource.total, business?.currency ?? 'KES')} · New total: {formatMoney(quoteTotals(editor.lines).total, business?.currency ?? 'KES')}.</div>}
 
             <div className="modal-fields-group">
               <label className="field-label">
@@ -1609,7 +1631,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
                 onClick={() => void sendQuoteEmail()}
                 disabled={sending || !sendEmail.trim()}
               >
-                {sending ? 'Sending…' : 'Send quote'}
+                {sending ? 'Sending…' : editorRevisionSource ? 'Send update' : 'Send quote'}
               </button>
             </div>
           </div>

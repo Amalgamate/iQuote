@@ -41,6 +41,10 @@ describe('plan shape', () => {
       if (GROWTH[key]) expect(TEAM[key]).toBe(true)
     }
     expect(STARTER.templates.length).toBeLessThanOrEqual(GROWTH.templates.length)
+    expect(GROWTH.templates.length).toBeLessThanOrEqual(TEAM.templates.length)
+    // Each plan's templates are a subset of the next plan's.
+    for (const template of STARTER.templates) expect(GROWTH.templates).toContain(template)
+    for (const template of GROWTH.templates) expect(TEAM.templates).toContain(template)
   })
 
   it('always includes the default template on every plan', () => {
@@ -56,9 +60,18 @@ describe('features and templates', () => {
     expect(featureAllowed(PLAN_ENTITLEMENTS.TEAM, 'customEmailDomain')).toBe(true)
   })
 
-  it('restricts templates on Starter', () => {
+  it('spreads templates across plans: Starter, Growth, Team', () => {
     expect(templateAllowed(PLAN_ENTITLEMENTS.STARTER, 'bold')).toBe(false)
-    expect(templateAllowed(PLAN_ENTITLEMENTS.GROWTH, 'bold')).toBe(true)
+    expect(templateAllowed(PLAN_ENTITLEMENTS.STARTER, 'minimal')).toBe(false)
+    expect(templateAllowed(PLAN_ENTITLEMENTS.STARTER, 'compact')).toBe(false)
+    expect(templateAllowed(PLAN_ENTITLEMENTS.STARTER, 'classic')).toBe(true)
+    expect(templateAllowed(PLAN_ENTITLEMENTS.GROWTH, 'minimal')).toBe(true)
+    expect(templateAllowed(PLAN_ENTITLEMENTS.GROWTH, 'compact')).toBe(true)
+    expect(templateAllowed(PLAN_ENTITLEMENTS.GROWTH, 'bold')).toBe(false)
+    for (const template of ['classic', 'modern', 'minimal', 'bold', 'compact']) {
+      expect(templateAllowed(PLAN_ENTITLEMENTS.TEAM, template)).toBe(true)
+    }
+    expect(templateAllowed(PLAN_ENTITLEMENTS.TEAM, 'not-a-template')).toBe(false)
   })
 
   it('names the lowest plan that includes a feature', () => {

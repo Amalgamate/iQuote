@@ -74,7 +74,7 @@ attempt tries again.
 | New quotes per month | 30 | 500 | 2,000 |
 | Users (including owner) | 1 | 2 | 5 |
 | Quote emails per 24 hours | 25 | 100 | 300 |
-| PDF templates | Modern, Classic | All 5 | All 5 |
+| PDF templates (owner decision 27 Nov 2026) | Modern, Classic | + Minimal, Compact | + Bold (all 5) |
 | Brand colour, logo, KRA PIN, address | Yes | Yes | Yes |
 | Customers, catalogue, quote templates | Yes | Yes | Yes |
 | Public approve / decline, chat | Yes | Yes | Yes |
