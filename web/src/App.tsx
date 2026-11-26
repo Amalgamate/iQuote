@@ -23,6 +23,8 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [adminMfaLogin, setAdminMfaLogin] = useState(false)
   const [billingLocked, setBillingLocked] = useState(false)
+  const [billingOpen, setBillingOpen] = useState(false)
+  const [billingReason, setBillingReason] = useState<'manage' | 'trial-cap'>('manage')
 
   // Global session expiry handler — clears user state when the API returns 401
   useEffect(() => {
@@ -102,14 +104,14 @@ function App() {
     return <SuperadminDashboard user={user} onLogout={handleLogout} />
   }
 
-  if (billingLocked) {
-    return <BillingGate isOwner={user.teamRole === 'OWNER'} onUnlocked={() => setBillingLocked(false)} onLogout={handleLogout} />
+  if (billingLocked || billingOpen) {
+    return <BillingGate isOwner={user.teamRole === 'OWNER'} reason={billingLocked ? 'expired' : billingReason} onBack={billingLocked ? undefined : () => setBillingOpen(false)} onUnlocked={() => { setBillingLocked(false); setBillingOpen(false) }} onLogout={handleLogout} />
   }
 
   // QuoteWorkspace handles business profile loading, settings, and all workspace pages.
   // If businessProfile is missing (edge case after registration), QuoteWorkspace's
   // settings page provides the business setup form.
-  return <QuoteWorkspace user={user} onLogout={handleLogout} />
+  return <QuoteWorkspace user={user} onLogout={handleLogout} onOpenBilling={(reason) => { setBillingReason(reason); setBillingOpen(true) }} />
 }
 
 export default App

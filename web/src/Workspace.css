@@ -846,6 +846,13 @@ textarea.input-control { min-height: 84px; resize: vertical; line-height: 1.45; 
 .trial-usage-chip > span { color: #176b4b; font-weight: 700; }
 .trial-usage-chip b { font-weight: 600; }
 .trial-usage-chip i { width: 3px; height: 3px; border-radius: 50%; background: #9baa9f; }
+.trial-usage-chip button { padding: 4px 8px; border: 1px solid #cfe0d3; border-radius: 6px; background: #fff; color: #176b4b; cursor: pointer; font: inherit; font-size: 10px; font-weight: 700; }
+.trial-usage-chip button:hover { background: #eaf5ee; }
+.workspace-alert .workspace-alert-action { flex: 0 0 auto; padding: 6px 10px; border: 1px solid #e4c5b8; border-radius: 6px; background: #fff; color: #176b4b; cursor: pointer; font: inherit; font-weight: 650; }
+.subscription-settings-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 13px; border: 1px solid #e2ebe4; border-radius: 9px; background: #f7faf7; }
+.subscription-settings-summary strong { color: #176b4b; font-size: 13px; }
+.subscription-settings-summary span,.subscription-settings-summary small { color: #68786e; font-size: 11px; }
+.subscription-settings-summary .button { margin-left: auto; }
 @media (max-width: 900px) { .trial-usage-chip { gap: 5px; padding-inline: 7px; font-size: 9px; } }
 .notification-trigger { position: relative; }
 .notification-trigger .topbar-badge { min-width: 16px; height: 16px; padding: 0 4px; display: grid; place-items: center; border-radius: 9px; background: #13795b; color: #fff; font-size: 9px; }

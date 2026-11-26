@@ -15,7 +15,7 @@ import './Workspace.css'
 import googlePlayBadge from './assets/google-play-badge.svg'
 
 type User = { id: string; name: string; email: string; teamRole?: string }
-type TrialUsage = { status: string; trialLimits: { quotes: number; invoices: number } | null; trialUsage: { quotes: number; invoices: number } | null }
+type TrialUsage = { plan: string; status: string; trialEndsAt: string | null; trialLimits: { quotes: number; invoices: number } | null; trialUsage: { quotes: number; invoices: number } | null }
 type Business = {
   id: string
   name: string
@@ -379,13 +379,13 @@ function LineItemDescriptionField({
   )
 }
 
-export default function QuoteWorkspace({ user, onLogout }: { user: User; onLogout: () => void }) {
+export default function QuoteWorkspace({ user, onLogout, onOpenBilling }: { user: User; onLogout: () => void; onOpenBilling: (reason: 'manage' | 'trial-cap') => void }) {
   const publicMatch = window.location.pathname.match(/^\/quote\/([^/]+)\/?$/)
   if (publicMatch) return <PublicQuote token={decodeURIComponent(publicMatch[1])} />
-  return <AuthenticatedWorkspace user={user} onLogout={onLogout} />
+  return <AuthenticatedWorkspace user={user} onLogout={onLogout} onOpenBilling={onOpenBilling} />
 }
 
-function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () => void }) {
+function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User; onLogout: () => void; onOpenBilling: (reason: 'manage' | 'trial-cap') => void }) {
   const [page, setPage] = useState<Page>('dashboard')
   const [business, setBusiness] = useState<Business | null>(null)
   const [trialUsage, setTrialUsage] = useState<TrialUsage | null>(null)
@@ -1148,7 +1148,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
             <h1>{heading}</h1>
           </div>
           <div className="topbar-right">
-            {trialUsage?.status === 'TRIALING' && trialUsage.trialUsage && trialUsage.trialLimits && <div className="trial-usage-chip" title="Trial document usage"><span>Trial</span><b>Quotes {trialUsage.trialUsage.quotes}/{trialUsage.trialLimits.quotes}</b><i /><b>Invoices {trialUsage.trialUsage.invoices}/{trialUsage.trialLimits.invoices}</b></div>}
+            {trialUsage?.status === 'TRIALING' && trialUsage.trialUsage && trialUsage.trialLimits && <div className="trial-usage-chip" title="Trial document usage"><span>Trial</span><b>Quotes {trialUsage.trialUsage.quotes}/{trialUsage.trialLimits.quotes}</b><i /><b>Invoices {trialUsage.trialUsage.invoices}/{trialUsage.trialLimits.invoices}</b><button type="button" onClick={() => onOpenBilling('trial-cap')}>Plans</button></div>}
             {business?.subdomain && <a className="topbar-domain-link" href={`https://${business.subdomain}.trendscore.co.ke`} target="_blank" rel="noreferrer">{business.subdomain}.trendscore.co.ke</a>}
             <PwaControls />
             <NotificationCenter onOpenQuote={(id) => void openConversation(id)} />
@@ -1159,7 +1159,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
           </div>
         </header>
 
-        {error && <div className="workspace-alert" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
+        {error && <div className="workspace-alert" role="alert"><span>{error}</span>{error.toLowerCase().includes('trial includes up to') && <button type="button" className="workspace-alert-action" onClick={() => onOpenBilling('trial-cap')}>View packages</button>}<button type="button" onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
 
         {page === 'dashboard' && business && <CustomerDashboard user={user} business={business} quotes={quotes} customers={customers} chartRange={chartRange} chartData={chartData} onRangeChange={setChartRange} onNewQuote={startNewQuote} onViewQuotes={() => changePage('quotes')} onViewCustomers={() => changePage('customers')} onOpenQuote={openQuote} />}
 
@@ -1203,6 +1203,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
         {page === 'settings' && (
           <section className="workspace-content settings-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Workspace</p><h2>Business settings</h2><p>These details appear on your quotations.</p></div></div>
+            <section className="workspace-panel settings-form subscription-settings-card"><div className="settings-section"><h3>Subscription &amp; packages</h3><p>Review your current plan, trial allowance, and monthly package prices.</p><div className="subscription-settings-summary"><strong>{trialUsage?.plan ?? 'Loading plan…'}</strong><span>{trialUsage?.status === 'TRIALING' && trialUsage.trialEndsAt ? `Trial ends ${new Date(trialUsage.trialEndsAt).toLocaleDateString('en-KE', { dateStyle: 'medium' })}` : trialUsage?.status ?? 'Subscription details unavailable'}</span>{trialUsage?.trialUsage && trialUsage.trialLimits && <small>Trial usage: {trialUsage.trialUsage.quotes}/{trialUsage.trialLimits.quotes} quotes · {trialUsage.trialUsage.invoices}/{trialUsage.trialLimits.invoices} invoices</small>}<button type="button" className="button button-primary" onClick={() => onOpenBilling('manage')}>View packages &amp; pay</button></div></div></section>
             <form className="workspace-panel settings-form" onSubmit={(event) => void handleBusinessSave(event)}>
               <div className="settings-section"><h3>Business profile</h3><p>Contact details and quote numbering</p><div className="settings-grid">
                 <label>Business name<input className="input-control" required value={businessForm.name} onChange={(event) => setBusinessForm((current) => ({ ...current, name: event.target.value }))} /></label>

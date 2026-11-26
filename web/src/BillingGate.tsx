@@ -15,7 +15,7 @@ type BillingSummary = {
 }
 type BillingPayment = { id: string; status: string; statusDescription: string | null; amount: number; currency: string }
 
-export default function BillingGate({ isOwner, onUnlocked, onLogout }: { isOwner: boolean; onUnlocked: () => void; onLogout: () => void }) {
+export default function BillingGate({ isOwner, onUnlocked, onLogout, onBack, reason = 'expired' }: { isOwner: boolean; onUnlocked: () => void; onLogout: () => void; onBack?: () => void; reason?: 'expired' | 'manage' | 'trial-cap' }) {
   const [summary, setSummary] = useState<BillingSummary | null>(null)
   const [plan, setPlan] = useState('STARTER')
   const [phone, setPhone] = useState('')
@@ -75,13 +75,13 @@ export default function BillingGate({ isOwner, onUnlocked, onLogout }: { isOwner
   return <main className="billing-gate">
     <section className="billing-card">
       <div className="billing-brand"><span className="billing-mark">iQ<span>.</span></span><b>i<span className="billing-brand-q">Q</span>uote<span className="billing-brand-dot">.</span></b></div>
-      <p className="billing-eyebrow">SUBSCRIPTION REQUIRED</p>
-      <h1>Your trial has ended</h1>
-      <p className="billing-intro">Choose a plan and complete a secure M-Pesa payment to reopen your workspace. Your customer and quotation data remain saved.</p>
+      <p className="billing-eyebrow">{reason === 'expired' ? 'SUBSCRIPTION REQUIRED' : 'ACCOUNT & BILLING'}</p>
+      <h1>{reason === 'expired' ? 'Your trial has ended' : reason === 'trial-cap' ? 'Choose a plan to keep creating' : 'Plans & billing'}</h1>
+      <p className="billing-intro">{reason === 'expired' ? 'Choose a plan and complete a secure M-Pesa payment to reopen your workspace. Your customer and quotation data remain saved.' : reason === 'trial-cap' ? 'Your trial document allowance is used. Choose a package and pay securely with M-Pesa to continue creating quotes and invoices.' : 'Review your packages and manage subscription payments for this workspace.'}</p>
 
       {summary && <div className="billing-summary">
         <div><span>Current plan</span><strong>{summary.plan}</strong></div>
-        <div><span>Trial ended</span><strong>{summary.trialEndsAt ? new Date(summary.trialEndsAt).toLocaleDateString('en-KE', { dateStyle: 'medium' }) : '—'}</strong></div>
+        <div><span>{summary.status === 'TRIALING' ? 'Trial ends' : 'Subscription status'}</span><strong>{summary.status === 'TRIALING' && summary.trialEndsAt ? new Date(summary.trialEndsAt).toLocaleDateString('en-KE', { dateStyle: 'medium' }) : summary.status}</strong></div>
       </div>}
 
       {isOwner ? <form onSubmit={(event) => void startPayment(event)} className="billing-form">
@@ -109,7 +109,7 @@ export default function BillingGate({ isOwner, onUnlocked, onLogout }: { isOwner
         {payment.status === 'PAID' && <button type="button" onClick={onUnlocked} className="billing-reopen">Open workspace</button>}
       </div>}
       {error && <p className="billing-error" role="alert">{error}</p>}
-      <div className="billing-footer"><span>Payments are processed securely by NCBA.</span><button type="button" onClick={onLogout}>Sign out</button></div>
+      <div className="billing-footer"><span>Payments are processed securely by NCBA.</span><div>{onBack && <button type="button" onClick={onBack}>Back to workspace</button>}<button type="button" onClick={onLogout}>Sign out</button></div></div>
     </section>
   </main>
 }
