@@ -12,6 +12,7 @@ import InvoicesPanel from './InvoicesPanel'
 import ReportsPanel from './ReportsPanel'
 import TeamPanel from './TeamPanel'
 import './Workspace.css'
+import googlePlayBadge from './assets/google-play-badge.svg'
 
 type User = { id: string; name: string; email: string; teamRole?: string }
 type Business = {
@@ -1241,6 +1242,7 @@ function AuthenticatedWorkspace({ user, onLogout }: { user: User; onLogout: () =
               </div>
             </form>}
             {user.teamRole !== 'MEMBER' && <section className="workspace-panel settings-form"><div className="settings-section"><h3>Workspace data</h3><p>Download a JSON copy of your business data, including customers, quotations, jobs, costs, invoices, payment records, team, and settings. Only owners and admins can export.</p><a className="button button-secondary" href="/api/export/workspace.json">Download workspace export</a></div></section>}
+            <section className="workspace-panel settings-form app-info-panel"><div className="settings-section"><h3>App</h3><div className="app-info-card"><div className="app-info-main"><span className="app-info-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg></span><div className="app-info-text"><strong>We're on Google Play</strong><span>iQuote app</span></div></div><span className="app-info-badge">Coming soon</span></div><div className="app-info-note"><p>Get iQuote on your Android device once we launch on Google Play.</p><img src={googlePlayBadge} alt="Get it on Google Play" className="app-info-logo" /></div></div></section>
           </section>
         )}
 

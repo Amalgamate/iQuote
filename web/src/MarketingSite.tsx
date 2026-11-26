@@ -8,7 +8,6 @@ import featLink from './assets/feat-link.jpg'
 import featTracking from './assets/feat-tracking.jpg'
 import personaStudio from './assets/persona-studio.jpg'
 import personaTrades from './assets/persona-trades.jpg'
-import googlePlayBadge from './assets/google-play-badge.svg'
 
 // Real face photos via Unsplash CDN (royalty-free)
 const FACES = {
@@ -61,35 +60,40 @@ const countryFlagCodes: Record<string, string> = {
   Kenya: 'ke', Uganda: 'ug', Tanzania: 'tz', Rwanda: 'rw', 'South Africa': 'za',
 }
 
-const testimonials = [
-  {
-    quote: "Before iQuote I was sending PDFs that clients couldn't even open on their phones. Now they approve on the same day — sometimes within the hour.",
-    name: "Amina Waweru",
-    role: "Creative Director, North Studio · Nairobi",
-    avatar: FACES.amina,
-  },
-  {
-    quote: "I do electrical installs and my quotes used to be a WhatsApp message. Now I look like a proper business. Clients take me seriously and I win more jobs.",
-    name: "David Otieno",
-    role: "Independent Electrician · Mombasa",
-    avatar: FACES.david,
-  },
-  {
-    quote: "The one-link share is a game changer. No back-and-forth, no attachments. The client just clicks, reads, and approves. It's exactly what I needed.",
-    name: "Siti Mwangi",
-    role: "Strategy Consultant · Kampala",
-    avatar: FACES.siti,
-  },
+const earlyAccessPoints = [
+  { title: 'Opens on any phone', text: 'Customers review and approve from one secure link. No attachments, no app, no account.' },
+  { title: 'Made for M-Pesa-first businesses', text: 'Quote in Kenyan shillings, record payments, and set up M-Pesa collection from your customers.' },
+  { title: 'Built with early customers', text: 'We are working with our first pilot businesses. Start a free trial and tell us what you need.' },
 ]
 
 type Step = 1 | 2 | 3 | 4 | 5
 type Plan = 'STARTER' | 'GROWTH' | 'TEAM'
 
-const planCards: Array<{ id: Plan; name: string; detail: string; features: string[] }> = [
-  { id: 'STARTER', name: 'Starter', detail: 'For independent businesses', features: ['Send and track quotes', 'Customer directory', 'One business workspace'] },
-  { id: 'GROWTH', name: 'Growth', detail: 'For a growing sales desk', features: ['Everything in Starter', 'Higher quote volume (planned)', 'Follow-up activity (planned)'] },
-  { id: 'TEAM', name: 'Team', detail: 'For a team quoting together', features: ['Everything in Growth', 'Team members (coming soon)', 'Role controls (coming soon)'] },
+const planCards: Array<{ id: Plan; name: string; detail: string }> = [
+  { id: 'STARTER', name: 'Starter', detail: 'For independent businesses' },
+  { id: 'GROWTH', name: 'Growth', detail: 'For a growing business' },
+  { id: 'TEAM', name: 'Team', detail: 'For a team quoting together' },
 ]
+
+// Shown until /api/public/plans responds (or if it cannot be reached). Keep in step with
+// api/src/plans.ts and the admin price screen; the live API values win when available.
+const fallbackPlanInfo: Record<Plan, { amount: number | null; quotes: number; users: number }> = {
+  STARTER: { amount: 800, quotes: 30, users: 1 },
+  GROWTH: { amount: 1500, quotes: 500, users: 2 },
+  TEAM: { amount: 4500, quotes: 2000, users: 5 },
+}
+
+function formatPlanPrice(amount: number | null) {
+  return amount === null ? '' : `KSh ${amount.toLocaleString('en-KE')}`
+}
+
+function planFeatures(id: Plan, quotes: number, users: number): string[] {
+  const volume = `Up to ${quotes.toLocaleString('en-KE')} new quotes a month`
+  const people = users === 1 ? '1 user' : `Up to ${users} users`
+  if (id === 'STARTER') return [volume, 'Branded quotes shared by one link', 'Customer approval and tracking', 'Invoices and payment records', people]
+  if (id === 'GROWTH') return ['Everything in Starter', volume, 'Jobs and milestones', 'Collect customer payments by M-Pesa', 'Business reports', people]
+  return ['Everything in Growth', volume, 'Team roles: owner, admin, member', 'Send quotes from your own email domain', people]
+}
 
 export default function MarketingSite({ initialScreen }: { initialScreen?: 'login' } = {}) {
   const [screen, setScreen] = useState<'landing' | 'signup' | 'login' | 'market'>(() => initialScreen ?? (window.location.pathname === '/market' ? 'market' : 'landing'))
@@ -116,6 +120,24 @@ export default function MarketingSite({ initialScreen }: { initialScreen?: 'logi
   const [loginMfaCode, setLoginMfaCode] = useState('')
   const [stageView, setStageView] = useState<'paper' | 'mockup'>('paper')
   const [quoteApproved, setQuoteApproved] = useState(false)
+  const [planInfo, setPlanInfo] = useState<Partial<Record<Plan, { amount: number | null; quotes: number; users: number }>>>({})
+  const [trialLimits, setTrialLimits] = useState({ quotes: 7, invoices: 7 })
+
+  useEffect(() => {
+    let cancelled = false
+    apiRequest<{ trialLimits?: { quotes: number; invoices: number }; plans: Array<{ plan: Plan; amount: number | null; entitlements: { quotesPerMonth: number; teamMembers: number } }> }>('/api/public/plans')
+      .then((response) => {
+        if (cancelled) return
+        if (response.trialLimits) setTrialLimits(response.trialLimits)
+        const next: Partial<Record<Plan, { amount: number | null; quotes: number; users: number }>> = {}
+        for (const item of response.plans) next[item.plan] = { amount: item.amount, quotes: item.entitlements.quotesPerMonth, users: item.entitlements.teamMembers }
+        setPlanInfo(next)
+      })
+      .catch(() => {}) // keep the fallback figures if the API cannot be reached
+    return () => { cancelled = true }
+  }, [])
+
+  const planDisplay = (id: Plan) => planInfo[id] ?? fallbackPlanInfo[id]
 
   useEffect(() => {
     if (resendWait <= 0) return
@@ -263,7 +285,7 @@ export default function MarketingSite({ initialScreen }: { initialScreen?: 'logi
             <h1>Good work deserves a <em>clear</em> quote.</h1>
             <p className="hero-lede">Create thoughtful quotes, share them in one link, and know exactly when a customer is ready to move forward.</p>
             <div className="hero-actions"><button className="site-cta" onClick={startSignup}>Create your workspace <span>↗</span></button><a className="hero-secondary" href="#how">See how it works <span>↓</span></a></div>
-            <div className="hero-reassurance"><span className="reassurance-icon">✓</span><span>14 days to explore · no card details · no charge in this preview</span></div>
+            <div className="hero-reassurance"><span className="reassurance-icon">✓</span><span>14-day free trial · no card needed · pay monthly by M-Pesa after</span></div>
           </div>
           <div className="quote-stage" aria-label="Quote document preview">
             <div className="stage-controls">
@@ -362,7 +384,7 @@ export default function MarketingSite({ initialScreen }: { initialScreen?: 'logi
             <h2>From “how much?”<br />to <em>“let’s do it.”</em></h2>
             <p>A quote should make the decision easier for your customer and the follow-through easier for you. iQuote gives your work a polished home, then keeps the next step visible.</p>
             <div className="intro-stats">
-              <div className="intro-stat"><span className="stat-number">3x</span><span className="stat-label">faster quote approval</span></div>
+              <div className="intro-stat"><span className="stat-number">26+</span><span className="stat-label">African markets supported</span></div>
               <div className="intro-stat-divider" />
               <div className="intro-stat"><span className="stat-number">1</span><span className="stat-label">link, no attachments</span></div>
               <div className="intro-stat-divider" />
@@ -381,18 +403,13 @@ export default function MarketingSite({ initialScreen }: { initialScreen?: 'logi
         </section>
         <section className="site-testimonials">
           <div className="testimonials-header">
-            <p className="site-kicker"><span className="kicker-rule" /> TRUSTED BY INDEPENDENT BUSINESSES</p>
-            <h2>What our users are saying.</h2>
+            <p className="site-kicker"><span className="kicker-rule" /> BUILT WITH EARLY BUSINESSES</p>
+            <h2>Help shape iQuote.</h2>
           </div>
           <div className="testimonials-grid">
-            {testimonials.map((t) => (
-              <article className="testimonial-card" key={t.name}>
-                <div className="testimonial-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
-                <blockquote className="testimonial-quote">{t.quote}</blockquote>
-                <div className="testimonial-person">
-                  <img src={t.avatar} alt={t.name} className="testimonial-avatar" />
-                  <div className="testimonial-meta"><b>{t.name}</b><small>{t.role}</small></div>
-                </div>
+            {earlyAccessPoints.map((point) => (
+              <article className="testimonial-card" key={point.title}>
+                <blockquote className="testimonial-quote"><b>{point.title}.</b> {point.text}</blockquote>
               </article>
             ))}
           </div>
@@ -484,11 +501,11 @@ export default function MarketingSite({ initialScreen }: { initialScreen?: 'logi
             </aside>
           </div>
         </section>
-        <section className="site-steps"><div className="steps-intro"><p className="site-kicker">A SHORTER WAY TO GET STARTED</p><h2>Your workspace,<br /><em>your way of working.</em></h2><p>Set up the essentials first. You can refine your profile, quote defaults, and team access as your business grows.</p><button className="site-cta" onClick={startSignup}>Start with your email <span>↗</span></button></div><div className="step-list"><div><span>01</span><section><h3>Verify your email</h3><p>Keep your account yours from the beginning. We send one short code and you can request a fresh one if needed.</p></section></div><div><span>02</span><section><h3>Add your business</h3><p>Choose a name, country, and contact number. We set a sensible starting currency for your region.</p></section></div><div><span>03</span><section><h3>Explore a trial plan</h3><p>Choose a setup for your business. Billing is simulated locally; no payment details are collected in this preview.</p></section></div></div></section>
-        <section className="site-plans" id="plans"><div><p className="site-kicker">A PLAN FOR YOUR NEXT CHAPTER</p><h2>Start simple.<br /><em>Grow when ready.</em></h2><p className="plan-note">Every plan begins with a 14-day local preview. Pick the workspace shape you want to explore; billing can be connected later.</p></div><div className="plan-tiles">{planCards.map((item, index) => <article key={item.id} className={index === 1 ? 'plan-tile plan-featured' : 'plan-tile'}><div className="plan-tile-top"><span>{item.name}</span>{index === 1 && <small>GOOD PLACE TO START</small>}</div><p>{item.detail}</p><ul>{item.features.map(feature => <li key={feature}><span>✓</span>{feature}</li>)}</ul><button className={index === 1 ? 'site-cta' : 'site-plan-link'} onClick={startSignup}>Explore this plan <span>↗</span></button></article>)}</div></section>
+        <section className="site-steps"><div className="steps-intro"><p className="site-kicker">A SHORTER WAY TO GET STARTED</p><h2>Your workspace,<br /><em>your way of working.</em></h2><p>Set up the essentials first. You can refine your profile, quote defaults, and team access as your business grows.</p><button className="site-cta" onClick={startSignup}>Start with your email <span>↗</span></button></div><div className="step-list"><div><span>01</span><section><h3>Verify your email</h3><p>Keep your account yours from the beginning. We send one short code and you can request a fresh one if needed.</p></section></div><div><span>02</span><section><h3>Add your business</h3><p>Choose a name, country, and contact number. We set a sensible starting currency for your region.</p></section></div><div><span>03</span><section><h3>Explore a trial plan</h3><p>Pick the plan you expect to use. You get 14 days free with no card, then pay monthly by M-Pesa.</p></section></div></div></section>
+        <section className="site-plans" id="plans"><div><p className="site-kicker">A PLAN FOR YOUR NEXT CHAPTER</p><h2>Start simple.<br /><em>Grow when ready.</em></h2><p className="plan-note">Every new workspace starts with a 14-day free trial that includes Growth features, no card needed. The trial covers up to {trialLimits.quotes} quotes and {trialLimits.invoices} invoices. After the trial, pick a plan and pay monthly by M-Pesa.</p></div><div className="plan-tiles">{planCards.map((item, index) => <article key={item.id} className={index === 1 ? 'plan-tile plan-featured' : 'plan-tile'}><div className="plan-tile-top"><span>{item.name}</span>{index === 1 && <small>GOOD PLACE TO START</small>}</div><p>{item.detail}</p>{planDisplay(item.id).amount !== null && <p className="plan-price" style={{ margin: '6px 0 14px', fontSize: '1.05rem' }}><b>{formatPlanPrice(planDisplay(item.id).amount)}</b> / month</p>}<ul>{planFeatures(item.id, planDisplay(item.id).quotes, planDisplay(item.id).users).map(feature => <li key={feature}><span>✓</span>{feature}</li>)}</ul><button className={index === 1 ? 'site-cta' : 'site-plan-link'} onClick={startSignup}>Explore this plan <span>↗</span></button></article>)}</div></section>
         <section className="site-final-cta"><div><p className="site-kicker">A CALMER QUOTING DESK STARTS HERE</p><h2>Make your next quote<br />your best one yet.</h2></div><button className="site-cta site-cta-light" onClick={startSignup}>Set up iQuote <span>↗</span></button></section>
       </main>
-      <footer className="site-footer"><a href="#top" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>Thoughtful quoting for growing businesses.</span><div className="site-footer-badge"><a href="https://play.google.com/store" target="_blank" rel="noopener noreferrer" aria-label="Get it on Google Play"><img src={googlePlayBadge} alt="Get it on Google Play" /></a></div><span>© iQuote · Local preview</span></footer>
+      <footer className="site-footer"><a href="#top" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>Thoughtful quoting for growing businesses.</span><span>© iQuote</span></footer>
       <ChatbotWidget onStartTrial={startSignup} />
     </div>
   }
@@ -503,8 +520,8 @@ export default function MarketingSite({ initialScreen }: { initialScreen?: 'logi
       {step === 1 && <><p className="site-kicker">STEP 01 · YOUR ACCOUNT</p><h1>Let’s get your<br />workspace started.</h1><p className="onboarding-copy">Create your sign-in. We’ll verify your email before setting up your business.</p><form onSubmit={requestCode} className="onboarding-form"><label>Full name<input required autoComplete="name" value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Asha Njeri" /></label><label>Work email<input required type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="you@yourbusiness.com" /></label><label>Password<input required type="password" autoComplete="new-password" minLength={8} value={password} onChange={event => setPassword(event.target.value)} placeholder="At least 8 characters" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Sending code…' : 'Continue with email'} <span>↗</span></button><small className="terms-note">By continuing, you agree to iQuote’s terms and privacy policy.</small></form></>}
       {step === 2 && <><p className="site-kicker">STEP 02 · EMAIL VERIFICATION</p><h1>Check your<br />inbox.</h1><p className="onboarding-copy">We sent a six-digit code to <b>{email}</b>. Enter it below to keep going.</p>{notice && <p className="onboarding-notice">{notice}</p>}{localCode && <div className="simulation-code"><span>LOCAL PREVIEW CODE</span><b>{localCode}</b></div>}<form onSubmit={verifyCode} className="onboarding-form"><label>Six-digit code<input className="code-input" required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={code} onChange={event => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" /></label>{error && <p className="onboarding-error">{error}</p>}<button className="site-cta onboarding-submit" disabled={busy}>{busy ? 'Verifying…' : 'Verify and continue'} <span>↗</span></button><button type="button" className="resend-code" disabled={busy} onClick={() => { setError(''); void requestCode(new Event('submit') as unknown as FormEvent<HTMLFormElement>) }}>Resend code</button></form><button className="back-link" onClick={back}>← Change email address</button></>}
       {step === 3 && <><p className="site-kicker">STEP 03 · YOUR BUSINESS</p><h1>Tell us about<br />your business.</h1><p className="onboarding-copy">Choose what you do. We’ll start your workspace with relevant service categories and quote templates. You can change everything later.</p><form onSubmit={event => { event.preventDefault(); setStep(4); setError('') }} className="onboarding-form"><label>Business name<input required autoComplete="organization" value={businessName} onChange={event => setBusinessName(event.target.value)} placeholder="e.g. North Studio" /></label><label>Business type<select required value={businessType} onChange={event => setBusinessType(event.target.value)}><option value="" disabled>Choose a business type</option><option>Handyman / home repair</option><option>Plumbing</option><option>Electrical</option><option>Cleaning &amp; maintenance</option><option>Construction &amp; contracting</option><option>Consulting &amp; professional services</option><option>Creative studio</option><option>Retail &amp; product sales</option><option>Other service business</option></select></label><div className="onboarding-two"><label>Country<select value={country} onChange={event => setCountry(event.target.value)}>{africanMarkets.map((market) => <option key={market.country}>{market.country}</option>)}<option>United Kingdom</option><option>United States</option><option>Other</option></select></label><label>Phone number <span className="optional-label">optional</span><input type="tel" autoComplete="tel" value={phone} onChange={event => setPhone(event.target.value)} placeholder="+254 700 000 000" /></label></div>{notice && <p className="onboarding-notice">{notice}</p>}<button className="site-cta onboarding-submit">Continue to plans <span>↗</span></button></form><button className="back-link" onClick={back}>← Back</button></>}
-    </div> : <div className="onboarding-form-wrap completion-wrap"><div className="completion-check">✓</div><p className="site-kicker">YOUR TRIAL WORKSPACE IS READY</p><h1>Welcome to<br />{businessName}.</h1><p className="onboarding-copy">Your <b>{planCards.find(item => item.id === plan)?.name}</b> plan is active in local preview for 14 days. No payment details were collected.</p>{notice && <p className="onboarding-notice">{notice}</p>}<div className="completion-summary"><span>Business</span><b>{businessName}</b><span>Plan</span><b>{planCards.find(item => item.id === plan)?.name} · 14-day trial</b><span>Account</span><b>{email}</b></div><button className="site-cta onboarding-submit" onClick={() => window.location.reload()}>Open your workspace <span>↗</span></button></div>}
-  </section><OnboardingAside />{step === 4 && <div className="plan-picker" role="dialog" aria-label="Choose a trial plan"><div className="plan-picker-inner"><p className="site-kicker">STEP 04 · CHOOSE A TRIAL PLAN</p><h2>Choose your workspace shape.</h2><p className="plan-picker-copy">No card. No charge. This local plan selection is simulated while billing is built.</p><div className="signup-plan-list">{planCards.map(item => <button type="button" key={item.id} onClick={() => setPlan(item.id)} className={plan === item.id ? 'signup-plan selected' : 'signup-plan'}><span className="radio-dot">{plan === item.id && <i />}</span><span className="signup-plan-text"><b>{item.name}</b><small>{item.detail}</small><em>{item.features.join(' · ')}</em></span><span className="trial-pill">14-day trial</span></button>)}</div>{error && <p className="onboarding-error">{error}</p>}<div className="plan-picker-actions"><button className="back-link" onClick={back}>← Back</button><button className="site-cta" disabled={busy} onClick={event => { event.preventDefault(); void completeSignup(new Event('submit') as unknown as FormEvent<HTMLFormElement>) }}>{busy ? 'Creating workspace…' : 'Create trial workspace'} <span>↗</span></button></div></div></div>}</div></div>
+    </div> : <div className="onboarding-form-wrap completion-wrap"><div className="completion-check">✓</div><p className="site-kicker">YOUR TRIAL WORKSPACE IS READY</p><h1>Welcome to<br />{businessName}.</h1><p className="onboarding-copy">Your 14-day free trial is active, with Growth features included. You chose <b>{planCards.find(item => item.id === plan)?.name}</b> for after the trial. No payment details were collected.</p>{notice && <p className="onboarding-notice">{notice}</p>}<div className="completion-summary"><span>Business</span><b>{businessName}</b><span>Plan</span><b>{planCards.find(item => item.id === plan)?.name} · 14-day trial</b><span>Account</span><b>{email}</b></div><button className="site-cta onboarding-submit" onClick={() => window.location.reload()}>Open your workspace <span>↗</span></button></div>}
+  </section><OnboardingAside />{step === 4 && <div className="plan-picker" role="dialog" aria-label="Choose a trial plan"><div className="plan-picker-inner"><p className="site-kicker">STEP 04 · CHOOSE A TRIAL PLAN</p><h2>Choose your workspace shape.</h2><p className="plan-picker-copy">No card needed. Your 14-day trial includes Growth features and up to {trialLimits.quotes} quotes and {trialLimits.invoices} invoices. After that, you pay monthly by M-Pesa for the plan you choose.</p><div className="signup-plan-list">{planCards.map(item => <button type="button" key={item.id} onClick={() => setPlan(item.id)} className={plan === item.id ? 'signup-plan selected' : 'signup-plan'}><span className="radio-dot">{plan === item.id && <i />}</span><span className="signup-plan-text"><b>{item.name}</b><small>{item.detail}{planDisplay(item.id).amount !== null ? ` · ${formatPlanPrice(planDisplay(item.id).amount)} / month after the trial` : ''}</small><em>{planFeatures(item.id, planDisplay(item.id).quotes, planDisplay(item.id).users).join(' · ')}</em></span><span className="trial-pill">14-day trial</span></button>)}</div>{error && <p className="onboarding-error">{error}</p>}<div className="plan-picker-actions"><button className="back-link" onClick={back}>← Back</button><button className="site-cta" disabled={busy} onClick={event => { event.preventDefault(); void completeSignup(new Event('submit') as unknown as FormEvent<HTMLFormElement>) }}>{busy ? 'Creating workspace…' : 'Create trial workspace'} <span>↗</span></button></div></div></div>}</div></div>
 }
 
 function MarketLanding() {
@@ -582,7 +599,7 @@ function MarketLanding() {
       </section>
       <section className="market-customer-steps" id="customer-steps"><div><p className="site-kicker">FOR CUSTOMERS</p><h2>From a request to a confident choice.</h2></div><div className="market-customer-flow"><div><span>01</span><b>Post the essentials</b><small>Scope, location, budget guide, and deadline.</small></div><div><span>02</span><b>Compare proposals</b><small>Invited businesses respond privately.</small></div><div><span>03</span><b>Choose who to work with</b><small>Continue into a quote and delivery workflow.</small></div></div></section>
     </main>
-    <footer className="site-footer"><a href="/" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>iQuote Market · Concept preview</span><div className="site-footer-badge"><a href="https://play.google.com/store" target="_blank" rel="noopener noreferrer" aria-label="Get it on Google Play"><img src={googlePlayBadge} alt="Get it on Google Play" /></a></div><a href="/">Return to iQuote</a></footer>
+    <footer className="site-footer"><a href="/" className="site-brand"><span className="site-brand-mark">iQ</span><span className="site-brand-word">i<span className="site-brand-q">Q</span>uote<span className="site-brand-dot">.</span></span></a><span>iQuote Market · Concept preview</span><a href="/">Return to iQuote</a></footer>
   </div>
 }
 

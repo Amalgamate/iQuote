@@ -15,6 +15,7 @@ import { getIndustryPack } from './industry-packs.js'
 import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush, setPlatformNcbaConfig } from './ncba-client.js'
 import { initiateMerchantStkPush, NcbaMerchantRequestError, normalizeCustomerPhone, normalizeMerchantCode, queryMerchantStkPush, verifyNotificationHash } from './customer-mpesa.js'
 import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, invoiceDeliveryEmailHtml, receiptDeliveryEmailHtml, emailSubjects } from './email-templates.js'
+import { entitlementsFor, limitReachedMessage, quotaState, startOfMonthEAT, trialLimitReachedMessage, PLAN_ENTITLEMENTS, PLAN_LIMIT_CODE, TRIAL_LIMITS } from './plans.js'
 
 const prisma = new PrismaClient()
 const app = express()
@@ -387,6 +388,7 @@ async function sendEmail(
   organisationId?: string,
   attachments?: Array<{ filename: string; content: string }>,
   cc?: string[] | string,
+  replyToOverride?: string,
 ): Promise<SendEmailResult | false> {
   const tenantSettings = organisationId ? await prisma.tenantEmailSettings.findUnique({ where: { organisationId } }) : null
   const tenantKey = tenantSettings?.provider === 'CUSTOM' && tenantSettings.resendApiKeyCiphertext ? decryptEmailSecret(tenantSettings.resendApiKeyCiphertext) : null
@@ -397,7 +399,8 @@ async function sendEmail(
     : senderEmail ? `${platformSenderName()} <${senderEmail}>` : ''
   if (!apiKey || !from) return false
 
-  const replyTo = process.env.SUPPORT_EMAIL ?? undefined
+  // Replies go to the sending business when one is supplied, otherwise to platform support.
+  const replyTo = (replyToOverride && isValidEmail(replyToOverride) ? replyToOverride : process.env.SUPPORT_EMAIL) || undefined
 
   const ccList = Array.isArray(cc)
     ? cc.map((item) => String(item).trim()).filter(Boolean)
@@ -681,6 +684,39 @@ async function workspaceBillingIsCurrent(userId: string) {
   const subscription = await refreshSubscriptionState(organisationId)
   if (!subscription) return true
   return subscription.status === 'TRIALING' || subscription.status === 'ACTIVE'
+}
+
+// ---- Plan entitlements and usage (see docs/PLANS.md) ----
+// Limits only block creating NEW things; existing data always stays readable.
+async function getEntitlements(organisationId: string) {
+  const subscription = await refreshSubscriptionState(organisationId)
+  return entitlementsFor(subscription?.plan, subscription?.status)
+}
+
+// New quotes this calendar month (East Africa Time). Revisions of an existing quote do not count.
+async function countQuotesThisMonth(organisationId: string) {
+  return prisma.quote.count({ where: { organisationId, parentQuoteId: null, createdAt: { gte: startOfMonthEAT() } } })
+}
+
+// Returns the plan's daily email limit when it has been reached, otherwise null.
+async function dailyEmailLimitReached(organisationId: string): Promise<number | null> {
+  const entitlements = await getEntitlements(organisationId)
+  const sent = await prisma.quoteDelivery.count({
+    where: { quote: { organisationId }, status: { not: 'FAILED' }, createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
+  })
+  return quotaState(sent, entitlements.emailsPerDay).allowed ? null : entitlements.emailsPerDay
+}
+
+// Free-trial cap: a workspace on its trial may create only a few quotes and invoices in total.
+// Returns the message to show when the cap is reached, otherwise null. Paid workspaces are never affected.
+async function trialLimitReached(organisationId: string, kind: 'quotes' | 'invoices'): Promise<string | null> {
+  const subscription = await refreshSubscriptionState(organisationId)
+  if (subscription?.status !== 'TRIALING') return null
+  const limit = TRIAL_LIMITS[kind]
+  const used = kind === 'quotes'
+    ? await prisma.quote.count({ where: { organisationId, parentQuoteId: null } })
+    : await prisma.invoice.count({ where: { organisationId } })
+  return quotaState(used, limit).allowed ? null : trialLimitReachedMessage(kind, limit)
 }
 
 const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
@@ -1368,12 +1404,20 @@ app.get('/api/billing/status', requireAuth, async (req, res) => {
   ])
   const plans = await platformPlanPrices()
   const state = subscription?.status ?? 'NO_SUBSCRIPTION'
+  const quotesThisMonth = await countQuotesThisMonth(organisationId)
+  const trialUsage = state === 'TRIALING'
+    ? { quotes: await prisma.quote.count({ where: { organisationId, parentQuoteId: null } }), invoices: await prisma.invoice.count({ where: { organisationId } }) }
+    : null
   return res.json({
     plan: subscription?.plan ?? 'STARTER', status: state, trialEndsAt: subscription?.trialEndsAt ?? null,
     currentPeriodEndsAt: subscription?.currentPeriodEndsAt ?? null,
     locked: Boolean(subscription && state !== 'TRIALING' && state !== 'ACTIVE'),
     providerConfigured: ncbaStkConfigured(), pricesConfigured: plans.some((item) => item.amount !== null),
     plans,
+    entitlements: entitlementsFor(subscription?.plan, subscription?.status),
+    usage: { quotesThisMonth, monthStartedAt: startOfMonthEAT().toISOString() },
+    trialLimits: state === 'TRIALING' ? TRIAL_LIMITS : null,
+    trialUsage,
     latestPayment: latestPayment ? { ...latestPayment, amount: Number(latestPayment.amount), phone: `${latestPayment.phone.slice(0, 5)}••••${latestPayment.phone.slice(-2)}` } : null,
   })
 })
@@ -1437,6 +1481,21 @@ app.get('/api/billing/payments/:id', requireAuth, async (req, res) => {
     }
   }
   return res.json({ payment: { id: payment.id, plan: payment.plan, amount: Number(payment.amount), currency: payment.currency, status: payment.status, statusDescription: payment.statusDescription, paidAt: payment.paidAt, periodEndsAt: payment.periodEndsAt } })
+})
+
+// Public plan catalogue for the marketing and signup pages. Prices come from the admin price table
+// (or the environment) and limits from plans.ts, so the website cannot drift from what the app enforces.
+app.get('/api/public/plans', publicRateLimit, async (_req, res) => {
+  const prices = await platformPlanPrices()
+  res.json({
+    trialLimits: TRIAL_LIMITS,
+    plans: prices.map((price) => ({
+      plan: price.plan,
+      amount: price.amount,
+      currency: price.currency,
+      entitlements: PLAN_ENTITLEMENTS[price.plan as keyof typeof PLAN_ENTITLEMENTS],
+    })),
+  })
 })
 
 app.get('/api/app', requireAuth, (req, res) => {
@@ -1830,6 +1889,14 @@ app.post('/api/quotes', requireAuth, async (req, res) => {
   const customer = await prisma.customer.findFirst({ where: { id: customerId, organisationId: organisationId ?? '__none__' } })
   if (!customer) return res.status(400).json({ message: 'Choose a customer for this quote.' })
 
+  const trialQuoteBlock = await trialLimitReached(organisation.id, 'quotes')
+  if (trialQuoteBlock) return res.status(403).json({ message: trialQuoteBlock, code: PLAN_LIMIT_CODE })
+
+  const planLimits = await getEntitlements(organisation.id)
+  if (!quotaState(await countQuotesThisMonth(organisation.id), planLimits.quotesPerMonth).allowed) {
+    return res.status(403).json({ message: limitReachedMessage('quotes', planLimits.quotesPerMonth), code: PLAN_LIMIT_CODE })
+  }
+
   const amounts = normalizeQuoteLines(req.body?.lines ?? [], Number(organisation.defaultTaxRate ?? 0))
   if (!amounts) return res.status(400).json({ message: 'Quote lines are invalid.' })
   const validUntil = req.body?.validUntil ? new Date(req.body.validUntil) : null
@@ -2088,7 +2155,7 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
     where: { id: quoteId, organisationId: organisationId ?? '__none__' },
     include: {
       customer: { select: { id: true, name: true, email: true, phone: true } },
-      organisation: { select: { id: true, name: true, currency: true, logoUrl: true, logoWidth: true, logoHeight: true } },
+      organisation: { select: { id: true, name: true, email: true, currency: true, logoUrl: true, logoWidth: true, logoHeight: true } },
       lines: { orderBy: { position: 'asc' } },
     },
   })
@@ -2119,6 +2186,10 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
       return res.status(400).json({ message: `Invalid CC email: "${cc}". Please verify the address.` })
     }
   }
+
+  // Plan email cap first, so a blocked send has no side effects (such as syncing the customer email).
+  const emailLimit = await dailyEmailLimitReached(quote.organisationId)
+  if (emailLimit !== null) return res.status(403).json({ message: limitReachedMessage('emails', emailLimit), code: PLAN_LIMIT_CODE })
 
   const syncCustomerEmail = Boolean(req.body?.syncCustomerEmail)
   if (syncCustomerEmail && quote.customerId) {
@@ -2200,6 +2271,7 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
       quote.organisationId,
       undefined,
       ccList,
+      quote.organisation.email ?? undefined,
     )
 
     await prisma.quoteDelivery.update({
@@ -2243,7 +2315,7 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
     where: { id: quoteId, organisationId: organisationId ?? '__none__' },
     include: {
       customer: { select: { id: true, name: true, email: true, phone: true } },
-      organisation: { select: { id: true, name: true, currency: true } },
+      organisation: { select: { id: true, name: true, email: true, currency: true } },
       lines: { orderBy: { position: 'asc' } },
     },
   })
@@ -2256,9 +2328,16 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
   if (!recipientEmail) return res.status(400).json({ message: 'Recipient email is required.' })
   if (!isValidEmail(recipientEmail)) return res.status(400).json({ message: 'Enter a valid email address.' })
 
-  // Regenerate token for resend
-  const publicToken = randomBytes(24).toString('base64url')
+  // Drafts have no live public link (the public page returns 404 for them), so they cannot be resent.
+  if (quote.status === 'DRAFT') return res.status(409).json({ message: 'Send this quote first. Drafts cannot be resent.' })
+
+  // Keep the existing public link so links already emailed keep working.
+  // A new token is only created when the link was revoked (publicToken is null).
+  const publicToken = quote.publicToken ?? randomBytes(24).toString('base64url')
   const now = new Date()
+
+  const emailLimit = await dailyEmailLimitReached(quote.organisationId)
+  if (emailLimit !== null) return res.status(403).json({ message: limitReachedMessage('emails', emailLimit), code: PLAN_LIMIT_CODE })
 
   // Create a new delivery record (explicit resend bypasses the 5-min dedup)
   const delivery = await prisma.quoteDelivery.create({
@@ -2303,6 +2382,9 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
       }),
       `quote-delivery/${delivery.id}`,
       quote.organisationId,
+      undefined,
+      undefined,
+      quote.organisation.email ?? undefined,
     )
 
     await prisma.quoteDelivery.update({
@@ -2586,8 +2668,13 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
   const terms = String(req.body?.terms ?? '').trim().slice(0, 10000) || null
 
   // logoUrl is now only set via the file upload endpoint — reject arbitrary URLs from the form
+  // undefined = leave the stored logo untouched; null = explicitly remove it.
   const rawLogoUrl = String(req.body?.logoUrl ?? '').trim()
-  const logoUrl = rawLogoUrl.startsWith('/uploads/') ? rawLogoUrl.slice(0, 200) : null
+  const logoUrl: string | null | undefined = rawLogoUrl.startsWith('/uploads/')
+    ? rawLogoUrl.slice(0, 200)
+    : req.body?.logoUrl === null || (typeof req.body?.logoUrl === 'string' && rawLogoUrl === '')
+      ? null
+      : undefined
   const website = String(req.body?.website ?? '').trim().slice(0, 200) || null
 
   const rawTaxRate = req.body?.defaultTaxRate
@@ -2620,6 +2707,8 @@ app.post('/api/business/setup', requireAuth, async (req, res) => {
     defaultTaxRate: true,
     quotePrefix: true,
     logoUrl: true,
+    logoWidth: true,
+    logoHeight: true,
     website: true,
     paymentInstructions: true,
     terms: true,
@@ -4111,6 +4200,8 @@ app.post('/api/invoices', requireTeamRole('OWNER', 'ADMIN'), async (req, res) =>
     if (depositRequired > total) return res.status(400).json({ message: 'Deposit required cannot exceed the invoice total.' })
   }
   const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { quotePrefix: true } })
+  const trialInvoiceBlock = await trialLimitReached(organisationId, 'invoices')
+  if (trialInvoiceBlock) return res.status(403).json({ message: trialInvoiceBlock, code: PLAN_LIMIT_CODE })
   const invoiceNumber = await generateInvoiceNumber(organisationId, org?.quotePrefix ?? 'INV')
   try {
     const invoice = await prisma.invoice.create({
@@ -4159,6 +4250,8 @@ app.post('/api/jobs/:id/invoice-draft', requireTeamRole('OWNER', 'ADMIN'), async
     return res.status(409).json({ message: 'The saved accepted quote snapshot is incomplete. Create the invoice manually after reviewing the quote.' })
   }
   const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { quotePrefix: true } })
+  const trialInvoiceBlock = await trialLimitReached(organisationId, 'invoices')
+  if (trialInvoiceBlock) return res.status(403).json({ message: trialInvoiceBlock, code: PLAN_LIMIT_CODE })
   const invoiceNumber = await generateInvoiceNumber(organisationId, org?.quotePrefix ?? 'INV')
   try {
     const invoice = await prisma.$transaction(async (tx) => {

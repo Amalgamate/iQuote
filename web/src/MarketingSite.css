@@ -1454,9 +1454,6 @@
 }
 .site-footer .site-brand-dot { color: #c6ecce; }
 
-.site-footer-badge a { display: inline-flex; }
-.site-footer-badge img { height: 28px; width: auto; display: block; }
-
 /* ─── Onboarding & Login ────────────────────────────────────────── */
 .onboarding-page {
   min-height: 100vh;
