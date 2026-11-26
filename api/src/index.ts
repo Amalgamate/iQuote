@@ -5652,7 +5652,12 @@ export { app, prisma, issueSession, hashToken, checkLoginRateLimit, recordFailed
 
 // The sweep is not time-critical, so a slow pass overlapping a fast one is
 // harmless. The flag only stops this process from stacking runs.
-const TRIAL_SWEEP_INTERVAL_MS = Number(process.env.TRIAL_SWEEP_INTERVAL_MS ?? 15 * 60 * 1000)
+// Read inside the function: ES imports run before any module body, so
+// dotenv/config has not populated process.env at module-evaluation time.
+function trialSweepIntervalMs() {
+  const configured = Number(process.env.TRIAL_SWEEP_INTERVAL_MS ?? 15 * 60 * 1000)
+  return Number.isFinite(configured) && configured >= 60_000 ? configured : 15 * 60 * 1000
+}
 
 function startTrialExpirySweep() {
   if (process.env.TRIAL_SWEEP_DISABLED === '1') return
@@ -5672,7 +5677,7 @@ function startTrialExpirySweep() {
   // Run once on boot so restarts catch up, then on a timer. Multiple API
   // instances are safe: the status transition and marker claim are atomic.
   setTimeout(() => { void run() }, 20_000).unref?.()
-  setInterval(() => { void run() }, TRIAL_SWEEP_INTERVAL_MS).unref?.()
+  setInterval(() => { void run() }, trialSweepIntervalMs()).unref?.()
 }
 
 // Start the server only when this file is the entry point (not when imported by tests)
@@ -5681,8 +5686,15 @@ const isMainModule = process.argv[1]?.endsWith('index.js') || process.argv[1]?.e
 if (isMainModule) {
   startTrialExpirySweep()
   void hydratePlatformNcbaConfig().catch((error: unknown) => console.error('[billing] Could not load saved NCBA configuration:', error instanceof Error ? error.message : 'unknown error')).finally(() => {
-    app.listen(port, () => {
+    const server = app.listen(port, () => {
       console.log(`iQuote API listening on http://localhost:${port}`)
+    })
+    // A process that cannot bind its port is useless, but the container would
+    // still look alive (dumb-init keeps running) while the health check quietly
+    // fails. Exit so the orchestrator restarts or surfaces a broken deploy.
+    server.on('error', (error) => {
+      console.error('[api] failed to listen:', error)
+      process.exit(1)
     })
   })
 }
