@@ -53,6 +53,16 @@ RUN printf '%s\n' \
     '        proxy_read_timeout 60s;' \
     '    }' \
     '' \
+    '    # API liveness probe (deploy scripts and uptime checks hit /health).' \
+    '    # Without this exact match it falls through to the SPA and returns HTML.' \
+    '    location = /health {' \
+    '        proxy_pass http://api:4000/health;' \
+    '        proxy_http_version 1.1;' \
+    '        proxy_set_header Host $host;' \
+    '        proxy_set_header X-Forwarded-Proto $scheme;' \
+    '        access_log off;' \
+    '    }' \
+    '' \
     '    # Uploaded files (logos) — proxied to API container' \
     '    location /uploads/ {' \
     '        proxy_pass http://api:4000/uploads/;' \

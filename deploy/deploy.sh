@@ -96,10 +96,12 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build
 echo "  Containers started."
 
 # Wait for API to be healthy (with proper failure)
+# The check requires the JSON body, not just any 200: the SPA fallback also
+# answers 200 with HTML, which would hide a broken /health route.
 echo "  Waiting for API health check..."
 HEALTHY=false
 for i in $(seq 1 30); do
-    if curl -sf http://127.0.0.1:5180/health >/dev/null 2>&1; then
+    if curl -sf http://127.0.0.1:5180/health 2>/dev/null | grep -q '"status":"ok"'; then
         HEALTHY=true
         echo "  API is healthy (responded in ~$((i * 2))s)."
         break
