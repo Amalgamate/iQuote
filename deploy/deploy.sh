@@ -89,10 +89,30 @@ echo "  All required variables are set."
 export GIT_COMMIT
 export BUILD_TIME
 
-# ---- 3. Build and start containers ----
+# ---- 3. Build images (without starting the new code) ----
 echo ""
-echo "[3/6] Building and starting Docker containers..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build
+echo "[3/7] Building Docker images..."
+# Build first, but do NOT start the new containers yet. The new code may expect
+# schema changes that are not applied yet; starting it first would serve a
+# half-migrated schema. Migrations run in step 4, against the already-running
+# old container, and only then do we swap in the new image.
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
+echo "  Images built."
+
+# ---- 4. Run database migrations against the running API container ----
+echo ""
+echo "[4/7] Running database migrations (prisma migrate deploy)..."
+# The migrations run inside the *current* container, which is still serving the
+# previous release. Prisma's migrate client is version-independent of the
+# running app, so this is safe even though the container image is about to be
+# replaced in step 5.
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T api npx prisma migrate deploy
+echo "  Database migrations applied."
+
+# ---- 5. Start the new containers and wait for health ----
+echo ""
+echo "[5/7] Starting the new containers..."
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
 echo "  Containers started."
 
 # Wait for API to be healthy (with proper failure)
@@ -116,21 +136,15 @@ if [ "$HEALTHY" = "false" ]; then
     exit 1
 fi
 
-# ---- 4. Run database migrations ----
-echo ""
-echo "[4/6] Running database migrations (prisma migrate deploy)..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T api npx prisma migrate deploy
-echo "  Database migrations applied."
-
 # Verify deployed version
 echo ""
 echo "  Deployed version:"
 curl -s http://127.0.0.1:5180/api/version || echo "  (version endpoint not available)"
 
-# ---- 5. Enable Nginx reverse proxy ----
+# ---- 6. Enable Nginx reverse proxy ----
 echo ""
 echo ""
-echo "[5/6] Configuring Nginx reverse proxy..."
+echo "[6/7] Configuring Nginx reverse proxy..."
 if command -v nginx >/dev/null 2>&1; then
     # This host serves several sites on 443. Stage the new config, test it, and
     # only then make it live — a bad TLS block must never break the host.
@@ -156,9 +170,9 @@ else
     echo "  Nginx not found on this server. The web container is on port 5180."
 fi
 
-# ---- 6. Summary ----
+# ---- 7. Summary ----
 echo ""
-echo "[6/6] Deployment summary"
+echo "[7/7] Deployment summary"
 echo "  HTTP:      http://iquote.trendscore.co.ke"
 echo "  API health: http://iquote.trendscore.co.ke/health"
 echo "  Version:   http://iquote.trendscore.co.ke/api/version"
