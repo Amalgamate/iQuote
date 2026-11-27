@@ -6,7 +6,9 @@ import QuoteDocument, { type QuoteDocumentData, type QuoteLine } from './QuoteDo
 import { QuotePdfDownloadLink } from './QuotePdf'
 import QuoteChatter from './QuoteChatter'
 import NotificationCenter from './NotificationCenter'
+import ProductUpdates from './ProductUpdates'
 import PwaControls from './PwaControls'
+import DocumentDesignSettings from './DocumentDesignSettings'
 import JobsPanel from './JobsPanel'
 import InvoicesPanel from './InvoicesPanel'
 import ReportsPanel from './ReportsPanel'
@@ -32,6 +34,7 @@ type Business = {
   terms: string | null
   subdomain: string | null
   subscription?: { plan: string; status: string; trialEndsAt: string; simulated: boolean } | null
+  documentDesign?: { design?: { email?: { attachPdf?: boolean } } } | null
 }
 type Customer = { id: string; name: string; phone: string | null; email: string | null; archivedAt: string | null }
 type ServiceItem = { id: string; name: string; category: string; kind: 'SERVICE' | 'PRODUCT'; description: string | null; unit: string; defaultPrice: number; defaultTaxRate: number | null; isStarter: boolean }
@@ -75,6 +78,9 @@ type QuoteDelivery = {
   bouncedAt: string | null
   errorMessage: string | null
   messageId: string | null
+  attachedPdf?: boolean
+  pdfBytes?: number | null
+  attachmentError?: string | null
 }
 
 const blankCustomer: CustomerForm = { id: '', name: '', phone: '', email: '' }
@@ -400,6 +406,7 @@ export default function QuoteWorkspace({ user, onLogout, onOpenBilling }: { user
 
 function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User; onLogout: () => void; onOpenBilling: (reason: 'manage' | 'trial-cap') => void }) {
   const [page, setPage] = useState<Page>('dashboard')
+  const [documentDesignDirty, setDocumentDesignDirty] = useState(false)
   const [business, setBusiness] = useState<Business | null>(null)
   const [trialUsage, setTrialUsage] = useState<TrialUsage | null>(null)
   const [businessForm, setBusinessForm] = useState(emptyBusiness)
@@ -452,6 +459,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
   const [sendCc, setSendCc] = useState('')
   const [sendCustomMessage, setSendCustomMessage] = useState('')
   const [syncCustomerEmail, setSyncCustomerEmail] = useState(false)
+  const [attachQuotePdf, setAttachQuotePdf] = useState(true)
   const [sendMessage, setSendMessage] = useState('')
   const [sendStatus, setSendStatus] = useState<'success' | 'error' | null>(null)
   const [sending, setSending] = useState(false)
@@ -464,13 +472,14 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
 
   const loadWorkspace = async () => {
     const [businessResponse, serviceResponse, templateResponse] = await Promise.all([
-      apiRequest<{ organisation: Business | null }>('/api/business/me'),
+      apiRequest<{ organisation: Business | null; documentDesign?: { design?: { email?: { attachPdf?: boolean } } } | null }>('/api/business/me'),
       apiRequest<{ items: ServiceItem[] }>('/api/service-items'),
       apiRequest<{ templates: QuoteTemplate[] }>('/api/quote-templates'),
     ])
     if (!businessResponse.organisation) throw new Error('Your business profile is missing. Sign out and complete setup again.')
-    setBusiness(businessResponse.organisation)
-    setBusinessForm({ ...emptyBusiness, ...businessResponse.organisation })
+    const loadedBusiness = { ...businessResponse.organisation, documentDesign: businessResponse.documentDesign }
+    setBusiness(loadedBusiness)
+    setBusinessForm({ ...emptyBusiness, ...loadedBusiness })
     setServiceItems(serviceResponse.items)
     setQuoteTemplates(templateResponse.templates)
     await Promise.all([loadCustomers(1, '', false), loadQuotes(1, 'ALL', '')])
@@ -614,6 +623,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
   }, [page, editor, editorDirty, editorQuoteId])
 
   const startNewQuote = () => {
+    if (page === 'settings' && documentDesignDirty && !window.confirm('You have unsaved document design changes. Leave this page and discard them?')) return
     if (trialUsage?.status === 'TRIALING' && trialUsage.trialUsage && trialUsage.trialLimits && trialUsage.trialUsage.quotes >= trialUsage.trialLimits.quotes) {
       setError(`Your free trial includes up to ${trialUsage.trialLimits.quotes} quotes, and you have used them all. Choose a plan and pay by M-Pesa to keep creating quotes. Your existing work is still available.`)
       return
@@ -859,7 +869,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
     setError('')
     try {
       const response = await apiRequest<{ organisation: Business }>('/api/business/setup', { method: 'POST', body: JSON.stringify(businessForm) })
-      setBusiness(response.organisation)
+      setBusiness((current) => ({ ...response.organisation, documentDesign: current?.documentDesign }))
       setBusinessForm({ ...emptyBusiness, ...response.organisation })
       const [serviceResponse, templateResponse] = await Promise.all([
         apiRequest<{ items: ServiceItem[] }>('/api/service-items'),
@@ -970,6 +980,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
     setSendCc('')
     setSendCustomMessage(editorRevisionSource ? `We’ve updated your quotation. Please review the latest version. It replaces the earlier copy.` : '')
     setSyncCustomerEmail(!emailOnRecord)
+    setAttachQuotePdf(business?.documentDesign?.design?.email?.attachPdf ?? true)
     setSendMessage('')
     setSendStatus(null)
     setShowSendModal(true)
@@ -986,7 +997,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
     try {
       const saved = await saveDraft(editor!, editorQuoteId)
       setEditorQuoteId(saved.id)
-      await apiRequest<{ delivery: QuoteDelivery; quote: Quote; customerUpdated?: boolean }>(
+      const response = await apiRequest<{ delivery: QuoteDelivery; quote: Quote; customerUpdated?: boolean }>(
         `/api/quotes/${saved.id}/send`,
         {
           method: 'POST',
@@ -995,10 +1006,12 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
             ccEmails: sendCc.trim() || undefined,
             message: sendCustomMessage.trim() || undefined,
             syncCustomerEmail,
+            attachPdf: attachQuotePdf,
           }),
         }
       )
-      setSendMessage(editorRevisionSource ? 'Updated quote email sent. The customer link now shows this version.' : 'Quote email sent. Delivery status will update below.')
+      const emailOutcome = response.delivery.attachedPdf ? ' PDF attached.' : response.delivery.attachmentError ? ` Sent without PDF: ${response.delivery.attachmentError}` : ' No PDF attached.'
+      setSendMessage(`${editorRevisionSource ? 'Updated quote email sent. The customer link now shows this version.' : 'Quote email sent. Delivery status will update below.'}${emailOutcome}`)
       if (editorRevisionSource) {
         setQuotes((current) => current.map((item) => item.id === saved.id ? { ...item, status: 'SENT' } : item))
         setSaveState('Updated quote sent')
@@ -1029,7 +1042,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
     setSendMessage('')
     setSendStatus(null)
     try {
-      await apiRequest(`/api/quotes/${editorQuoteId}/resend`, { method: 'POST' })
+      await apiRequest(`/api/quotes/${editorQuoteId}/resend`, { method: 'POST', body: JSON.stringify({ attachPdf: business?.documentDesign?.design?.email?.attachPdf ?? true }) })
       setSendMessage('Resent. Delivery status will update below.')
       setSendStatus('success')
       await loadDeliveries(editorQuoteId)
@@ -1078,6 +1091,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
   }
 
   const changePage = (next: Page) => {
+    if (page === 'settings' && next !== 'settings' && documentDesignDirty && !window.confirm('You have unsaved document design changes. Leave this page and discard them?')) return
     setError('')
     setPage(next)
     setSearch('')
@@ -1156,7 +1170,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
             <strong>{user.name}</strong>
             <small>{business?.name || 'Your business'}</small>
           </div>
-          <button type="button" className="sidebar-logout" onClick={onLogout} aria-label="Sign out">
+          <button type="button" className="sidebar-logout" onClick={() => { if (page === 'settings' && documentDesignDirty && !window.confirm('You have unsaved document design changes. Sign out and discard them?')) return; onLogout() }} aria-label="Sign out">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
           </button>
         </div>
@@ -1171,6 +1185,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
             {trialUsage?.status === 'TRIALING' && trialUsage.trialUsage && trialUsage.trialLimits && <div className="trial-usage-chip" title="Trial document usage"><span>Trial</span><b>Quotes {trialUsage.trialUsage.quotes}/{trialUsage.trialLimits.quotes}</b><i /><b>Invoices {trialUsage.trialUsage.invoices}/{trialUsage.trialLimits.invoices}</b><button type="button" onClick={() => onOpenBilling('trial-cap')}>Plans</button></div>}
             {business?.subdomain && <a className="topbar-domain-link" href={`https://${business.subdomain}.trendscore.co.ke`} target="_blank" rel="noreferrer">{business.subdomain}.trendscore.co.ke</a>}
             <PwaControls />
+            {user.teamRole === 'OWNER' && <ProductUpdates />}
             <NotificationCenter onOpenQuote={(id) => void openConversation(id)} />
             {page !== 'editor' && <button type="button" className="button button-primary" onClick={startNewQuote}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
@@ -1223,6 +1238,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
         {page === 'settings' && (
           <section className="workspace-content settings-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Workspace</p><h2>Business settings</h2><p>These details appear on your quotations.</p></div></div>
+            {(user.teamRole === 'OWNER' || user.teamRole === 'ADMIN') && <DocumentDesignSettings logoUrl={business?.logoUrl ?? null} name={business?.name ?? 'Business'} onDirtyChange={setDocumentDesignDirty} />}
             <section className="workspace-panel settings-form subscription-settings-card"><div className="settings-section"><h3>Subscription &amp; packages</h3><p>Review your current plan, trial allowance, and monthly package prices.</p><div className="subscription-settings-summary"><strong>{trialUsage?.plan ?? 'Loading plan…'}</strong><span>{trialUsage?.status === 'TRIALING' && trialUsage.trialEndsAt ? `Trial ends ${new Date(trialUsage.trialEndsAt).toLocaleDateString('en-KE', { dateStyle: 'medium' })}` : trialUsage?.status ?? 'Subscription details unavailable'}</span>{trialUsage?.trialUsage && trialUsage.trialLimits && <small>Trial usage: {trialUsage.trialUsage.quotes}/{trialUsage.trialLimits.quotes} quotes · {trialUsage.trialUsage.invoices}/{trialUsage.trialLimits.invoices} invoices</small>}<button type="button" className="button button-primary" onClick={() => onOpenBilling('manage')}>View packages &amp; pay</button></div></div></section>
             <form className="workspace-panel settings-form" onSubmit={(event) => void handleBusinessSave(event)}>
               <div className="settings-section"><h3>Business profile</h3><p>Contact details and quote numbering</p><div className="settings-grid">
@@ -1296,7 +1312,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
 
         {page === 'editor' && editor && business && (
           <section className="editor-content">
-            <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button>{editorQuoteId && <button className="button button-primary" type="button" onClick={openSendModal} disabled={!editor.customerId}>{editorRevisionSource ? 'Send updated quote' : 'Send email'}</button>}{!editorRevisionSource && <button className="button button-secondary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Create share link</button>}</div></div>
+            <div className="editor-toolbar"><button className="link-button" type="button" onClick={() => changePage('quotes')}>← All quotes</button><div className="editor-toolbar-actions"><span className="save-feedback" role="status">{saveState || (editorDirty ? 'Unsaved changes' : 'Draft')}</span><button className="button button-secondary" type="button" onClick={() => { setTemplateName(''); setTemplateDescription(''); setTemplateModal(true) }}>Save as template</button><button className="button button-secondary mobile-preview-toggle" type="button" onClick={() => setShowMobilePreview(true)}>Preview</button>{editorQuoteId && <button className="button button-secondary" type="button" onClick={() => void deleteDraft()}>Delete draft</button>}<QuotePdfDownloadLink className="button button-secondary" quoteId={editorQuoteId ?? undefined} useServer={!editorDirty} quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /><button className="button button-secondary" type="button" onClick={() => window.print()}>Print</button>{editorQuoteId && <button className="button button-primary" type="button" onClick={openSendModal} disabled={!editor.customerId}>{editorRevisionSource ? 'Send updated quote' : 'Send email'}</button>}{!editorRevisionSource && <button className="button button-secondary" type="button" onClick={() => void shareQuote()} disabled={!editor.customerId}>Create share link</button>}</div></div>
             {editorRevisionSource && <div className="workspace-alert" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><span><strong>Updated quotation · Version {editorRevisionSource.version}</strong><br />Based on {editorRevisionSource.documentNumber}. {(() => { const changes = quoteRevisionChanges(editorRevisionSource.lines, editor.lines); return `${changes.added} added · ${changes.removed} removed · ${changes.changed} changed · ${formatMoney(editorRevisionSource.total, editorRevisionSource.lines.length ? business.currency : business.currency)} → ${formatMoney(quoteTotals(editor.lines).total, business.currency)}.` })()} Saving does not notify the customer; use “Send updated quote” to email the update.</span>{editorRevisionSource.publicToken && <a href={`/quote/${encodeURIComponent(editorRevisionSource.publicToken)}`} target="_blank" rel="noreferrer">View current customer copy</a>}</div>}
             {sharedUrl && <div className="share-callout"><div><strong>Quote link is ready</strong><span>{sharedUrl}</span></div><div className="share-actions"><button className="button button-secondary" type="button" onClick={() => { void navigator.clipboard.writeText(sharedUrl).then(() => setCopied(true)).catch(() => setError('Copy the quote link from the address shown.')) }}>{copied ? 'Copied' : 'Copy link'}</button><a className="button button-secondary" href={`https://wa.me/?text=${encodeURIComponent(`Here is your quotation: ${sharedUrl}`)}`} target="_blank" rel="noreferrer">WhatsApp</a><button className="quiet-button danger-button" type="button" onClick={() => void revokeQuoteLink()} disabled={revoking}>{revoking ? 'Revoking…' : 'Revoke link'}</button></div></div>}
             {sendMessage && <div className={sendStatus === 'success' ? 'workspace-alert workspace-alert-success' : 'workspace-alert'} role="status"><span>{sendMessage}</span><button type="button" onClick={() => { setSendMessage(''); setSendStatus(null) }} aria-label="Dismiss">×</button></div>}
@@ -1491,7 +1507,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
 
                 <section className="workspace-panel editor-section notes-section"><label className="field-label">Notes<textarea className="input-control" rows={3} value={editor.notes} onChange={(event) => updateEditor({ notes: event.target.value })} placeholder="Anything the customer should know" /></label><label className="field-label">Terms<textarea className="input-control" rows={3} value={editor.terms} onChange={(event) => updateEditor({ terms: event.target.value })} placeholder="Payment, delivery, and validity terms" /></label></section>
               </div>
-              {showMobilePreview && <div className="document-preview preview-open"><div className="preview-label"><span>Document preview</span><span>A4</span><button className="mobile-preview-close" type="button" onClick={() => setShowMobilePreview(false)} aria-label="Close preview">×</button></div><QuoteDocument quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /></div>}
+              {showMobilePreview && <div className="document-preview preview-open"><div className="preview-label"><span>Approximate document preview · final PDF may paginate differently</span><span>A4</span><button className="mobile-preview-close" type="button" onClick={() => setShowMobilePreview(false)} aria-label="Close preview">×</button></div><QuoteDocument quote={documentFromDraft(editor, editorNumber, business, customers.find((customer) => customer.id === editor.customerId))} /></div>}
             </div>
           </section>
         )}
@@ -1598,9 +1614,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
               })()}
             </div>
 
-            <p className="field-hint">
-              The quote will be sent as a PDF attachment with a public review link. The recipient will see your business name and verified sender.
-            </p>
+            <label className="checkbox-field-label"><input type="checkbox" checked={attachQuotePdf} onChange={(event) => setAttachQuotePdf(event.target.checked)} /><span>Attach a PDF copy. The secure review link is included either way.</span></label>
 
             {sendMessage && <p className="form-error" role="alert">{sendMessage}</p>}
 
@@ -1616,6 +1630,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
                         ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(d.sentAt))
                         : 'Pending'}
                     </small>
+                    <small>{d.attachedPdf ? `PDF attached${d.pdfBytes ? ` · ${(d.pdfBytes / 1024).toFixed(0)} KB` : ''}` : d.attachmentError ? `Sent without PDF · ${d.attachmentError}` : 'No PDF attached'}</small>
                   </div>
                 ))}
               </div>
@@ -1643,7 +1658,7 @@ function AuthenticatedWorkspace({ user, onLogout, onOpenBilling }: { user: User;
 
 function QuoteTable({ quotes, currency, onOpen, onConvert, onViewInvoices, convertingId, canConvert }: { quotes: Quote[]; currency: string; onOpen: (quote: Quote) => void; onConvert: (quote: Quote) => void; onViewInvoices: () => void; convertingId: string | null; canConvert: boolean }) {
   if (!quotes.length) return null
-  return <div className="table-scroll"><table className="data-table"><thead><tr><th>Quote</th><th>Customer</th><th>Valid until</th><th>Total</th><th>Status</th><th /></tr></thead><tbody>{quotes.map((quote) => <tr key={quote.id} onClick={() => onOpen(quote)}><td><strong>{quote.documentNumber}</strong><small>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.updatedAt))}</small></td><td>{quote.customer.name}</td><td>{quote.validUntil ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.validUntil)) : '—'}</td><td>{formatMoney(quote.total, currency)}</td><td><span className={statusClass(quote.status)}>{statusNames[quote.status]}</span></td><td><div className="table-action-group"><button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onOpen(quote) }}>{quote.status === 'DRAFT' ? 'Edit' : 'Revise'}</button>{quote.invoice ? <button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onViewInvoices() }}>View invoice</button> : quote.status === 'APPROVED' && canConvert ? <button className="quiet-button" type="button" disabled={convertingId === quote.id} onClick={(event) => { event.stopPropagation(); onConvert(quote) }}>{convertingId === quote.id ? 'Converting…' : 'Convert to invoice'}</button> : null}</div></td></tr>)}</tbody></table></div>
+  return <div className="table-scroll"><table className="data-table"><thead><tr><th>Quote</th><th>Customer</th><th>Valid until</th><th>Total</th><th>Status</th><th /></tr></thead><tbody>{quotes.map((quote) => <tr key={quote.id} onClick={() => onOpen(quote)}><td><strong>{quote.documentNumber}</strong><small>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.updatedAt))}</small></td><td>{quote.customer.name}</td><td>{quote.validUntil ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(quote.validUntil)) : '—'}</td><td>{formatMoney(quote.total, currency)}</td><td><span className={statusClass(quote.status)}>{statusNames[quote.status]}</span></td><td><div className="table-action-group"><button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onOpen(quote) }}>{quote.status === 'DRAFT' ? 'Edit' : 'Revise'}</button><span onClick={(event) => event.stopPropagation()}><QuotePdfDownloadLink quoteId={quote.id} quote={quote} className="quiet-button" /></span>{quote.invoice ? <button className="quiet-button" type="button" onClick={(event) => { event.stopPropagation(); onViewInvoices() }}>View invoice</button> : quote.status === 'APPROVED' && canConvert ? <button className="quiet-button" type="button" disabled={convertingId === quote.id} onClick={(event) => { event.stopPropagation(); onConvert(quote) }}>{convertingId === quote.id ? 'Converting…' : 'Convert to invoice'}</button> : null}</div></td></tr>)}</tbody></table></div>
 }
 
 function EmptyRows({ hasQuotes, label }: { hasQuotes: boolean; label: string }) {

@@ -70,10 +70,11 @@ export default function BillingGate({ isOwner, onUnlocked, onLogout, onBack, rea
   }
 
   const selected = summary?.plans.find((item) => item.plan === plan)
-  if (loading) return <main className="billing-gate"><div className="billing-card">Loading subscription…</div></main>
+  if (loading) return <main className="billing-gate"><div className="billing-card">{onBack && <button className="billing-back" type="button" onClick={onBack}>← Back to workspace</button>}<p>Loading subscription…</p></div></main>
 
   return <main className="billing-gate">
     <section className="billing-card">
+      {onBack && <button className="billing-back" type="button" onClick={onBack}>← Back to workspace</button>}
       <div className="billing-brand"><span className="billing-mark">iQ<span>.</span></span><b>i<span className="billing-brand-q">Q</span>uote<span className="billing-brand-dot">.</span></b></div>
       <p className="billing-eyebrow">{reason === 'expired' ? 'SUBSCRIPTION REQUIRED' : 'ACCOUNT & BILLING'}</p>
       <h1>{reason === 'expired' ? 'Your trial has ended' : reason === 'trial-cap' ? 'Choose a plan to keep creating' : 'Plans & billing'}</h1>
@@ -93,6 +94,7 @@ export default function BillingGate({ isOwner, onUnlocked, onLogout, onBack, rea
             <strong>{item.amount === null ? 'Price not set' : `${formatMoney(item.amount, item.currency)} / month`}</strong>
           </label>)}
         </fieldset>
+        <div className="billing-selected-plan" aria-live="polite"><span>Selected package · {plan.charAt(0) + plan.slice(1).toLowerCase()}</span><strong>{selected?.amount === null || !selected ? 'Price not configured' : `${formatMoney(selected.amount, selected.currency)} / month`}</strong><small>Monthly subscription · paid by M-Pesa</small></div>
         <label className="billing-phone">Safaricom number
           <input type="tel" required autoComplete="tel" inputMode="tel" placeholder="0712 345 678" value={phone} onChange={(event) => setPhone(event.target.value)} />
         </label>

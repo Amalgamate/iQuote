@@ -49,6 +49,19 @@ export async function downloadAuthenticatedFile(path: string, filename: string) 
     throw new Error(data?.message ?? 'Could not download the file.')
   }
   const blob = await response.blob()
+  downloadBlobFile(blob, filename)
+}
+
+export async function downloadPublicFile(path: string, filename: string) {
+  const response = await fetch(`${API_BASE}${path}`)
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data?.message ?? 'Could not download the file.')
+  }
+  downloadBlobFile(await response.blob(), filename)
+}
+
+export function downloadBlobFile(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url

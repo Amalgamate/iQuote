@@ -74,6 +74,7 @@ attempt tries again.
 | New quotes per month | 30 | 500 | 2,000 |
 | Users (including owner) | 1 | 2 | 5 |
 | Quote emails per 24 hours | 25 | 100 | 300 |
+| Quote, invoice and receipt email delivery | Secure link; optional server-generated PDF attachment | Secure link; optional server-generated PDF attachment | Secure link; optional server-generated PDF attachment |
 | PDF templates (owner decision 27 Nov 2026) | Modern, Classic | + Minimal, Compact | + Bold (all 5) |
 | Brand colour, logo, KRA PIN, address | Yes | Yes | Yes |
 | Customers, catalogue, quote templates | Yes | Yes | Yes |
@@ -100,7 +101,7 @@ Confirmed routes were read in `api/src/index.ts` lines 1 to about 2,700. Routes 
 | Rule | Route / place | Check | Route read? |
 |---|---|---|---|
 | Quotes per month | `POST /api/quotes` | count quotes with `parentQuoteId: null` and `createdAt >= startOfMonthEAT()` | Yes |
-| Emails per 24h | `POST /api/quotes/:id/send`, `/resend` | count `quoteDelivery` rows in the last 24h for this organisation (needs the relation to the quote; confirm the field name in `schema.prisma`) | Yes |
+| Emails per 24h | quote send/resend, invoice send, receipt send | count successful or pending quote, invoice and receipt delivery rows for this organisation in the last 24h | Yes |
 | Own email domain | `PUT /api/settings/email` when `provider === 'CUSTOM'`; the two `/domain` routes | `featureAllowed(ent, 'customEmailDomain')` | Yes |
 | Customer M-Pesa | `PUT /api/settings/payments` when enabling; the invoice STK initiation route | `featureAllowed(ent, 'customerMpesa')` | Settings: yes. STK initiation: **unread** |
 | Template choice | the organisation update handler that will save `documentTemplate` | `templateAllowed(ent, template)` | Handler to be added with the template patch |

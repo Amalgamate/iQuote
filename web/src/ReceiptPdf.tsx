@@ -1,7 +1,9 @@
-import { Document, Page, PDFDownloadLink, StyleSheet, Text, View } from '@react-pdf/renderer'
-import { formatMoney } from './api'
+import { Document, Page, pdf, StyleSheet, Text, View } from '@react-pdf/renderer'
+import { useState } from 'react'
+import { downloadAuthenticatedFile, downloadBlobFile, formatMoney } from './api'
 
 type ReceiptData = {
+  paymentId: string
   receiptNumber: string
   invoiceNumber: string
   customerName: string
@@ -71,5 +73,19 @@ function ReceiptDocument({ receipt }: { receipt: ReceiptData }) {
 }
 
 export function ReceiptPdfDownloadLink({ receipt }: { receipt: ReceiptData }) {
-  return <PDFDownloadLink className="dashboard-text-link" document={<ReceiptDocument receipt={receipt} />} fileName={`${receipt.receiptNumber}.pdf`}>{({ loading, error }) => loading ? 'Preparing…' : error ? 'Receipt unavailable' : 'Download receipt'}</PDFDownloadLink>
+  const [downloading, setDownloading] = useState(false)
+  const [error, setError] = useState('')
+  async function download() {
+    setDownloading(true); setError('')
+    try {
+      try {
+        await downloadAuthenticatedFile(`/api/payments/${encodeURIComponent(receipt.paymentId)}/receipt.pdf`, `${receipt.receiptNumber}.pdf`)
+      } catch (cause) {
+        if (!(cause instanceof Error) || !cause.message.includes('Server PDF rendering is not available on this deployment.')) throw cause
+        downloadBlobFile(await pdf(<ReceiptDocument receipt={receipt} />).toBlob(), `${receipt.receiptNumber}.pdf`)
+      }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not download the receipt.') }
+    finally { setDownloading(false) }
+  }
+  return <span className="pdf-download-control"><button type="button" className="dashboard-text-link" onClick={() => void download()} disabled={downloading}>{downloading ? 'Preparing…' : 'Download receipt'}</button>{error && <small role="alert">{error}</small>}</span>
 }

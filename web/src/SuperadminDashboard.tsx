@@ -18,6 +18,12 @@ type SuperadminStats = {
 type WorkspaceRow = {
   id: string
   status: string
+  archivedAt?: string | null
+  archivedByEmail?: string | null
+  archiveReason?: string | null
+  statusBeforeArchive?: string | null
+  unarchivedAt?: string | null
+  unarchivedByEmail?: string | null
   name: string
   email: string | null
   country: string | null
@@ -150,6 +156,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
+  const [workspaceStatusFilter, setWorkspaceStatusFilter] = useState('CURRENT')
   const [mfaEnabled, setMfaEnabled] = useState(false)
   const [mfaSecret, setMfaSecret] = useState('')
   const [mfaCode, setMfaCode] = useState('')
@@ -181,6 +188,11 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   const [priceReason, setPriceReason] = useState('')
   const [priceMessage, setPriceMessage] = useState('')
   const [priceBusy, setPriceBusy] = useState(false)
+  const [updateFeature, setUpdateFeature] = useState('')
+  const [updateTitle, setUpdateTitle] = useState('')
+  const [updateDetails, setUpdateDetails] = useState('')
+  const [updateMessage, setUpdateMessage] = useState('')
+  const [updateBusy, setUpdateBusy] = useState(false)
 
   const WORKSPACE_PAGE_SIZE = 50
   const QUOTE_PAGE_SIZE = 50
@@ -188,7 +200,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   const loadAll = async () => {
     const [statsRes, wsRes, quotesRes] = await Promise.all([
       apiRequest<SuperadminStats>('/api/superadmin/stats'),
-      apiRequest<PaginatedWorkspaces>(`/api/superadmin/workspaces?limit=${WORKSPACE_PAGE_SIZE}`),
+      apiRequest<PaginatedWorkspaces>(`/api/superadmin/workspaces?limit=${WORKSPACE_PAGE_SIZE}&status=${encodeURIComponent(workspaceStatusFilter)}`),
       apiRequest<PaginatedQuotes>(`/api/superadmin/quotes?limit=${QUOTE_PAGE_SIZE}`),
     ])
     setStats(statsRes)
@@ -286,6 +298,25 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     } finally { setPriceBusy(false) }
   }
 
+  const publishProductUpdate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setUpdateBusy(true)
+    setUpdateMessage('')
+    setError('')
+    try {
+      const result = await apiRequest<{ message: string }>('/api/superadmin/product-updates', {
+        method: 'POST',
+        body: JSON.stringify({ feature: updateFeature, title: updateTitle, details: updateDetails }),
+      })
+      setUpdateMessage(result.message)
+      setUpdateFeature('')
+      setUpdateTitle('')
+      setUpdateDetails('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not publish the product update.')
+    } finally { setUpdateBusy(false) }
+  }
+
   useEffect(() => {
     loadAll()
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load dashboard data.'))
@@ -321,7 +352,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   const loadMoreWorkspaces = async () => {
     setLoadingMore(true)
     try {
-      const query = new URLSearchParams({ limit: String(WORKSPACE_PAGE_SIZE), offset: String(workspaces.length), ...(search.trim() ? { q: search.trim() } : {}) })
+      const query = new URLSearchParams({ limit: String(WORKSPACE_PAGE_SIZE), offset: String(workspaces.length), status: workspaceStatusFilter, ...(search.trim() ? { q: search.trim() } : {}) })
       const res = await apiRequest<PaginatedWorkspaces>(`/api/superadmin/workspaces?${query}`)
       setWorkspaces((current) => [...current, ...res.workspaces])
       setWorkspacesHasMore(res.hasMore)
@@ -356,11 +387,11 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     } finally { setWorkspaceDetailLoading(false) }
   }
 
-  const updateWorkspaceLifecycle = async (id: string, action: 'suspend' | 'restore', reason = '') => {
+  const updateWorkspaceLifecycle = async (id: string, action: 'suspend' | 'restore' | 'archive' | 'unarchive', reason = '') => {
     setWorkspaceActionBusy(true)
     setError('')
     try {
-      await apiRequest(`/api/superadmin/workspaces/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify(action === 'suspend' ? { reason } : {}) })
+      await apiRequest(`/api/superadmin/workspaces/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify(['suspend', 'archive'].includes(action) ? { reason } : {}) })
       await loadAll()
       await openWorkspace(id)
     } catch (err) {
@@ -373,7 +404,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     const timer = window.setTimeout(async () => {
       setWorkspaceSearchLoading(true)
       try {
-        const query = new URLSearchParams({ limit: String(WORKSPACE_PAGE_SIZE), ...(search.trim() ? { q: search.trim() } : {}) })
+        const query = new URLSearchParams({ limit: String(WORKSPACE_PAGE_SIZE), status: workspaceStatusFilter, ...(search.trim() ? { q: search.trim() } : {}) })
         const result = await apiRequest<PaginatedWorkspaces>(`/api/superadmin/workspaces?${query}`)
         setWorkspaces(result.workspaces)
         setWorkspacesHasMore(result.hasMore)
@@ -383,7 +414,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
       } finally { setWorkspaceSearchLoading(false) }
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [page, search, workspaceDetail])
+  }, [page, search, workspaceStatusFilter, workspaceDetail])
 
   useEffect(() => {
     if (page !== 'activity') return
@@ -572,12 +603,13 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
         </section>}
 
         {page === 'workspaces' && (
-          workspaceDetailLoading ? <main className="workspace-loading">Loading workspace details…</main> : workspaceDetail ? <WorkspaceDetailView data={workspaceDetail} actionBusy={workspaceActionBusy} onSuspend={(reason) => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'suspend', reason)} onRestore={() => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'restore')} onBack={() => setWorkspaceDetail(null)} /> : <section className="workspace-content">
+          workspaceDetailLoading ? <main className="workspace-loading">Loading workspace details…</main> : workspaceDetail ? <WorkspaceDetailView data={workspaceDetail} actionBusy={workspaceActionBusy} onSuspend={(reason) => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'suspend', reason)} onRestore={() => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'restore')} onArchive={(reason) => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'archive', reason)} onUnarchive={() => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'unarchive')} onBack={() => setWorkspaceDetail(null)} /> : <section className="workspace-content">
             <div className="list-toolbar">
               <div><p className="workspace-eyebrow">Platform</p><h2>All client workspaces</h2></div>
             </div>
             <div className="filter-row">
               <input className="input-control search-control" type="search" placeholder="Search business, owner, email, country, or type" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <select className="input-control" value={workspaceStatusFilter} onChange={(event) => setWorkspaceStatusFilter(event.target.value)} aria-label="Filter workspaces by lifecycle status"><option value="CURRENT">Active and suspended</option><option value="ARCHIVED">Archived</option><option value="ALL">All workspaces</option></select>
               <span className="workspace-eyebrow" aria-live="polite">{workspaceSearchLoading ? 'Searching…' : `${workspacesTotal} workspaces`}</span>
             </div>
             <section className="workspace-panel quote-list-panel">
@@ -590,7 +622,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
                         <td><button type="button" className="dashboard-text-link" onClick={() => void openWorkspace(ws.id)}>{ws.name} →</button><small>{ws.businessType ?? 'General'}</small></td>
                         <td>{ws.owner.name}<small>{ws.owner.email}</small></td>
                         <td>{ws.country ?? '—'}</td>
-                        <td><span className={`workspace-state ${ws.status === 'SUSPENDED' ? 'suspended' : 'active'}`}>{ws.status === 'SUSPENDED' ? 'Suspended' : 'Active'}</span></td>
+                        <td><span className={`workspace-state ${ws.status === 'SUSPENDED' ? 'suspended' : ws.status === 'ARCHIVED' ? 'archived' : 'active'}`}>{ws.status === 'SUSPENDED' ? 'Suspended' : ws.status === 'ARCHIVED' ? 'Archived' : 'Active'}</span></td>
                         <td><span className={planBadgeClass(ws.subscription?.status ?? '')}>{ws.subscription?.plan ?? 'FREE'}<small>{trialStatus(ws)}</small></span></td>
                         <td>{ws.quoteCount}</td>
                         <td>{formatMoney(ws.totalQuotedValue, ws.currency)}</td>
@@ -706,6 +738,17 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
               </form>
               <p className="admin-ncba-footnote">Secrets are encrypted before database storage and never returned by the settings API. Saving updates the STK client configuration; this page does not perform a live NCBA credential test.</p>
             </section>
+            <section className="workspace-panel product-update-admin" style={{ padding: 20 }}>
+              <div className="list-toolbar" style={{ padding: 0, marginBottom: 14 }}><div><p className="workspace-eyebrow">Customer communication</p><h3>Publish a dashboard update</h3><p>Owners of active workspaces will see this in What’s new. It will not interrupt their work or send email.</p></div></div>
+              <form className="onboarding-form" onSubmit={(event) => void publishProductUpdate(event)}>
+                <div className="admin-ncba-fields">
+                  <label>Feature area<input className="input-control" required maxLength={80} value={updateFeature} onChange={(event) => setUpdateFeature(event.target.value)} placeholder="For example: Invoices" /></label>
+                  <label>Update title<input className="input-control" required minLength={4} maxLength={120} value={updateTitle} onChange={(event) => setUpdateTitle(event.target.value)} placeholder="For example: Faster invoice payments" /></label>
+                </div>
+                <label>What changed<textarea className="input-control" required minLength={10} maxLength={1600} rows={4} value={updateDetails} onChange={(event) => setUpdateDetails(event.target.value)} placeholder="Explain what changed and where the owner can find it." /></label>
+                <div className="admin-pricing-actions"><span role="status">{updateMessage}</span><button className="button button-primary" type="submit" disabled={updateBusy}>{updateBusy ? 'Publishing…' : 'Publish to workspace owners'}</button></div>
+              </form>
+            </section>
             {operations && <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
                 <section className="workspace-panel" style={{ padding: 18 }}><p className="workspace-eyebrow">Database</p><strong>{operations.database}</strong></section>
@@ -774,8 +817,9 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   )
 }
 
-function WorkspaceDetailView({ data, actionBusy, onSuspend, onRestore, onBack }: { data: WorkspaceDetailData; actionBusy: boolean; onSuspend: (reason: string) => void; onRestore: () => void; onBack: () => void }) {
+function WorkspaceDetailView({ data, actionBusy, onSuspend, onRestore, onArchive, onUnarchive, onBack }: { data: WorkspaceDetailData; actionBusy: boolean; onSuspend: (reason: string) => void; onRestore: () => void; onArchive: (reason: string) => void; onUnarchive: () => void; onBack: () => void }) {
   const [suspensionReason, setSuspensionReason] = useState('')
+  const [archiveReason, setArchiveReason] = useState('')
   const { workspace, recentQuotes, recentJobs, recentInvoices } = data
   const joined = new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(workspace.createdAt))
   return <section className="workspace-content">
@@ -784,10 +828,14 @@ function WorkspaceDetailView({ data, actionBusy, onSuspend, onRestore, onBack }:
       <span className={planBadgeClass(workspace.subscription?.status ?? '')}>{workspace.subscription?.plan ?? 'FREE'}<small>{trialStatus(workspace)}</small></span>
     </div>
 
-    <section className="workspace-panel" style={{ padding: 20, borderColor: workspace.status === 'SUSPENDED' ? '#efb3aa' : undefined }}>
-      <div className="list-toolbar" style={{ padding: 0 }}><div><h3>Workspace access</h3><p>Current state: <span className={`workspace-state ${workspace.status === 'SUSPENDED' ? 'suspended' : 'active'}`}>{workspace.status === 'SUSPENDED' ? 'Suspended' : 'Active'}</span></p></div></div>
+    <section className="workspace-panel" style={{ padding: 20, borderColor: workspace.status !== 'ACTIVE' ? '#efb3aa' : undefined }}>
+      <div className="list-toolbar" style={{ padding: 0 }}><div><h3>Workspace access</h3><p>Current state: <span className={`workspace-state ${workspace.status === 'SUSPENDED' ? 'suspended' : workspace.status === 'ARCHIVED' ? 'archived' : 'active'}`}>{workspace.status === 'ARCHIVED' ? 'Archived' : workspace.status === 'SUSPENDED' ? 'Suspended' : 'Active'}</span></p></div></div>
       {workspace.suspendedAt && <div style={{ marginTop: 14 }}><p><strong>Last suspension reason:</strong> {workspace.suspensionReason}</p><small>Suspended {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(workspace.suspendedAt))} by {workspace.suspendedByEmail ?? 'super-admin'}.</small>{workspace.restoredAt && <p><small>Restored {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(workspace.restoredAt))} by {workspace.restoredByEmail ?? 'super-admin'}.</small></p>}</div>}
-      {workspace.status === 'SUSPENDED' ? <div style={{ marginTop: 14 }}><button type="button" className="quiet-button" disabled={actionBusy} onClick={() => { if (window.confirm(`Restore access to ${workspace.name}?`)) onRestore() }}>{actionBusy ? 'Restoring…' : 'Restore workspace'}</button></div> : <form className="workspace-suspend-form" onSubmit={(event) => { event.preventDefault(); if (window.confirm(`Suspend ${workspace.name}? The workspace owner and team will lose dashboard access until restored.`)) onSuspend(suspensionReason) }}><label htmlFor="workspace-suspension-reason">Reason required</label><input id="workspace-suspension-reason" className="input-control" minLength={5} maxLength={500} value={suspensionReason} onChange={(event) => setSuspensionReason(event.target.value)} placeholder="For example: billing issue or policy review" required /><button type="submit" className="quiet-button danger-button" disabled={actionBusy || suspensionReason.trim().length < 5}>{actionBusy ? 'Suspending…' : 'Suspend workspace'}</button></form>}
+      {workspace.archivedAt && <div style={{ marginTop: 14 }}><p><strong>Archive reason:</strong> {workspace.archiveReason}</p><small>Archived {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(workspace.archivedAt))} by {workspace.archivedByEmail ?? 'super-admin'}. Workspace data is retained; customer links are unavailable until restored.</small>{workspace.unarchivedAt && <p><small>Last restored from archive {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(workspace.unarchivedAt))} by {workspace.unarchivedByEmail ?? 'super-admin'}.</small></p>}</div>}
+      {workspace.status === 'ARCHIVED' ? <div style={{ marginTop: 14 }}><button type="button" className="quiet-button" disabled={actionBusy} onClick={() => { if (window.confirm(`Restore ${workspace.name} from archive? This restores its previous ${workspace.statusBeforeArchive === 'SUSPENDED' ? 'suspended' : 'active'} state.`)) onUnarchive() }}>{actionBusy ? 'Restoring…' : 'Restore from archive'}</button></div> : <>
+        {workspace.status === 'SUSPENDED' ? <div style={{ marginTop: 14 }}><button type="button" className="quiet-button" disabled={actionBusy} onClick={() => { if (window.confirm(`Restore access to ${workspace.name}?`)) onRestore() }}>{actionBusy ? 'Restoring…' : 'Restore access'}</button></div> : <form className="workspace-suspend-form" onSubmit={(event) => { event.preventDefault(); if (window.confirm(`Suspend ${workspace.name}? The workspace owner and team will lose dashboard access until restored.`)) onSuspend(suspensionReason) }}><label htmlFor="workspace-suspension-reason">Reason required</label><input id="workspace-suspension-reason" className="input-control" minLength={5} maxLength={500} value={suspensionReason} onChange={(event) => setSuspensionReason(event.target.value)} placeholder="For example: billing issue or policy review" required /><button type="submit" className="quiet-button danger-button" disabled={actionBusy || suspensionReason.trim().length < 5}>{actionBusy ? 'Suspending…' : 'Suspend workspace'}</button></form>}
+        <form className="workspace-suspend-form workspace-archive-form" onSubmit={(event) => { event.preventDefault(); if (window.confirm(`Archive ${workspace.name}? Dashboard access and public quote/project links will be disabled. All workspace data will be retained and can be restored.`)) onArchive(archiveReason) }}><label htmlFor="workspace-archive-reason">Archive reason required</label><input id="workspace-archive-reason" className="input-control" minLength={5} maxLength={500} value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} placeholder="For example: customer requested closure" required /><button type="submit" className="quiet-button danger-button" disabled={actionBusy || archiveReason.trim().length < 5}>{actionBusy ? 'Archiving…' : 'Archive workspace'}</button></form>
+      </>}
     </section>
 
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>

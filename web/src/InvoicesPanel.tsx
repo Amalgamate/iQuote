@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { apiRequest, formatMoney } from './api'
+import { apiRequest, downloadAuthenticatedFile, formatMoney } from './api'
 import { ReceiptPdfDownloadLink } from './ReceiptPdf'
 
 type Customer = { id: string; name: string; phone: string | null; email: string | null }
-type Business = { id: string; name: string; currency: string; email?: string | null; phone?: string | null; country?: string | null }
+type Business = { id: string; name: string; currency: string; email?: string | null; phone?: string | null; country?: string | null; documentDesign?: { design?: { email?: { attachPdf?: boolean } } } | null }
 
 type InvoiceStatus = 'DRAFT' | 'SENT' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'CANCELLED'
 
@@ -20,7 +20,7 @@ type Payment = {
   receivedBy?: string
   isDeposit?: boolean
   refunds?: Array<{ id: string; amount: number; currency: string; method: string; reference: string | null; reason: string; refundedAt: string; recordedByName: string }>
-  receiptDeliveries?: Array<{ id: string; recipientEmail: string; recipientName: string | null; status: string; errorMessage: string | null; sentAt: string | null; createdAt: string }>
+  receiptDeliveries?: Array<{ id: string; recipientEmail: string; recipientName: string | null; status: string; errorMessage: string | null; attachedPdf?: boolean; pdfBytes?: number | null; attachmentError?: string | null; sentAt: string | null; createdAt: string }>
 }
 
 type InvoiceReconciliation = { id: string; actorName: string; reason: string; previousAmountPaid: number; previousBalanceDue: number; correctedAmountPaid: number; correctedBalanceDue: number; createdAt: string }
@@ -51,6 +51,7 @@ type Invoice = {
   payments?: Payment[]
   allocationHistory?: Array<{ id: string; eventType: string; amount: number; currency: string; reason: string; actorName: string; createdAt: string; receiptNumber: string; invoiceNumber: string }>
   reconciliations?: InvoiceReconciliation[]
+  deliveries?: Array<{ id: string; recipientEmail: string; recipientName: string | null; status: string; errorMessage: string | null; attachedPdf: boolean; pdfBytes: number | null; attachmentError: string | null; sentAt: string | null; createdAt: string }>
 }
 
 type InvoiceListResponse = { invoices: Invoice[]; totalCount: number; hasMore: boolean }
@@ -150,15 +151,15 @@ export default function InvoicesPanel({ business, customers, currency, canManage
     }
   }
 
-  const sendInvoice = async (invoice: Invoice, recipientEmail: string) => {
+  const sendInvoice = async (invoice: Invoice, recipientEmail: string, attachPdf: boolean) => {
     setSendingInvoice(true)
     setSendMessage('')
     setError('')
     try {
-      const response = await apiRequest<InvoiceResponse>(`/api/invoices/${invoice.id}/send`, { method: 'POST', body: JSON.stringify({ recipientEmail }) })
+      const response = await apiRequest<{ invoice: Invoice; delivery: { attachedPdf: boolean; pdfBytes: number | null; attachmentError: string | null } }>(`/api/invoices/${invoice.id}/send`, { method: 'POST', body: JSON.stringify({ recipientEmail, attachPdf }) })
       setInvoices((current) => current.map((inv) => inv.id === response.invoice.id ? response.invoice : inv))
       if (selectedInvoice?.id === invoice.id) setSelectedInvoice(response.invoice)
-      setSendMessage(`Invoice emailed to ${recipientEmail}.`)
+      setSendMessage(`Invoice emailed to ${recipientEmail}.${response.delivery.attachedPdf ? ` PDF attached (${Math.ceil((response.delivery.pdfBytes ?? 0) / 1024)} KB).` : response.delivery.attachmentError ? ` Email sent without PDF: ${response.delivery.attachmentError}` : ' No PDF attached.'}`)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to send invoice.')
     } finally {
@@ -177,7 +178,7 @@ export default function InvoicesPanel({ business, customers, currency, canManage
         sendMessage={sendMessage}
         sendingInvoice={sendingInvoice}
         onBack={() => { setSelectedInvoice(null); void loadInvoices() }}
-        onSend={(recipientEmail) => void sendInvoice(selectedInvoice, recipientEmail)}
+        onSend={(recipientEmail, attachPdf) => void sendInvoice(selectedInvoice, recipientEmail, attachPdf)}
         onInvoiceUpdate={(updated) => setSelectedInvoice(updated)}
         onInvoicesRefresh={() => void loadInvoices()}
         setError={setError}
@@ -262,7 +263,7 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
   sendMessage: string
   sendingInvoice: boolean
   onBack: () => void
-  onSend: (recipientEmail: string) => void
+  onSend: (recipientEmail: string, attachPdf: boolean) => void
   onInvoiceUpdate: (invoice: Invoice) => void
   onInvoicesRefresh: () => void
   setError: (error: string) => void
@@ -270,6 +271,7 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
 }) {
   const [paymentForm, setPaymentForm] = useState<PaymentForm>(blankPaymentForm)
   const [invoiceRecipientEmail, setInvoiceRecipientEmail] = useState(invoice.customer.email ?? '')
+  const [attachInvoicePdf, setAttachInvoicePdf] = useState(business?.documentDesign?.design?.email?.attachPdf ?? true)
   const [showPaymentForm, setShowPaymentForm] = useState(false)
   const [refundTarget, setRefundTarget] = useState<Payment | null>(null)
   const [refundForm, setRefundForm] = useState<RefundForm>({ amount: '', method: 'BANK_TRANSFER', reference: '', reason: '', confirmedExternally: false })
@@ -281,8 +283,10 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
   const [reallocationReason, setReallocationReason] = useState('')
   const [reallocationSaving, setReallocationSaving] = useState(false)
   const [paymentSaving, setPaymentSaving] = useState(false)
+  const [downloadingPdf, setDownloadingPdf] = useState(false)
   const [receiptTarget, setReceiptTarget] = useState<Payment | null>(null)
   const [receiptEmail, setReceiptEmail] = useState('')
+  const [attachReceiptPdf, setAttachReceiptPdf] = useState(business?.documentDesign?.design?.email?.attachPdf ?? true)
   const [receiptSending, setReceiptSending] = useState(false)
   const [mpesaEnabled, setMpesaEnabled] = useState(false)
   const [mpesaPhone, setMpesaPhone] = useState('')
@@ -293,6 +297,12 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
   const [mpesaMessage, setMpesaMessage] = useState('')
   const invoiceUpdateRef = useRef(onInvoiceUpdate)
   const paymentIdempotencyStorageKey = `iquote.payment.${invoice.id}`
+  const downloadInvoicePdf = async () => {
+    setDownloadingPdf(true)
+    try { await downloadAuthenticatedFile(`/api/invoices/${encodeURIComponent(invoice.id)}/pdf`, `${invoice.invoiceNumber.replace(/[^a-zA-Z0-9_-]/g, '-')}.pdf`) }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not download the invoice PDF.') }
+    finally { setDownloadingPdf(false) }
+  }
   const [paymentIdempotencyKey, setPaymentIdempotencyKey] = useState(() => {
     try {
       const stored = sessionStorage.getItem(paymentIdempotencyStorageKey)
@@ -410,7 +420,7 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
     try {
       await apiRequest(`/api/payments/${receiptTarget.id}/send-receipt`, {
         method: 'POST',
-        body: JSON.stringify({ recipientEmail: receiptEmail }),
+        body: JSON.stringify({ recipientEmail: receiptEmail, attachPdf: attachReceiptPdf }),
       })
       const response = await apiRequest<InvoiceResponse>(`/api/invoices/${invoice.id}`)
       onInvoiceUpdate(response.invoice)
@@ -487,10 +497,11 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
           <p className="workspace-eyebrow">Invoice detail</p>
           <h2>{invoice.invoiceNumber}</h2>
         </div>
-        {canManageFinancials && invoice.status === 'DRAFT' && <form className="invoice-send-form" onSubmit={(event) => { event.preventDefault(); onSend(invoiceRecipientEmail) }}>
+        <div className="table-action-group"><button className="button button-secondary" type="button" onClick={() => void downloadInvoicePdf()} disabled={downloadingPdf}>{downloadingPdf ? 'Preparing PDF…' : 'Download PDF'}</button>{canManageFinancials && invoice.status === 'DRAFT' && <form className="invoice-send-form" onSubmit={(event) => { event.preventDefault(); onSend(invoiceRecipientEmail, attachInvoicePdf) }}>
           <label>Send to<input className="input-control" type="email" required value={invoiceRecipientEmail} onChange={(event) => setInvoiceRecipientEmail(event.target.value)} placeholder="customer@example.com" /></label>
+          <label className="invoice-attach-option"><input type="checkbox" checked={attachInvoicePdf} onChange={(event) => setAttachInvoicePdf(event.target.checked)} /> Attach PDF</label>
           <button className="button button-primary" type="submit" disabled={sendingInvoice}>{sendingInvoice ? 'Sending…' : 'Send invoice'}</button>
-        </form>}
+        </form>}</div>
       </div>
 
       <section className="workspace-panel">
@@ -501,6 +512,7 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
           </div>
           <span className={invoiceStatusClasses[invoice.status]}>{invoiceStatusNames[invoice.status]}</span>
         </div>
+        {invoice.deliveries && invoice.deliveries.length > 0 && <div className="receipt-delivery-history invoice-delivery-history"><strong>Email delivery history</strong>{invoice.deliveries.map((delivery) => <small key={delivery.id} className={`delivery-status delivery-${delivery.status.toLowerCase()}`}>{delivery.status} to {delivery.recipientEmail}{delivery.sentAt ? ` · ${formatDate(delivery.sentAt)}` : ''}{delivery.attachedPdf ? ` · PDF attached${delivery.pdfBytes ? ` (${Math.ceil(delivery.pdfBytes / 1024)} KB)` : ''}` : delivery.attachmentError ? ` · Sent without PDF: ${delivery.attachmentError}` : ''}{delivery.errorMessage ? ` · ${delivery.errorMessage}` : ''}</small>)}</div>}
         <div className="job-info-grid">
           <div><span>Customer</span><strong>{customer?.name ?? '—'}</strong></div>
           <div><span>Issue date</span><strong>{formatDate(invoice.issueDate)}</strong></div>
@@ -551,7 +563,7 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
                       <td>{payment.reference ?? '—'}</td>
                       <td>{formatMoney(payment.amount, payment.currency || invoice.currency)}{payment.isDeposit && <span className="deposit-badge" title="This payment was marked as a deposit">Deposit</span>}</td>
                       <td>{(payment.refunds?.length ?? 0) ? <>{formatMoney(payment.refunds!.reduce((sum, refund) => sum + Number(refund.amount), 0), payment.currency || invoice.currency)}<small>{payment.refunds!.map((refund) => `${refund.reason} · ${formatDate(refund.refundedAt)}`).join(' · ')}</small></> : '—'}</td>
-                      <td><ReceiptPdfDownloadLink receipt={{ receiptNumber: payment.receiptNumber, invoiceNumber: payment.invoiceNumber ?? invoice.invoiceNumber, customerName: customer?.name ?? 'Customer', business, amount: payment.sourceAmount ?? payment.amount, currency: payment.currency || invoice.currency, method: paymentMethodNames[payment.method] ?? payment.method, reference: payment.reference, paymentDate: payment.paymentDate }} /></td>
+                      <td><ReceiptPdfDownloadLink receipt={{ paymentId: payment.id, receiptNumber: payment.receiptNumber, invoiceNumber: payment.invoiceNumber ?? invoice.invoiceNumber, customerName: customer?.name ?? 'Customer', business, amount: payment.sourceAmount ?? payment.amount, currency: payment.currency || invoice.currency, method: paymentMethodNames[payment.method] ?? payment.method, reference: payment.reference, paymentDate: payment.paymentDate }} /></td>
                       <td>{canManageFinancials && <div className="table-action-group">{payment.amount > (payment.refunds ?? []).reduce((sum, refund) => sum + Number(refund.amount), 0) && <button className="quiet-button" type="button" onClick={() => { setRefundTarget(payment); setRefundForm({ amount: (payment.amount - (payment.refunds ?? []).reduce((sum, refund) => sum + Number(refund.amount), 0)).toFixed(2), method: 'BANK_TRANSFER', reference: '', reason: '', confirmedExternally: false }); setRefundIdempotencyKey(crypto.randomUUID()) }}>Record refund</button>}{reallocationInvoices.length > 0 && <button className="quiet-button" type="button" disabled={(payment.refunds?.length ?? 0) > 0} title={(payment.refunds?.length ?? 0) ? 'Payments with refunds cannot be reallocated.' : undefined} onClick={() => { setReallocationTarget(payment); setReallocationAmount(payment.amount.toFixed(2)); setReallocationReason('') }}>Reallocate</button>}<button className="quiet-button" type="button" onClick={() => { setReceiptTarget(payment); setReceiptEmail(customer?.email ?? '') }}>Send receipt</button></div>}
                         {payment.receiptDeliveries && payment.receiptDeliveries.length > 0 && (
                           <div className="receipt-delivery-history">
@@ -559,6 +571,8 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
                               <small key={delivery.id} className={`delivery-status delivery-${delivery.status.toLowerCase()}`}>
                                 {delivery.status === 'SENT' ? '✓ Receipt sent' : delivery.status === 'FAILED' ? '✗ Send failed' : '… Sending'} to {delivery.recipientEmail}{delivery.sentAt ? ` · ${formatDate(delivery.sentAt)}` : ''}
                                 {delivery.errorMessage && <span className="delivery-error"> — {delivery.errorMessage}</span>}
+                                {delivery.attachedPdf && <span> · PDF attached{delivery.pdfBytes ? ` (${(delivery.pdfBytes / 1024).toFixed(0)} KB)` : ''}</span>}
+                                {!delivery.attachedPdf && delivery.attachmentError && <span> · Sent without PDF: {delivery.attachmentError}</span>}
                               </small>
                             ))}
                           </div>
@@ -590,6 +604,7 @@ function InvoiceDetail({ invoice, business, customers, error, sendMessage, sendi
         {receiptTarget && <form className="cost-add-form refund-form" onSubmit={(event) => void sendReceipt(event)}>
           <div className="span-two"><strong>Send receipt for {receiptTarget.receiptNumber}</strong><p>Email a PDF receipt to the customer. They will receive it immediately at the address below.</p></div>
           <label className="field-label span-two">Recipient email<input className="input-control" type="email" required value={receiptEmail} onChange={(event) => setReceiptEmail(event.target.value)} placeholder="customer@example.com" /></label>
+          <label className="span-two"><input type="checkbox" checked={attachReceiptPdf} onChange={(event) => setAttachReceiptPdf(event.target.checked)} /> Attach a PDF receipt. The email is sent without it if the PDF cannot be prepared.</label>
           <div className="table-action-group span-two"><button className="button button-secondary" type="button" onClick={() => setReceiptTarget(null)}>Cancel</button><button className="button button-primary" type="submit" disabled={receiptSending}>{receiptSending ? 'Sending…' : 'Send receipt'}</button></div>
         </form>}
         {canManageFinancials && mpesaEnabled && invoice.status !== 'CANCELLED' && invoice.status !== 'PAID' && invoice.currency === 'KES' && <form className="cost-add-form mpesa-prompt-form" onSubmit={(event) => void sendMpesaPrompt(event)}>

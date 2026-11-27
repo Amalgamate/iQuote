@@ -77,7 +77,7 @@ export default function PublicQuote({ token }: { token: string }) {
         <div className="brand"><span className="brand-mark">iQ</span><span className="brand-word">i<span className="brand-q">Q</span>uote<span className="brand-period">.</span></span></div>
         <div className="public-quote-actions">
           <span className={`quote-status status-${quote.status.toLowerCase()}`}>{decisionLabel[quote.status] ?? quote.status}</span>
-          <QuotePdfDownloadLink className="secondary-button" quote={quote} />
+          <QuotePdfDownloadLink className="secondary-button" quote={quote} publicToken={token} />
           <button type="button" className="secondary-button" onClick={() => window.print()}>Print</button>
         </div>
       </div>

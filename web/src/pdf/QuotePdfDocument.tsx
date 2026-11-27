@@ -2,14 +2,15 @@ import {
   Document,
   Image,
   Page,
-  PDFDownloadLink,
+  pdf,
   StyleSheet,
   Text,
   View,
 } from '@react-pdf/renderer'
+import { useState } from 'react'
 import type { QuoteDocumentData } from '../QuoteDocument'
 import type { Style } from '@react-pdf/stylesheet'
-import { assetUrl, formatMoney } from '../api'
+import { assetUrl, downloadAuthenticatedFile, downloadPublicFile, downloadBlobFile, formatMoney } from '../api'
 import { amountInWords, cleanUrl, dateLabel, readableOn, safeAccent, tint } from './format'
 import { resolveTemplate, type TemplateKey, type TemplateTheme } from './themes'
 
@@ -244,15 +245,31 @@ export function QuotePdfDocument({ quote, template }: { quote: QuoteDocumentData
   )
 }
 
-export function QuotePdfDownloadLink({ quote, className, template }: { quote: QuoteDocumentData; className?: string; template?: TemplateKey | string | null }) {
+export function QuotePdfDownloadLink({ quote, quoteId, publicToken, useServer = true, className, template }: { quote: QuoteDocumentData; quoteId?: string; publicToken?: string; useServer?: boolean; className?: string; template?: TemplateKey | string | null }) {
+  const [downloading, setDownloading] = useState(false)
+  const [error, setError] = useState('')
   const filename = `${quote.documentNumber.replace(/[^a-zA-Z0-9_-]/g, '-') || 'quotation'}.pdf`
-  return (
-    <PDFDownloadLink
-      className={className}
-      document={<QuotePdfDocument quote={quote} template={template} />}
-      fileName={filename}
-    >
-      {({ loading, error }) => loading ? 'Preparing PDF…' : error ? 'PDF unavailable' : 'Download PDF'}
-    </PDFDownloadLink>
-  )
+  async function download() {
+    setDownloading(true); setError('')
+    try {
+      if (useServer && quoteId) {
+        try {
+          await downloadAuthenticatedFile(`/api/quotes/${encodeURIComponent(quoteId)}/pdf`, filename)
+          return
+        } catch (cause) {
+          if (!(cause instanceof Error) || !cause.message.includes('Server PDF rendering is not available on this deployment.')) throw cause
+        }
+      } else if (useServer && publicToken) {
+        try {
+          await downloadPublicFile(`/api/public/quotes/${encodeURIComponent(publicToken)}/pdf`, filename)
+          return
+        } catch (cause) {
+          if (!(cause instanceof Error) || !cause.message.includes('Server PDF rendering is not available on this deployment.')) throw cause
+        }
+      }
+      downloadBlobFile(await pdf(<QuotePdfDocument quote={quote} template={template} />).toBlob(), filename)
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not download the quotation.') }
+    finally { setDownloading(false) }
+  }
+  return <span className="pdf-download-control"><button type="button" className={className} onClick={() => void download()} disabled={downloading}>{downloading ? 'Preparing PDF…' : 'Download PDF'}</button>{error && <small role="alert">{error}</small>}</span>
 }

@@ -23,7 +23,7 @@ const FAQ_DATABASE: Array<{ keywords: string[]; answer: string; actionLabel?: st
   },
   {
     keywords: ['approve', 'client', 'customer', 'sign', 'accept', 'link', 'share'],
-    answer: "No more messy PDF attachments! You send your customer a single secure web link. They open it on any device without needing an account, review the scope and total, and tap 'Review & Approve' in 1 click.",
+    answer: "Send your customer a secure web link they can open on any device without an account. They can review the scope and total, then approve or decline. You can also attach a branded PDF copy to quote emails.",
   },
   {
     keywords: ['price', 'pricing', 'cost', 'plan', 'plans', 'starter', 'growth', 'team', 'free', 'trial'],

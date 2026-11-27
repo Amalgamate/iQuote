@@ -1,10 +1,11 @@
 # Document design and automatic PDF attachments: plan and checklist
 
-**Status (27 Nov 2026): planned, not started.** Nothing in this plan is implemented in the app. A
-prototype of the settings screen exists (published artifact "iQuote document designer"), and an
-earlier draft of the new PDF renderer is already in `web/src/pdf/` (see "Starting point").
-Estimates are rough and unverified. This plan was written from reading parts of the code, not from a
-full audit; items marked **verify** need checking before work starts.
+**Status (27 Nov 2026): Phases 0–5 implemented locally; Phase 6 release validation remains open.**
+Quote, invoice and receipt email paths now generate server-side PDFs from saved document snapshots,
+record attachment outcomes, and retain secure links when PDF generation or the size limit prevents
+an attachment. The API/web type checks, production web bundle, Prisma validation and 14 focused PDF
+tests passed in this checkout. No live mailbox validation or production migration/rollout has run.
+This status describes local code, not production deployment.
 
 ## Decisions already made (owner)
 
@@ -149,67 +150,79 @@ checks pass.
 - [x] Open decisions settled (27 Nov 2026), see above, including the extras staying free.
 - [x] `plans.ts` template split applied (Starter: Modern, Classic; Growth adds Minimal, Compact; Team adds Bold), tests updated, PLANS.md matrix updated. Verified 27 Nov 2026 in a scratch copy: 13 plans tests pass, strict type-check clean. **Still to run on the real project:** `npm test` and `npm run build` in `api`.
 - [x] Feature flags created, all default off (27 Nov 2026): `api/src/feature-flags.ts` (`documentFlags()`; attach is off whenever server PDF is off), `api/tests/feature-flags.test.ts` (3 tests pass in the scratch copy), entries in `.env.prod.example`, and passed through in `docker-compose.prod.yml` (the compose file lists API env vars explicitly, so a flag not listed there would never reach the container). Not yet imported by any route.
-- [ ] Build and visually check the new template renderer already in `web/src/pdf/` (download a PDF and review all five templates). Needs a run on the owner's machine. Static review notes (27 Nov 2026): its input type (`QuoteDocumentData`) already has the brand, KRA PIN, address and template fields it reads, and its five keys match `plans.ts`. Before Phase 2: (a) it computes each line amount as quantity times unit price, so the server renderer must use the stored, already-rounded line totals; (b) `api/tsconfig.json` has no `jsx` setting, which the server renderer will need; (c) it uses numeric font weights (600, 800) with built-in fonts, so check bold text in the PDF.
+- [x] Visual check of the template renderer in `web/src/pdf/` done (27 Nov 2026, rendered by WorkBuddy to `web/out/templates/preview/`, which is gitignored). Reviewed: Modern, Bold, Classic, Compact and the receipt all render correctly, including bold text. Minimal was not reviewed. Findings: (1) on a short 3-line quote, Modern, Bold and Classic push the Acceptance block alone onto a nearly empty page 2 (the block cannot split and page 1 has room left; Compact fits on one page); fix during Phase 2. (2) The receipt uses a different layout (no band, no template, no brand header), so the consistency work in Phase 2 and 4 is confirmed. (3) Sample line 3 shows 17,000.01 (3 x 5,666.67) while the subtotal counts it as 17,000.00, which proves the rounding mismatch in the note below. Earlier static review notes: its input type (`QuoteDocumentData`) already has the brand, KRA PIN, address and template fields it reads, and its five keys match `plans.ts`. Before Phase 2: (a) it computes each line amount as quantity times unit price. `QuoteLine` has no stored line total (only quantity, unit price and tax rate), so the server renderer must use one shared function that rounds a line exactly the way the server's totals do (`roundMoney`), and a test must assert that the printed lines sum to the printed subtotal; (b) `api/tsconfig.json` has no `jsx` setting, which the server renderer will need; (c) bold text with built-in fonts renders correctly (checked).
 - [ ] Tag a rollback point: git is on `main` at `44c4be6` ("fix(pdf): tighten quotation header layout...") and there are no tags yet. Commit or stash any uncommitted work first, then tag. Owner to run.
 
 ### Phase 1: data and settings API
 
-- [ ] Prisma migration (additive, nullable columns only) for `documentDesign`, `kraPin`, `vatNumber`, `address`, the three `designSnapshot` columns and the delivery attachment fields. Review the SQL by hand before applying.
-- [ ] `api/src/document-design.ts`: pure validator, defaults, and template presets. Reject unknown keys and values; clamp `logo.scale`; validate colours, paybill and till as digits; cap text lengths. Unit tests for every rule.
-- [ ] `GET` and `PUT /api/settings/document-design` for OWNER and ADMIN only, tenant-scoped. `PUT` rejects a template the workspace's plan does not include (403 with `PLAN_FEATURE_CODE`, via `templateAllowed`); gated extras, if confirmed, are checked here too.
-- [ ] Return the design (read-only) wherever the organisation is already returned, behind the flag.
-- [ ] Backfill `designSnapshot` for already-sent quotes, invoices and payments.
-- [ ] Extend the tenant-isolation tests: one business cannot read or write another's design or snapshots.
-- [ ] Migration rehearsed on a copy of production data; rollback script written.
+- [x] Prisma migration (additive, nullable columns only) for `documentDesign`, `kraPin`, `vatNumber`, `address`, the three `designSnapshot` columns and the delivery attachment fields. Review the SQL by hand before applying. Written 27 Nov 2026 as `20261127140000_document_design`, with a reviewed `rollback.sql` beside it. Confirmed against the live schema with `prisma db pull`: the hand-written SQL and the column list agree. **Finding from the rehearsal:** production had not one but **three** unapplied migrations (`20261127100000_quote_revision_publication`, `20261127130000_workspace_archive`, `20261127140000_document_design`), so the production release must run `prisma migrate deploy`, not this migration alone.
+- [x] `api/src/document-design.ts`: pure validator, defaults, and template presets. Reject unknown keys and values; clamp `logo.scale`; validate colours, paybill and till as digits; cap text lengths. Unit tests for every rule. Written 27 Nov 2026 with `api/tests/document-design.test.ts`; 35 tests pass and the file type-checks under strict mode in a scratch copy (51 tests across the three new or changed modules). Also provides `resolveDesign` (never throws; bad data gives the default design) and `applyPlanLimits` (falls back to Modern when the plan lacks the template). Choices to review: paybill and till must be 5 to 7 digits; text is rejected, not cut, when over its limit; layout keys default to the chosen template's preset, which mirrors `web/src/pdf/themes.ts` and must be kept in step. **Still to run on the real project:** `npm test` and `npm run build` in `api`. Not yet used by any route.
+- [x] `GET` and `PUT /api/settings/document-design` for OWNER and ADMIN only, tenant-scoped. `PUT` rejects a template the workspace's plan does not include (403 with `PLAN_FEATURE_CODE`, via `templateAllowed`); gated extras, if confirmed, are checked here too. Also `POST /api/settings/document-design/reset` for "reset to template", and KRA PIN, VAT number and address save with the design in an optional `identity` block. All three routes return 404 when `DOCUMENT_DESIGN_ENABLED` is off. **Review decision taken:** plan limits are applied on read, not on write — a downgraded workspace keeps its saved design (and its colours), and documents fall back to Modern with `templateLocked: true` until it upgrades. Writing a template the plan lacks is still refused. Covered by `api/tests/document-design-api.test.ts` (22 tests): role checks, tenant isolation, plan gating, downgrade fallback, reset, unknown keys.
+- [x] Return the design (read-only) wherever the organisation is already returned, behind the flag. `GET /api/business/me` now carries `documentDesign` (design, saved design, `templateLocked`, per-template `allowed` flags) and the identity fields; null when the flag is off.
+- [x] Backfill `designSnapshot` for already-sent quotes, invoices and payments. `api/scripts/backfill-design-snapshots.mjs`, dry run by default, `--apply` to write, safe to re-run. **Trap recorded:** a nullable `Json` column must be filtered with raw `"designSnapshot" IS NULL`. Prisma's `{ equals: null }` compares JSON null and silently matches nothing, which made the first version report zero work.
+- [x] Extend the tenant-isolation tests: one business cannot read or write another's design or snapshots. Added to `api/tests/document-design-api.test.ts` (a save is scoped to the caller, an `organisationId` in the body is ignored, another workspace's quote and snapshot are unreachable, and saving a quote does not overwrite a frozen snapshot).
+- [x] Migration rehearsed on a copy of production data; rollback script written. Rehearsed 27 Nov 2026 by loading the Phase 0 production dump (138 KB, 5 organisations, 19 quotes, 5 invoices, 6 users) over the local database, then running the real `prisma migrate deploy`. All three migrations applied; row counts and every new column verified on real data; the backfill filled 14 quotes, 4 invoices and 2 receipts; `rollback.sql` then removed all eight columns with every row intact and `prisma migrate status` reporting the migration as reapplicable; the local database was restored from a snapshot afterwards. **Finding:** local Postgres is 18.1, production is 16.15, and a 16.15 dump opened with `psql` 17 stops at `\restrict` (a 16.4+ psql directive). Restores must use `psql` from the same major version, i.e. from inside the production `db` container.
 
 ### Phase 2: server PDF rendering
 
-- [ ] Shared render blocks and theme resolver reading the design JSON.
-- [ ] Quote, invoice and receipt documents built from the same blocks.
-- [ ] Render service: logo loading from uploads, QR generation, cache keyed by a hash of the document data and design, concurrency limit, 10 second timeout, safe fallback layout on error.
-- [ ] Endpoints, all tenant-scoped: `GET /api/quotes/:id/pdf`, `GET /api/invoices/:id/pdf`, `GET /api/payments/:paymentId/receipt.pdf`. A public, rate-limited `GET /api/public/quotes/:token/pdf` using the snapshot.
-- [ ] Freeze `designSnapshot` at send time (quote `/share` and `/send`, invoice `/send`, receipt creation) and use it on every later render.
-- [ ] Tests: numbers in the PDF text match the database for sample documents; long item lists paginate with the header row repeated; missing logo, very wide logo and very long descriptions behave.
-- [ ] Golden-file checks for each template.
-- [ ] Measure render time and memory with a 1-line and a 100-line document.
+- [x] Shared render blocks and theme resolver reading the design JSON. The server renderer uses the API's canonical template presets.
+- [x] Quote, invoice and receipt documents built from shared header, recipient, line, totals and footer blocks.
+- [x] Render service: logo loading from uploads, QR generation, cache keyed by a hash of the document data and design, concurrency limit, 10 second timeout, safe fallback layout on error.
+- [x] Endpoints, all tenant-scoped: `GET /api/quotes/:id/pdf`, `GET /api/invoices/:id/pdf`, `GET /api/payments/:paymentId/receipt.pdf`. A public, rate-limited `GET /api/public/quotes/:token/pdf` using the snapshot.
+- [x] Freeze `designSnapshot` at send time (quote `/share` and `/send`, invoice `/send`, receipt creation) and use it on every later render.
+- [x] Tests: numbers in the PDF text match the database for sample documents; long item lists paginate with the header row repeated; missing logo, very wide logo and very long descriptions behave.
+- [x] Golden-file checks for each template. Stable extracted PDF text fixtures live in `scripts/document-pdf-goldens/` and are asserted by the renderer tests.
+- [x] Measure render time and process memory with 1-line and 100-line documents. Run `node --expose-gc --import tsx scripts/profile-document-pdf.tsx` from `api/`. On the local Windows Node v26.7.0 run (27 Nov 2026): 1 line rendered in 169 ms / 3,855 bytes with ~19.9 MB peak RSS delta; 100 lines rendered in 593 ms / 20,419 bytes with ~63.8 MB peak RSS delta. This is process RSS under a warm local runtime, not production-host capacity; profile again on the deployment runtime before rollout.
+- [x] Renderer tests: 11/11 passed. Full API run: 78 passed, 57 skipped, and database-backed suites could not initialize because Postgres was unavailable at `localhost:5432`; rerun the full suite once local Postgres is running.
 
 ### Phase 3: settings screen
 
-- [ ] New page under Settings: "Documents and branding", visible to OWNER and ADMIN.
-- [ ] Template gallery (miniatures), brand colour with contrast warning, logo upload with **size slider**, layout options, what to show, wording, paybill and till, attach-PDF default.
-- [ ] Preview tabs for Quote, Invoice and Receipt, showing the real server-rendered PDF, debounced after changes.
-- [ ] Save, discard, and reset to template; warn about unsaved changes; clear success and error messages.
-- [ ] Accessible controls: keyboard use, visible focus, labels, works on a phone.
-- [ ] Plan gating: show locked templates (and any gated extras) with the plan that unlocks them; the server check in Phase 1 is the real enforcement.
-- [ ] Prototype reference: the published "iQuote document designer" artifact.
+- [x] New page under Settings: "Documents and branding", visible to OWNER and ADMIN.
+- [x] Template gallery (miniatures), brand colour with contrast warning, logo upload with **size slider**, layout options, what to show, wording, paybill and till, attach-PDF default.
+- [x] Preview tabs for Quote, Invoice and Receipt, showing the real server-rendered PDF, debounced after changes.
+- [x] Save, discard, and reset to template; warn about unsaved changes; clear success and error messages.
+- [x] Accessible control labels, focus styles, keyboard-operable native controls and phone-responsive layout implemented; visual/device review remains pending.
+- [x] Plan gating: show locked templates (and any gated extras) with the plan that unlocks them; the server check in Phase 1 is the real enforcement.
+- [x] Compare the settings copy and preview promise with the published "iQuote document designer" artifact. It is a concise prototype brief rather than a full interaction specification; the new screen keeps the same sample-content and frozen-sent-document promise.
+- [ ] Visually review the live settings screen at desktop and phone sizes.
 
 ### Phase 4: use it everywhere
 
-- [ ] Replace every "Download PDF" button (quote editor, quote list, invoice, receipt, public quote page) with the server endpoints.
-- [ ] Keep the old browser renderer reachable behind the flag until Phase 6 passes, then delete it.
-- [ ] Replace the HTML quote preview with the PDF preview, or label it clearly as approximate.
+- [x] Route saved quote editor/list, invoice, receipt and public quote PDF downloads through their server PDF endpoints. Unsaved quote edits retain the browser renderer so the downloaded document reflects the unsaved editor state.
+- [x] Keep the browser quote/receipt renderer as a temporary fallback only when server PDF is disabled; saved-document downloads otherwise use the server route. Remove the fallback after Phase 6 passes.
+- [x] Label the editor's HTML document preview as approximate because pagination can differ from the final PDF.
 - [ ] Optional: apply brand colour and logo to the public quote page and to the HTML email header.
 
 ### Phase 5: automatic email attachments
 
-- [ ] Quote `/send` and `/resend`: render the PDF from the frozen snapshot and attach it. Filename like `Quotation-QT-2026-0042.pdf` (sanitised).
-- [ ] Invoice `/send`: attach the invoice PDF.
-- [ ] Receipt send: attach the receipt PDF.
-- [ ] If rendering fails, **send the email without the attachment** (the link still works), record `attachmentError`, and tell the user.
-- [ ] Record `attachedPdf` and `pdfBytes` on each delivery; show "PDF attached" in the delivery history.
-- [ ] Cap attachment size; refuse and fall back if it is exceeded.
-- [ ] Per-send "Attach PDF" switch (default from settings); update email copy to mention the attachment.
-- [ ] Make sure the existing send idempotency and the plan email cap still work. Do not allow client-supplied attachments (generate on the server only).
-- [ ] Deliverability test to Gmail, Outlook and a phone mail app: inbox versus spam, attachment opens, matches the chosen template.
+- [x] Quote `/send` and `/resend`: render from the saved quote snapshot and attach a sanitized filename.
+- [x] Invoice `/send`: render the saved invoice PDF and persist each attempt in `InvoiceDelivery`.
+- [x] Receipt send: render the saved receipt PDF and persist attachment metadata on `ReceiptDelivery`.
+- [x] On render failure or an over-limit PDF, send without the attachment, preserve the secure link, record the reason and show the outcome to the sender.
+- [x] Record `attachedPdf`, `pdfBytes` and `attachmentError`; expose them in quote, invoice and receipt history.
+- [x] Cap attachments at 8 MiB.
+- [x] Add per-send switches, defaulted from Document Design settings; email copy states when a PDF is attached.
+- [x] Keep server-side generation only. Quote, invoice and receipt sends enforce the email cap; quote and invoice attempts deduplicate active sends, and receipts reject repeat sends within five minutes.
+- [ ] Deliverability test with Gmail, Outlook and a phone mail app: inbox versus spam, attachment opens and design matches.
 
 ### Phase 6: hardening and rollout
 
-- [ ] Full test pass: unit, tenant isolation, render golden files, load test of concurrent renders.
-- [ ] Monitoring: render duration, failure count, cache hit rate, attachment size, fallback usage. Alert on repeated failures.
-- [ ] Enable for your own workspace first, then the pilot businesses, then everyone; watch for a week at each step.
-- [ ] Show a one-time in-app notice about the new designs.
-- [ ] Remove the old client-side renderer and the temporary flags once stable.
-- [ ] Update `docs/PLANS.md`, the user help text, and this file's status.
+- [x] Focused PDF renderer and email attachment tests, golden text checks, API/web type checks, web production bundle and Prisma schema validation pass locally.
+- [x] Add structured PDF render timing, cache hit, fallback, output-size and email-attachment skip/size logs.
+- [ ] Run the full database-backed tenant-isolation suite and concurrent-render load test against a provisioned test database.
+- [ ] Alert on repeated render and attachment failures in the production monitoring stack.
+- [ ] Publish a one-time owner-facing “What’s new” notice. The existing Product Updates control can deliver it; send it from Superadmin after deployment.
+- [ ] Enable for the owner workspace, then pilot businesses, then all tenants; observe each stage for one week.
+- [ ] Remove the old client-side renderer and temporary flags after rollout stability is demonstrated.
+- [x] Update `docs/PLANS.md`, the user help text and this status.
+
+**Release preflight:** confirm the production database backup; deploy the additive migrations for quote
+revision publication, workspace archive, document design and invoice delivery; set and verify
+`DOCUMENT_DESIGN_ENABLED`, then `SERVER_PDF_ENABLED`; smoke-test tenant-scoped quote, invoice,
+receipt and public quote PDFs; enable email attachments only after live deliverability checks; deploy
+to the owner workspace, then pilots, then all tenants. Roll back by disabling flags first. Recheck
+production memory and render timings before enabling broadly. Do not remove the browser fallback or
+flags until this staged rollout has passed.
 
 ## Keeping existing things working
 
