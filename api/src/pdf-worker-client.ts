@@ -52,6 +52,9 @@ export class PdfRenderClient {
 
   /** Render outside the parent process. Falls back to the in-process renderer if the worker is unusable. */
   async render(data: PdfData, design: DocumentDesign): Promise<RenderOutcome> {
+    // Checked before the worker branches: a shutdown client must reject every new request, including
+    // ones that would otherwise be served in-process because the worker was never available.
+    if (this.disposed) throw new Error('The PDF renderer is shutting down.')
     if (this.workerDisabled) return renderDocumentPdf(data, design)
     try {
       await this.ensureReady()
@@ -62,7 +65,6 @@ export class PdfRenderClient {
       }
       return renderDocumentPdf(data, design)
     }
-    if (this.disposed) throw new Error('The PDF renderer is shutting down.')
     return new Promise<RenderOutcome>((resolveRequest, rejectRequest) => {
       this.queue.push({ id: this.nextId++, data, design, resolve: resolveRequest, reject: rejectRequest, settled: false })
       this.pump()
