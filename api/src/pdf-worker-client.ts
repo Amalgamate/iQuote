@@ -200,6 +200,13 @@ export class PdfRenderClient {
 
   private handleReply(message: Record<string, unknown>) {
     const inFlight = this.inFlight
+    // Only a reply that carries the request id is part of the protocol. Anything else on stdout is
+    // noise — a log line that escaped into the protocol channel, most likely — and must not be
+    // counted as an unexpected reply, because it says nothing about the request in flight.
+    if (typeof message.id !== 'number') {
+      log({ event: 'document_pdf_worker_ignored_output', keys: Object.keys(message).slice(0, 8) })
+      return
+    }
     if (!inFlight || message.id !== inFlight.id) {
       log({ event: 'document_pdf_worker_unexpected_reply', id: message.id })
       return

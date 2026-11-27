@@ -8,6 +8,19 @@ import { createPdfElement, type PdfBusiness, type PdfData } from './document-pdf
 import { applyPlanLimits, defaultDesignFor, resolveDesign, type DocumentDesign } from './document-design.js'
 import { entitlementsFor } from './plans.js'
 
+/**
+ * Render telemetry goes to stderr, never stdout.
+ *
+ * This module runs in two places. In the API process stdout is an ordinary log stream, but the PDF
+ * render worker (pdf-worker.ts) speaks newline-delimited JSON on stdout: every line the parent reads
+ * there is treated as a protocol message. A `console.info` here would therefore be injected into that
+ * channel as a bogus message with no `id`, which the parent cannot match to a request. stderr is the
+ * safe channel in both places, and the worker already forwards its stderr to the API log verbatim.
+ */
+function logRenderEvent(entry: Record<string, unknown>) {
+  console.error(JSON.stringify(entry))
+}
+
 const MAX_CACHE_ENTRIES = 40
 const MAX_CACHE_BYTES = 12 * 1024 * 1024
 const MAX_LOGO_BYTES = 3 * 1024 * 1024
@@ -142,7 +155,7 @@ export async function renderDocumentPdf(data: PdfData, design: DocumentDesign): 
   const key = cacheKey(data, design, qr)
   const hit = cache.get(key)
   if (hit) {
-    console.info(JSON.stringify({ event: 'document_pdf_render', kind: data.kind, cacheHit: true, usedFallback: false, durationMs: 0, bytes: hit.byteLength }))
+    logRenderEvent({ event: 'document_pdf_render', kind: data.kind, cacheHit: true, usedFallback: false, durationMs: 0, bytes: hit.byteLength })
     return { buffer: hit, usedFallback: false, durationMs: 0, cacheHit: true }
   }
   const started = Date.now()
@@ -150,7 +163,7 @@ export async function renderDocumentPdf(data: PdfData, design: DocumentDesign): 
     const buffer = await renderOnce(data, design, qr, MAX_RENDER_MS)
     addCacheEntry(key, buffer)
     const durationMs = Date.now() - started
-    console.info(JSON.stringify({ event: 'document_pdf_render', kind: data.kind, cacheHit: false, usedFallback: false, durationMs, bytes: buffer.byteLength }))
+    logRenderEvent({ event: 'document_pdf_render', kind: data.kind, cacheHit: false, usedFallback: false, durationMs, bytes: buffer.byteLength })
     return { buffer, usedFallback: false, durationMs, cacheHit: false }
   } catch (error) {
     console.warn(JSON.stringify({ event: 'document_pdf_render_fallback', kind: data.kind, durationMs: Date.now() - started, reason: error instanceof Error ? error.message : 'Unknown PDF render error.' }))
@@ -160,7 +173,7 @@ export async function renderDocumentPdf(data: PdfData, design: DocumentDesign): 
     const safeData = { ...data, business: { ...data.business, logoData: null } } as PdfData
     const buffer = await renderOnce(safeData, fallbackDesign, undefined, remaining)
     const durationMs = Date.now() - started
-    console.info(JSON.stringify({ event: 'document_pdf_render', kind: data.kind, cacheHit: false, usedFallback: true, durationMs, bytes: buffer.byteLength }))
+    logRenderEvent({ event: 'document_pdf_render', kind: data.kind, cacheHit: false, usedFallback: true, durationMs, bytes: buffer.byteLength })
     return { buffer, usedFallback: true, durationMs, cacheHit: false }
   }
 }
