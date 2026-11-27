@@ -414,6 +414,7 @@ export function quoteDeliveryEmailHtml(params: {
   lineItems: Array<{ description: string; quantity: number; unitPrice: number; total: number }>
   customMessage: string | null
   quoteUrl: string
+  pdfAttached?: boolean
   revision?: { previousDocumentNumber: string; previousTotal: number; version: number; changes: string[] } | null
 }): string {
   const { recipientName, businessName, documentNumber, total, currency, validUntil, lineItems, customMessage, quoteUrl } = params
@@ -486,6 +487,8 @@ export function quoteDeliveryEmailHtml(params: {
 
     ${button(params.revision ? `Review updated quote →` : `Review your quote →`, quoteUrl)}
 
+    ${params.pdfAttached ? `<p style="margin:16px 0 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;line-height:1.6;color:#176b4b">A PDF copy of this quotation is attached for your records.</p>` : ''}
+
     <p style="margin:16px 0 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;line-height:1.6;color:#53647A">
       Click the button above to view the full quotation. You can approve or decline it directly from the link.
     </p>
@@ -514,6 +517,7 @@ export function invoiceDeliveryEmailHtml(params: {
   lineItems: Array<{ description: string; quantity: number; unit: string; unitPrice: number; total: number }>
   notes: string | null
   invoiceUrl: string
+  pdfAttached?: boolean
 }): string {
   const rowsHtml = params.lineItems.slice(0, 10).map((item) => `
     <tr>
@@ -548,6 +552,7 @@ export function invoiceDeliveryEmailHtml(params: {
     </div>
     ${params.notes ? `<div style="margin:0 0 20px;padding:14px 16px;background:#eaf5ee;border-left:3px solid #13795b"><p style="margin:0;color:#20362b;font-size:13px;line-height:1.6">${escapeText(params.notes)}</p></div>` : ''}
     ${button('Review invoice →', params.invoiceUrl)}
+    ${params.pdfAttached ? `<p style="margin:12px 0 0;color:#176b4b;font-size:13px;line-height:1.6">A PDF copy of this invoice is attached for your records.</p>` : ''}
     <p style="margin:16px 0 0;color:#64756b;font-size:13px;line-height:1.6">Use the secure link to review the invoice, see project updates, and continue the conversation.</p>
   `
   return emailShell(content, { previewText: `${escapeText(params.businessName)} sent invoice ${escapeText(params.invoiceNumber)} — ${formatCurrency(params.balanceDue, params.currency)} due` })
@@ -703,6 +708,7 @@ export function receiptDeliveryEmailHtml(params: {
   reference: string | null
   paymentDate: string
   customMessage?: string | null
+  pdfAttached?: boolean
 }): string {
   const formattedAmount = formatCurrency(params.amount, params.currency)
   const formattedDate = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium' }).format(new Date(params.paymentDate))
@@ -734,6 +740,7 @@ export function receiptDeliveryEmailHtml(params: {
     </div>
 
     <p style="margin:0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;color:#8A95A3">This receipt confirms payment recorded by ${escapeText(params.businessName)}. Please keep it for your records.</p>
+    ${params.pdfAttached ? `<p style="margin:12px 0 0;font-family:'Poppins','Montserrat',Arial,sans-serif;font-size:13px;color:#176b4b">A PDF copy of this receipt is attached.</p>` : ''}
   `
   return emailShell(content, { previewText: `Receipt ${params.receiptNumber} — ${formattedAmount}` })
 }

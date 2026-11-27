@@ -68,6 +68,13 @@ model Organisation {
   website             String?
   paymentInstructions String?
   terms               String?
+  /// Document design (docs/DOCUMENT_DESIGN_PLAN.md). Null means never saved; the renderer and the
+  /// settings API both fall back to the default design, so no backfill is needed.
+  documentDesign      Json?
+  /// Tax and identity numbers printed on documents. Free text, validated by the settings API.
+  kraPin              String?
+  vatNumber           String?
+  address             String?
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   status              String               @default("ACTIVE")
@@ -76,6 +83,12 @@ model Organisation {
   suspensionReason    String?
   restoredAt          DateTime?
   restoredByEmail     String?
+  archivedAt          DateTime?
+  archivedByEmail     String?
+  archiveReason       String?
+  statusBeforeArchive String?
+  unarchivedAt        DateTime?
+  unarchivedByEmail   String?
   ownerId             String               @unique
   owner               User                 @relation("OrganisationOwner", fields: [ownerId], references: [id])
   members             User[]               @relation("UserOrganisation")
@@ -91,6 +104,7 @@ model Organisation {
   paymentAttempts     InvoicePaymentAttempt[]
   jobs                Job[]
   invoices            Invoice[]
+  invoiceDeliveries   InvoiceDelivery[]
   payments            Payment[]
   refunds              PaymentRefund[]
   paymentAllocations PaymentAllocation[]
@@ -98,6 +112,8 @@ model Organisation {
   invitations         TeamInvitation[]
   notifications       Notification[]
   quoteMessages       QuoteMessage[]
+
+  @@index([status, archivedAt])
 }
 
 model TenantEmailSettings {
@@ -306,6 +322,9 @@ model Quote {
   version         Int             @default(1)
   parentQuoteId   String?
   publishedVersionId String?
+  /// Design frozen when the quote was sent. Renders after sending use this, so editing branding
+  /// later never changes a document the customer already received. Null for drafts.
+  designSnapshot  Json?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
   lines           QuoteLine[]
@@ -404,6 +423,12 @@ model QuoteDelivery {
   providerMessageId String?
   status            String    @default("PENDING")
   errorMessage      String?
+  /// Whether the customer email carried the PDF attachment (Phase 5).
+  attachedPdf       Boolean   @default(false)
+  /// Size of the attached PDF, for support and reporting. Null when nothing was attached.
+  pdfBytes          Int?
+  /// Why the attachment was skipped, kept even when the email itself succeeded.
+  attachmentError   String?
   sentAt            DateTime?
   deliveredAt       DateTime?
   bouncedAt         DateTime?
@@ -563,10 +588,13 @@ model Invoice {
   dueDate         DateTime?
   sentAt          DateTime?
   notes           String?
+  /// Design frozen when the invoice was sent. See Quote.designSnapshot.
+  designSnapshot  Json?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
   payments        Payment[]
+  deliveries      InvoiceDelivery[]
   reconciliations InvoiceReconciliation[]
   paymentAttempts InvoicePaymentAttempt[]
   refunds         PaymentRefund[]
@@ -595,6 +623,8 @@ model Payment {
   isDeposit      Boolean      @default(false)
   paymentDate    DateTime     @default(now())
   receivedBy     String
+  /// Design frozen when the receipt was issued. See Quote.designSnapshot.
+  designSnapshot Json?
   createdAt      DateTime     @default(now())
 
   @@index([invoiceId])
@@ -687,11 +717,42 @@ model ReceiptDelivery {
   providerMessageId String?
   status            String    @default("PENDING")
   errorMessage      String?
+  /// Whether the customer email carried the PDF attachment (Phase 5).
+  attachedPdf       Boolean   @default(false)
+  /// Size of the attached PDF, for support and reporting. Null when nothing was attached.
+  pdfBytes          Int?
+  /// Why the attachment was skipped, kept even when the email itself succeeded.
+  attachmentError   String?
   sentAt            DateTime?
   deliveredAt       DateTime?
   createdAt         DateTime  @default(now())
 
   @@index([paymentId, createdAt])
+  @@index([status])
+  @@index([organisationId, createdAt])
+}
+
+model InvoiceDelivery {
+  id                String       @id @default(cuid())
+  invoiceId         String
+  invoice           Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  organisationId    String
+  organisation      Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  recipientEmail    String
+  recipientName     String?
+  providerMessageId String?
+  status            String       @default("PENDING")
+  errorMessage      String?
+  attachedPdf       Boolean      @default(false)
+  pdfBytes          Int?
+  attachmentError   String?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  bouncedAt         DateTime?
+  createdAt         DateTime     @default(now())
+
+  @@index([invoiceId, createdAt])
+  @@index([invoiceId, status, createdAt])
   @@index([status])
   @@index([organisationId, createdAt])
 }

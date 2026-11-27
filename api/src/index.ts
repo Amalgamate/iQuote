@@ -15,7 +15,13 @@ import { getIndustryPack } from './industry-packs.js'
 import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush, setPlatformNcbaConfig } from './ncba-client.js'
 import { initiateMerchantStkPush, NcbaMerchantRequestError, normalizeCustomerPhone, normalizeMerchantCode, queryMerchantStkPush, verifyNotificationHash } from './customer-mpesa.js'
 import { verificationEmailHtml, welcomeEmailHtml, quoteDecisionEmailHtml, quoteDeliveryEmailHtml, invoiceDeliveryEmailHtml, receiptDeliveryEmailHtml, trialLimitEmailHtml, trialEndedEmailHtml, emailSubjects } from './email-templates.js'
-import { entitlementsFor, limitReachedMessage, quotaState, startOfMonthEAT, trialLimitReachedMessage, PLAN_ENTITLEMENTS, PLAN_LIMIT_CODE, TRIAL_LIMITS } from './plans.js'
+import { entitlementsFor, limitReachedMessage, quotaState, startOfMonthEAT, templateAllowed, trialLimitReachedMessage, PLAN_ENTITLEMENTS, PLAN_FEATURE_CODE, PLAN_LIMIT_CODE, TRIAL_LIMITS, type DocumentTemplateKey } from './plans.js'
+import { applyPlanLimits, defaultDesignFor, resolveDesign, validateDocumentDesign, TEMPLATE_KEYS, DEFAULT_TEMPLATE, type DocumentDesign } from './document-design.js'
+import { documentFlags } from './feature-flags.js'
+import { freezePdfSnapshot, freezeReceiptBalance, loadPdfLogo, pdfFilename, quotePdfLineAmounts, readReceiptBalance, renderDocumentPdf, resolveEffectiveDesign, resolvePdfSnapshot, withLogo } from './pdf-service.js'
+import { pdfRenderClient } from './pdf-worker-client.js'
+import { preparePdfEmailAttachment } from './pdf-email-attachment.js'
+import type { PdfBusiness, PdfData, PdfLine } from './document-pdf.js'
 
 const prisma = new PrismaClient()
 const app = express()
@@ -458,6 +464,17 @@ async function getWorkspaceSuspension(userId: string) {
   return prisma.organisation.findUnique({ where: { id: organisationId }, select: { status: true, suspensionReason: true } })
 }
 
+function workspaceAccessError(status: string, suspensionReason?: string | null) {
+  if (status === 'SUSPENDED') return { message: `This workspace is suspended. ${suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' }
+  if (status === 'ARCHIVED') return { message: 'This workspace has been archived. Contact iQuote support if you need access restored.', code: 'WORKSPACE_ARCHIVED' }
+  return null
+}
+
+async function workspaceIsActive(organisationId: string) {
+  const organisation = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { status: true } })
+  return organisation?.status === 'ACTIVE'
+}
+
 function makeSubdomainBase(name: string) {
   let slug = name
     .normalize('NFKD')
@@ -587,6 +604,9 @@ async function listInvoiceAllocatedPayments(db: any, invoiceId: string, organisa
       recipientName: delivery.recipientName,
       status: delivery.status,
       errorMessage: delivery.errorMessage,
+      attachedPdf: delivery.attachedPdf,
+      pdfBytes: delivery.pdfBytes,
+      attachmentError: delivery.attachmentError,
       sentAt: delivery.sentAt,
       createdAt: delivery.createdAt,
     })),
@@ -719,9 +739,13 @@ async function countQuotesThisMonth(organisationId: string) {
 // Returns the plan's daily email limit when it has been reached, otherwise null.
 async function dailyEmailLimitReached(organisationId: string): Promise<number | null> {
   const entitlements = await getEntitlements(organisationId)
-  const sent = await prisma.quoteDelivery.count({
-    where: { quote: { organisationId }, status: { not: 'FAILED' }, createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
-  })
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
+  const [quotes, invoices, receipts] = await Promise.all([
+    prisma.quoteDelivery.count({ where: { quote: { organisationId }, status: { not: 'FAILED' }, createdAt: { gte: since } } }),
+    prisma.invoiceDelivery.count({ where: { organisationId, status: { not: 'FAILED' }, createdAt: { gte: since } } }),
+    prisma.receiptDelivery.count({ where: { organisationId, status: { not: 'FAILED' }, createdAt: { gte: since } } }),
+  ])
+  const sent = quotes + invoices + receipts
   return quotaState(sent, entitlements.emailsPerDay).allowed ? null : entitlements.emailsPerDay
 }
 
@@ -934,7 +958,7 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
 
   if (user.role !== 'SUPERADMIN') {
     const workspace = await getWorkspaceSuspension(user.id)
-    if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
+    if (workspace && workspace.status !== 'ACTIVE') return res.status(403).json(workspaceAccessError(workspace.status, workspace.suspensionReason))
     if (!req.path.startsWith('/api/billing/') && !await workspaceBillingIsCurrent(user.id)) {
       return res.status(402).json({ message: 'Your trial or subscription has ended. Complete payment to reopen this workspace.', code: 'SUBSCRIPTION_PAYMENT_REQUIRED' })
     }
@@ -995,7 +1019,7 @@ function requireTeamRole(...allowed: TeamRoleName[]) {
 
     if (fullUser.role !== 'SUPERADMIN') {
       const workspace = await getWorkspaceSuspension(fullUser.id)
-      if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
+      if (workspace && workspace.status !== 'ACTIVE') return res.status(403).json(workspaceAccessError(workspace.status, workspace.suspensionReason))
       if (!req.path.startsWith('/api/billing/') && !await workspaceBillingIsCurrent(fullUser.id)) {
         return res.status(402).json({ message: 'Your trial or subscription has ended. Complete payment to reopen this workspace.', code: 'SUBSCRIPTION_PAYMENT_REQUIRED' })
       }
@@ -1380,6 +1404,298 @@ app.put('/api/settings/payments', requireTeamRole('OWNER'), async (req, res) => 
   return res.json({ merchantType: next.merchantType, tillNumber: next.tillNumber ?? '', paybillNumber: next.paybillNumber ?? '', enabled: next.enabled, stkCredentialsSet: Boolean(next.stkUsernameCiphertext && next.stkSecretCiphertext), notificationCredentialsSet: Boolean(next.notificationUsernameCiphertext && next.notificationPasswordCiphertext && next.notificationSecretCiphertext), encryptionReady: true })
 })
 
+// ---- Document design settings (docs/DOCUMENT_DESIGN_PLAN.md, Phase 1) ----
+// The stored design is the workspace's saved choice. Plan limits are applied when it is read, not
+// when it is written: a workspace that downgrades keeps its saved design and its colours, and its
+// documents fall back to Modern (with templateLocked true) instead of losing the data. Writing a
+// template the plan does not include is refused outright, so the picker and the API agree.
+
+const DOCUMENT_FLAG_STATE_CODE = 'DOCUMENT_DESIGN_UNAVAILABLE'
+
+function documentDesignAvailable(res: Response): boolean {
+  if (documentFlags().documentDesign) return true
+  res.status(404).json({ message: 'Document design is not available on this deployment.' })
+  return false
+}
+
+function serverPdfAvailable(res: Response): boolean {
+  if (documentFlags().serverPdf) return true
+  res.status(404).json({ message: 'Server PDF rendering is not available on this deployment.' })
+  return false
+}
+
+async function currentDocumentDesign(organisationId: string) {
+  const [organisation, subscription] = await Promise.all([
+    prisma.organisation.findUnique({ where: { id: organisationId }, select: { documentDesign: true } }),
+    prisma.subscription.findUnique({ where: { organisationId }, select: { plan: true, status: true } }),
+  ])
+  return resolveEffectiveDesign(organisation?.documentDesign, subscription?.plan, subscription?.status)
+}
+
+function pdfBusiness(organisation: { name?: string | null; email?: string | null; phone?: string | null; country?: string | null; website?: string | null; logoUrl?: string | null; address?: string | null; kraPin?: string | null; vatNumber?: string | null }): PdfBusiness {
+  return { name: organisation.name || 'Business', email: organisation.email, phone: organisation.phone, country: organisation.country, website: organisation.website, logoData: null, address: organisation.address, kraPin: organisation.kraPin, vatNumber: organisation.vatNumber }
+}
+
+async function currentDocumentSnapshot(organisationId: string) {
+  const [organisation, subscription] = await Promise.all([
+    prisma.organisation.findUnique({ where: { id: organisationId }, select: { documentDesign: true, name: true, email: true, phone: true, country: true, website: true, logoUrl: true, address: true, kraPin: true, vatNumber: true } }),
+    prisma.subscription.findUnique({ where: { organisationId }, select: { plan: true, status: true } }),
+  ])
+  if (!organisation) throw new Error('Business workspace not found.')
+  const design = resolveEffectiveDesign(organisation.documentDesign, subscription?.plan, subscription?.status)
+  return freezePdfSnapshot(design, pdfBusiness(organisation), organisation.logoUrl)
+}
+
+async function normalizedDocumentSnapshot(organisationId: string, sourceSnapshot: unknown) {
+  const current = await currentDocumentSnapshot(organisationId)
+  const resolved = resolvePdfSnapshot(sourceSnapshot ?? current, current.business, current.business.logoUrl)
+  return freezePdfSnapshot(resolved.design, resolved.business, resolved.logoUrl)
+}
+
+function emailDeliveryHistory(snapshot: unknown): Array<Record<string, unknown>> {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return []
+  const rows = (snapshot as Record<string, unknown>).emailDeliveries
+  return Array.isArray(rows) ? rows.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object' && !Array.isArray(row)) : []
+}
+
+function withEmailDeliveryHistory(snapshot: unknown, entry: Record<string, unknown>) {
+  const base = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot) ? snapshot as Record<string, unknown> : {}
+  return { ...base, emailDeliveries: [entry, ...emailDeliveryHistory(snapshot)].slice(0, 50) }
+}
+
+function invoicePdfData(invoice: any, snapshot: ReturnType<typeof resolvePdfSnapshot>, publicUrl?: string | null): PdfData {
+  const rawLines = Array.isArray(invoice.lineItems) ? invoice.lineItems as Array<Record<string, unknown>> : []
+  const lines: PdfLine[] = rawLines.map((line) => ({
+    description: String(line.description ?? 'Work item'), quantity: Number(line.quantity ?? 0), unit: String(line.unit ?? 'unit'),
+    unitPrice: Number(line.unitPrice ?? 0), taxRate: line.taxRate === null || line.taxRate === undefined ? null : Number(line.taxRate),
+    amount: roundMoney(Number(line.quantity ?? 0) * Number(line.unitPrice ?? 0)),
+  }))
+  const adjustedLines = quotePdfLineAmounts(lines.map(({ amount: _amount, ...line }) => line), Number(invoice.subtotal))
+  return {
+    kind: 'invoice', documentNumber: invoice.invoiceNumber, quoteNumber: invoice.sourceQuote?.documentNumber ?? null,
+    issueDate: new Date(invoice.issueDate).toISOString(), dueDate: invoice.dueDate ? new Date(invoice.dueDate).toISOString() : null,
+    currency: invoice.currency, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), total: Number(invoice.total),
+    amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue),
+    depositRequired: invoice.depositRequired === null ? null : Number(invoice.depositRequired), notes: invoice.notes,
+    lines: adjustedLines, customer: { name: invoice.customer.name, email: invoice.customer.email, phone: invoice.customer.phone },
+    business: snapshot.business, publicUrl: publicUrl ?? null,
+  }
+}
+
+function sendPdf(res: Response, result: Awaited<ReturnType<typeof renderDocumentPdf>>, filename: string) {
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+  res.setHeader('Cache-Control', 'private, no-store')
+  res.setHeader('X-iQuote-PDF-Cache', result.cacheHit ? 'HIT' : 'MISS')
+  if (result.usedFallback) res.setHeader('X-iQuote-PDF-Fallback', 'modern')
+  res.send(result.buffer)
+}
+
+async function renderAndSendPdf(res: Response, data: PdfData, design: DocumentDesign, logoUrl: string | null | undefined, filename: string) {
+  const logoData = await loadPdfLogo(logoUrl, uploadsDir)
+  const result = await pdfRenderClient().render(withLogo(data, logoData), design)
+  sendPdf(res, result, filename)
+}
+
+/** Everything the settings screen needs to render the editor. */
+function documentDesignPayload(stored: unknown, entitlements: ReturnType<typeof entitlementsFor>) {
+  const saved = resolveDesign(stored)
+  const { design, templateLocked } = applyPlanLimits(saved, entitlements)
+  return {
+    design,
+    saved,
+    templateLocked,
+    templates: TEMPLATE_KEYS.map((key) => ({ key, allowed: templateAllowed(entitlements, key) })),
+  }
+}
+
+function templateUpgradeMessage(template: DocumentTemplateKey) {
+  const plan = PLAN_REACHING_TEMPLATE.find((candidate) => PLAN_ENTITLEMENTS[candidate].templates.includes(template))
+  const label = TEMPLATE_LABELS[template]
+  return plan
+    ? `The ${label} template is available on the ${PLAN_DISPLAY[plan]} plan and above. Upgrade to use it.`
+    : `The ${label} template is not available on your plan.`
+}
+
+const PLAN_REACHING_TEMPLATE = ['STARTER', 'GROWTH', 'TEAM'] as const
+const PLAN_DISPLAY: Record<(typeof PLAN_REACHING_TEMPLATE)[number], string> = { STARTER: 'Starter', GROWTH: 'Growth', TEAM: 'Team' }
+const TEMPLATE_LABELS: Record<DocumentTemplateKey, string> = {
+  classic: 'Classic',
+  modern: 'Modern',
+  minimal: 'Minimal',
+  bold: 'Bold',
+  compact: 'Compact',
+}
+
+app.get('/api/settings/document-design', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  if (!documentDesignAvailable(res)) return
+  const user = getRequestUser(req)
+  const organisationId = user ? await getOrganisationId(user.id) : null
+  if (!organisationId) return res.status(404).json({ message: 'Business workspace not found.' })
+  const organisation = await prisma.organisation.findUnique({
+    where: { id: organisationId },
+    select: { documentDesign: true, kraPin: true, vatNumber: true, address: true },
+  })
+  if (!organisation) return res.status(404).json({ message: 'Business workspace not found.' })
+  const entitlements = await getEntitlements(organisationId)
+  return res.json({
+    ...documentDesignPayload(organisation.documentDesign, entitlements),
+    identity: {
+      kraPin: organisation.kraPin ?? '',
+      vatNumber: organisation.vatNumber ?? '',
+      address: organisation.address ?? '',
+    },
+  })
+})
+
+app.post('/api/settings/document-design/preview', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  if (!documentDesignAvailable(res) || !serverPdfAvailable(res)) return
+  const user = getRequestUser(req)
+  const organisationId = user ? await getOrganisationId(user.id) : null
+  if (!organisationId) return res.status(404).json({ message: 'Business workspace not found.' })
+  const parsed = validateDocumentDesign(req.body?.design)
+  if (!parsed.ok) return res.status(400).json({ message: parsed.errors[0], errors: parsed.errors })
+  const entitlements = await getEntitlements(organisationId)
+  if (!templateAllowed(entitlements, parsed.design.template)) return res.status(403).json({ message: templateUpgradeMessage(parsed.design.template), code: PLAN_FEATURE_CODE, template: parsed.design.template })
+  const kind = String(req.body?.kind ?? 'quote').toLowerCase()
+  if (!['quote', 'invoice', 'receipt'].includes(kind)) return res.status(400).json({ message: 'Choose a quote, invoice, or receipt preview.' })
+  const organisation = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { name: true, email: true, phone: true, country: true, website: true, logoUrl: true, address: true, kraPin: true, vatNumber: true, currency: true } })
+  if (!organisation) return res.status(404).json({ message: 'Business workspace not found.' })
+  const identityResult = req.body?.identity === undefined ? null : validateDocumentIdentity(req.body.identity)
+  if (identityResult && !identityResult.ok) return res.status(400).json({ message: identityResult.errors[0], errors: identityResult.errors })
+  const customer = await prisma.customer.findFirst({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { name: true, email: true, phone: true } })
+  const business = pdfBusiness({ ...organisation, ...(identityResult?.ok ? identityResult.values : {}) })
+  const recipient = customer ?? { name: 'Sample customer', email: 'customer@example.com', phone: null }
+  const now = new Date()
+  const data: PdfData = kind === 'invoice'
+    ? { kind: 'invoice', documentNumber: 'INV-PREVIEW-001', quoteNumber: 'QT-PREVIEW-001', issueDate: now.toISOString(), dueDate: null, currency: organisation.currency, subtotal: 12500, taxTotal: 2000, total: 14500, amountPaid: 3000, balanceDue: 11500, depositRequired: 3000, notes: parsed.design.text.terms, lines: [{ description: 'Professional service', quantity: 1, unit: 'job', unitPrice: 12500, taxRate: 16, amount: 12500 }], customer: recipient, business }
+    : kind === 'receipt'
+      ? { kind: 'receipt', documentNumber: 'RCP-PREVIEW-001', invoiceNumber: 'INV-PREVIEW-001', paymentDate: now.toISOString(), currency: organisation.currency, amount: 3000, balanceDue: 11500, method: 'MOBILE_MONEY', reference: 'PREVIEW123', customer: recipient, business }
+      : { kind: 'quote', documentNumber: 'QT-PREVIEW-001', createdAt: now.toISOString(), validUntil: null, currency: organisation.currency, subtotal: 12500, taxTotal: 2000, total: 14500, notes: null, terms: parsed.design.text.terms, lines: [{ description: 'Professional service', quantity: 1, unit: 'job', unitPrice: 12500, taxRate: 16, amount: 12500 }], customer: recipient, business, publicUrl: `${(process.env.PLATFORM_URL ?? 'http://localhost:5174').replace(/\/$/, '')}/quote/preview` }
+  try {
+    const logo = await loadPdfLogo(organisation.logoUrl, uploadsDir)
+    const result = await pdfRenderClient().render(withLogo(data, logo), parsed.design)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="${kind}-design-preview.pdf"`)
+    res.setHeader('Cache-Control', 'private, no-store')
+    if (result.usedFallback) res.setHeader('X-iQuote-PDF-Fallback', 'modern')
+    return res.send(result.buffer)
+  } catch (error) { return res.status(503).json({ message: error instanceof Error ? error.message : 'Could not render preview.' }) }
+})
+
+app.put('/api/settings/document-design', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  if (!documentDesignAvailable(res)) return
+  const user = getRequestUser(req)
+  const organisationId = user ? await getOrganisationId(user.id) : null
+  if (!organisationId) return res.status(404).json({ message: 'Business workspace not found.' })
+
+  const result = validateDocumentDesign(req.body?.design)
+  if (!result.ok) return res.status(400).json({ message: result.errors[0], errors: result.errors })
+
+  const entitlements = await getEntitlements(organisationId)
+  if (!templateAllowed(entitlements, result.design.template)) {
+    return res.status(403).json({
+      message: templateUpgradeMessage(result.design.template),
+      code: PLAN_FEATURE_CODE,
+      template: result.design.template,
+    })
+  }
+
+  // Identity fields travel with the design because they appear on the same screen. They are optional
+  // on the request: a design-only save leaves them untouched.
+  const identityInput = req.body?.identity
+  const identity = identityInput === undefined ? undefined : validateDocumentIdentity(identityInput)
+  if (identity && !identity.ok) return res.status(400).json({ message: identity.errors[0], errors: identity.errors })
+
+  const existingOrganisation = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { documentDesign: true } })
+  if (!existingOrganisation) return res.status(404).json({ message: 'Business workspace not found.' })
+  const existingDesign = resolveDesign(existingOrganisation.documentDesign)
+  const existingTemplateLocked = !templateAllowed(entitlements, existingDesign.template)
+  const designToSave = existingTemplateLocked && result.design.template === DEFAULT_TEMPLATE
+    ? { ...result.design, template: existingDesign.template, typeface: existingDesign.typeface, header: existingDesign.header, table: existingDesign.table, total: existingDesign.total, spacing: existingDesign.spacing }
+    : result.design
+  const design = designToSave as unknown as PrismaTypes.InputJsonValue
+  const updated = await prisma.organisation.update({
+    where: { id: organisationId },
+    data: { documentDesign: design, ...(identity?.ok ? identity.values : {}) },
+    select: { documentDesign: true, kraPin: true, vatNumber: true, address: true },
+  })
+  return res.json({
+    ...documentDesignPayload(updated.documentDesign, entitlements),
+    identity: {
+      kraPin: updated.kraPin ?? '',
+      vatNumber: updated.vatNumber ?? '',
+      address: updated.address ?? '',
+    },
+  })
+})
+
+// Restore the stored design to the template's preset defaults, keeping nothing. Used by the
+// "reset to template" control. The template argument is validated against the plan like a save.
+app.post('/api/settings/document-design/reset', requireTeamRole('OWNER', 'ADMIN'), async (req, res) => {
+  if (!documentDesignAvailable(res)) return
+  const user = getRequestUser(req)
+  const organisationId = user ? await getOrganisationId(user.id) : null
+  if (!organisationId) return res.status(404).json({ message: 'Business workspace not found.' })
+
+  const requested = req.body?.template ?? defaultDesignFor().template
+  const result = validateDocumentDesign({ ...defaultDesignFor(), template: requested })
+  if (!result.ok) return res.status(400).json({ message: result.errors[0], errors: result.errors })
+
+  const entitlements = await getEntitlements(organisationId)
+  if (!templateAllowed(entitlements, result.design.template)) {
+    return res.status(403).json({ message: templateUpgradeMessage(result.design.template), code: PLAN_FEATURE_CODE, template: result.design.template })
+  }
+
+  const updated = await prisma.organisation.update({
+    where: { id: organisationId },
+    data: { documentDesign: defaultDesignFor(result.design.template) as unknown as PrismaTypes.InputJsonValue },
+    select: { documentDesign: true, kraPin: true, vatNumber: true, address: true },
+  })
+  return res.json({
+    ...documentDesignPayload(updated.documentDesign, entitlements),
+    identity: { kraPin: updated.kraPin ?? '', vatNumber: updated.vatNumber ?? '', address: updated.address ?? '' },
+  })
+})
+
+const IDENTITY_LIMITS = { kraPin: 20, vatNumber: 20, address: 200 } as const
+// KRA PINs are one letter, nine digits, one letter (A123456789Z). VAT numbers are free-form because
+// the format has changed over time, so they are length-checked only.
+const KRA_PIN_FORMAT = /^[A-Z]\d{9}[A-Z]$/i
+
+type IdentityValues = { kraPin?: string; vatNumber?: string; address?: string }
+type IdentityResult = { ok: true; values: IdentityValues } | { ok: false; errors: string[] }
+
+/** Validate the tax and identity fields shown on the same settings screen as the design. */
+function validateDocumentIdentity(input: unknown): IdentityResult {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return { ok: false, errors: ['identity must be an object.'] }
+  const record = input as Record<string, unknown>
+  const errors: string[] = []
+  const values: IdentityValues = {}
+
+  const read = (key: keyof typeof IDENTITY_LIMITS, label: string) => {
+    const raw = record[key]
+    if (raw === undefined) return
+    if (typeof raw !== 'string') {
+      errors.push(`${label} must be text.`)
+      return
+    }
+    const text = raw.trim()
+    if (text.length > IDENTITY_LIMITS[key]) {
+      errors.push(`${label} must be at most ${IDENTITY_LIMITS[key]} characters.`)
+      return
+    }
+    values[key] = text
+  }
+
+  read('kraPin', 'KRA PIN')
+  read('vatNumber', 'VAT number')
+  read('address', 'Address')
+  if (values.kraPin && !KRA_PIN_FORMAT.test(values.kraPin)) errors.push('KRA PIN should look like A123456789Z.')
+
+  return errors.length ? { ok: false, errors } : { ok: true, values }
+}
+
 function safeSecretMatch(received: unknown, expected: string | null) {
   if (typeof received !== 'string' || !expected) return false
   const left = Buffer.from(received)
@@ -1477,7 +1793,7 @@ app.post('/api/auth/login', async (req, res) => {
 
   if (user.role !== 'SUPERADMIN') {
     const workspace = await getWorkspaceSuspension(user.id)
-    if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
+    if (workspace && workspace.status !== 'ACTIVE') return res.status(403).json(workspaceAccessError(workspace.status, workspace.suspensionReason))
   }
 
   await clearLoginAttempts(rateLimitKey)
@@ -1538,7 +1854,7 @@ app.get('/api/auth/me', async (req, res) => {
 
   if (user.role !== 'SUPERADMIN') {
     const workspace = await getWorkspaceSuspension(user.id)
-    if (workspace?.status === 'SUSPENDED') return res.status(403).json({ message: `This workspace is suspended. ${workspace.suspensionReason ?? 'Contact iQuote support for assistance.'}`, code: 'WORKSPACE_SUSPENDED' })
+    if (workspace && workspace.status !== 'ACTIVE') return res.status(403).json(workspaceAccessError(workspace.status, workspace.suspensionReason))
   }
 
   if (user.role === 'SUPERADMIN' && !(await hasVerifiedSuperadminSession(token, user.id))) {
@@ -2227,18 +2543,132 @@ app.get('/api/quotes/:id', requireAuth, async (req, res) => {
   res.json({ quote: serializeQuote(quote) })
 })
 
+app.get('/api/quotes/:id/pdf', requireAuth, async (req, res) => {
+  if (!serverPdfAvailable(res)) return
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(404).json({ message: 'Business workspace not found.' })
+  const quote = await prisma.quote.findFirst({
+    where: { id: String(req.params.id ?? ''), organisationId },
+    include: {
+      customer: true,
+      organisation: { select: { name: true, email: true, phone: true, country: true, website: true, logoUrl: true, address: true, kraPin: true, vatNumber: true } },
+      lines: { orderBy: { position: 'asc' } },
+    },
+  })
+  if (!quote) return res.status(404).json({ message: 'Quote not found.' })
+  const snapshot = resolvePdfSnapshot(quote.designSnapshot, pdfBusiness(quote.organisation), quote.organisation.logoUrl)
+  const design = quote.designSnapshot ? snapshot.design : await currentDocumentDesign(organisationId)
+  const business = snapshot.business
+  const data: PdfData = {
+    kind: 'quote', documentNumber: quote.documentNumber, createdAt: quote.createdAt.toISOString(), validUntil: quote.validUntil?.toISOString() ?? null,
+    currency: quote.currency, subtotal: Number(quote.subtotal), taxTotal: Number(quote.taxTotal), total: Number(quote.total), notes: quote.notes,
+    terms: quote.terms, lines: quotePdfLineAmounts(quote.lines.map((line) => ({ description: line.description, quantity: Number(line.quantity), unit: line.unit, unitPrice: Number(line.unitPrice), taxRate: line.taxRate === null ? null : Number(line.taxRate) })), Number(quote.subtotal)),
+    customer: { name: quote.customer.name, email: quote.customer.email, phone: quote.customer.phone }, business,
+    publicUrl: quote.publicToken ? `${(process.env.PLATFORM_URL ?? 'http://localhost:5174').replace(/\/$/, '')}/quote/${encodeURIComponent(quote.publicToken)}` : null,
+  }
+  try { await renderAndSendPdf(res, data, design, snapshot.logoUrl, pdfFilename(quote.documentNumber, 'quotation')) }
+  catch (error) { return res.status(503).json({ message: error instanceof Error ? error.message : 'Could not render this quotation.' }) }
+})
+
+app.get('/api/invoices/:id/pdf', requireAuth, async (req, res) => {
+  if (!serverPdfAvailable(res)) return
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(404).json({ message: 'Business workspace not found.' })
+  const invoice = await prisma.invoice.findFirst({
+    where: { id: String(req.params.id ?? ''), organisationId },
+    include: {
+      customer: true,
+      organisation: { select: { name: true, email: true, phone: true, country: true, website: true, logoUrl: true, address: true, kraPin: true, vatNumber: true } },
+      sourceQuote: { select: { documentNumber: true, publicToken: true } },
+    },
+  })
+  if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
+  const snapshot = resolvePdfSnapshot(invoice.designSnapshot, pdfBusiness(invoice.organisation), invoice.organisation.logoUrl)
+  const design = invoice.designSnapshot ? snapshot.design : await currentDocumentDesign(organisationId)
+  const rawLines = Array.isArray(invoice.lineItems) ? invoice.lineItems as Array<Record<string, unknown>> : []
+  const lines: PdfLine[] = rawLines.map((line) => {
+    const quantity = Number(line.quantity ?? 0)
+    const unitPrice = Number(line.unitPrice ?? 0)
+    return { description: String(line.description ?? 'Work item'), quantity, unit: String(line.unit ?? 'unit'), unitPrice, taxRate: line.taxRate === null || line.taxRate === undefined ? null : Number(line.taxRate), amount: roundMoney(quantity * unitPrice) }
+  })
+  const subtotal = Number(invoice.subtotal)
+  const reconciledLines = quotePdfLineAmounts(lines.map(({ amount: _amount, ...line }) => line), subtotal)
+  const data: PdfData = {
+    kind: 'invoice', documentNumber: invoice.invoiceNumber, quoteNumber: invoice.sourceQuote?.documentNumber ?? null,
+    issueDate: invoice.issueDate.toISOString(), dueDate: invoice.dueDate?.toISOString() ?? null, currency: invoice.currency,
+    subtotal, taxTotal: Number(invoice.taxTotal), total: Number(invoice.total), amountPaid: Number(invoice.amountPaid), balanceDue: Number(invoice.balanceDue),
+    depositRequired: invoice.depositRequired === null ? null : Number(invoice.depositRequired), notes: invoice.notes,
+    lines: reconciledLines, customer: { name: invoice.customer.name, email: invoice.customer.email, phone: invoice.customer.phone }, business: snapshot.business,
+    publicUrl: invoice.sourceQuote?.publicToken ? `${(process.env.PLATFORM_URL ?? 'http://localhost:5174').replace(/\/$/, '')}/quote/${encodeURIComponent(invoice.sourceQuote.publicToken)}` : null,
+  }
+  try { await renderAndSendPdf(res, data, design, snapshot.logoUrl, pdfFilename(invoice.invoiceNumber, 'invoice')) }
+  catch (error) { return res.status(503).json({ message: error instanceof Error ? error.message : 'Could not render this invoice.' }) }
+})
+
+app.get('/api/payments/:paymentId/receipt.pdf', requireAuth, async (req, res) => {
+  if (!serverPdfAvailable(res)) return
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const organisationId = await getOrganisationId(user.id)
+  if (!organisationId) return res.status(404).json({ message: 'Business workspace not found.' })
+  const payment = await prisma.payment.findFirst({
+    where: { id: String(req.params.paymentId ?? ''), organisationId },
+    include: {
+      invoice: { include: { customer: true, sourceQuote: { select: { designSnapshot: true } } } },
+      organisation: { select: { name: true, email: true, phone: true, country: true, website: true, logoUrl: true, address: true, kraPin: true, vatNumber: true } },
+    },
+  })
+  if (!payment) return res.status(404).json({ message: 'Payment not found.' })
+  const fallbackBusiness = pdfBusiness(payment.organisation)
+  const sourceSnapshot = payment.designSnapshot ?? payment.invoice.designSnapshot
+  const snapshot = resolvePdfSnapshot(sourceSnapshot, fallbackBusiness, payment.organisation.logoUrl)
+  const design = sourceSnapshot ? snapshot.design : await currentDocumentDesign(organisationId)
+  const data: PdfData = {
+    kind: 'receipt', documentNumber: payment.receiptNumber, invoiceNumber: payment.invoice.invoiceNumber,
+    paymentDate: payment.paymentDate.toISOString(), currency: payment.currency, amount: Number(payment.amount),
+    balanceDue: readReceiptBalance(payment.designSnapshot, Number(payment.invoice.balanceDue)), method: payment.method, reference: payment.reference,
+    customer: { name: payment.invoice.customer.name, email: payment.invoice.customer.email, phone: payment.invoice.customer.phone },
+    business: snapshot.business,
+  }
+  try { await renderAndSendPdf(res, data, design, snapshot.logoUrl, pdfFilename(payment.receiptNumber, 'receipt')) }
+  catch (error) { return res.status(503).json({ message: error instanceof Error ? error.message : 'Could not render this receipt.' }) }
+})
+
 app.get('/api/notifications', requireAuth, async (req, res) => {
   const user = getRequestUser(req)
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
-  const notifications = await prisma.notification.findMany({ where: { recipientUserId: user.id }, include: { quote: { select: { id: true, documentNumber: true } } }, orderBy: { createdAt: 'desc' }, take: 30 })
-  const unreadCount = await prisma.notification.count({ where: { recipientUserId: user.id, readAt: null } })
+  const where = { recipientUserId: user.id, type: { not: 'PRODUCT_UPDATE' } }
+  const notifications = await prisma.notification.findMany({ where, include: { quote: { select: { id: true, documentNumber: true } } }, orderBy: { createdAt: 'desc' }, take: 30 })
+  const unreadCount = await prisma.notification.count({ where: { ...where, readAt: null } })
   res.json({ notifications, unreadCount })
+})
+
+app.get('/api/product-updates', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const where = { recipientUserId: user.id, type: 'PRODUCT_UPDATE' }
+  const [updates, unreadCount] = await Promise.all([
+    prisma.notification.findMany({ where, orderBy: { createdAt: 'desc' }, take: 30, select: { id: true, title: true, body: true, readAt: true, createdAt: true } }),
+    prisma.notification.count({ where: { ...where, readAt: null } }),
+  ])
+  res.json({ updates, unreadCount })
 })
 
 app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
   const user = getRequestUser(req)
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
-  await prisma.notification.updateMany({ where: { recipientUserId: user.id, readAt: null }, data: { readAt: new Date() } })
+  await prisma.notification.updateMany({ where: { recipientUserId: user.id, readAt: null, type: { not: 'PRODUCT_UPDATE' } }, data: { readAt: new Date() } })
+  res.json({ ok: true })
+})
+
+app.post('/api/product-updates/read-all', requireAuth, async (req, res) => {
+  const user = getRequestUser(req)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  await prisma.notification.updateMany({ where: { recipientUserId: user.id, type: 'PRODUCT_UPDATE', readAt: null }, data: { readAt: new Date() } })
   res.json({ ok: true })
 })
 
@@ -2353,8 +2783,9 @@ app.post('/api/quotes/:id/share', requireAuth, async (req, res) => {
     root = parent
   }
   const publicToken = root.publicToken ?? randomBytes(24).toString('base64url')
+  const designSnapshot = await normalizedDocumentSnapshot(quote.organisationId, quote.designSnapshot) as unknown as PrismaTypes.InputJsonValue
   const shared = await prisma.$transaction(async (tx) => {
-    const updated = await tx.quote.update({ where: { id: quote.id }, data: { status: 'SENT', publicToken: quote.publicToken ?? null }, select: { id: true, documentNumber: true, status: true } })
+    const updated = await tx.quote.update({ where: { id: quote.id }, data: { status: 'SENT', publicToken: quote.publicToken ?? null, designSnapshot }, select: { id: true, documentNumber: true, status: true } })
     await tx.quote.update({ where: { id: root.id }, data: { publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } })
     if (quote.id === root.id) await tx.quote.update({ where: { id: quote.id }, data: { publicToken } })
     return { ...updated, publicToken }
@@ -2490,6 +2921,9 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
   // Keep the root token stable so every previously shared customer link resolves
   // to the latest version. A revision token is never used as the emailed URL.
   const publicToken = root.publicToken ?? randomBytes(24).toString('base64url')
+  const designSnapshot = await normalizedDocumentSnapshot(quote.organisationId, quote.designSnapshot) as unknown as PrismaTypes.InputJsonValue
+  const frozenPdf = resolvePdfSnapshot(designSnapshot, pdfBusiness(quote.organisation), quote.organisation.logoUrl)
+  const attachPdfRequested = typeof req.body?.attachPdf === 'boolean' ? req.body.attachPdf : frozenPdf.design.email.attachPdf
   const now = new Date()
 
   const deliveryMessage = ccList.length > 0
@@ -2507,8 +2941,6 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
     },
   })
 
-  if (!isRevision) await prisma.quote.update({ where: { id: quote.id }, data: { status: 'SENT', publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } })
-
   // Build the public quote URL
   const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
   const quoteUrl = `${platformUrl}/quote/${encodeURIComponent(publicToken)}`
@@ -2520,6 +2952,14 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
     unitPrice: Number(line.unitPrice),
     total: roundMoney(Number(line.quantity) * Number(line.unitPrice)),
   }))
+
+  const attachment = await preparePdfEmailAttachment(attachPdfRequested, documentFlags().emailPdfAttach, {
+    kind: 'quote', documentNumber: quote.documentNumber, createdAt: quote.createdAt.toISOString(), validUntil: quote.validUntil?.toISOString() ?? null,
+    currency: quote.currency, subtotal: Number(quote.subtotal), taxTotal: Number(quote.taxTotal), total: Number(quote.total), notes: quote.notes,
+    terms: quote.terms, lines: quotePdfLineAmounts(quote.lines.map((line) => ({ description: line.description, quantity: Number(line.quantity), unit: line.unit, unitPrice: Number(line.unitPrice), taxRate: line.taxRate === null ? null : Number(line.taxRate) })), Number(quote.subtotal)),
+    customer: { name: quote.customer.name, email: quote.customer.email, phone: quote.customer.phone }, business: frozenPdf.business,
+    publicUrl: quoteUrl,
+  }, frozenPdf.design, frozenPdf.logoUrl, uploadsDir, pdfRenderClient())
 
   // Send the email
   try {
@@ -2536,30 +2976,36 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
         lineItems,
         customMessage: message,
         quoteUrl,
+        pdfAttached: attachment.attachedPdf,
         revision: isRevision ? { previousDocumentNumber: previousPublished?.documentNumber ?? root.documentNumber, previousTotal: Number(previousPublished?.total ?? root.total), version: quote.version, changes: quoteLineRevisionSummary(previousPublished?.lines ?? [], quote.lines) } : null,
       }),
       `quote-delivery/${delivery.id}`,
       quote.organisationId,
-      undefined,
+      attachment.attachments,
       ccList,
       quote.organisation.email ?? undefined,
     )
+
+    if (result === false) throw new Error('Email provider is not configured. The quotation was not marked as sent.')
 
     await prisma.quoteDelivery.update({
       where: { id: delivery.id },
       data: {
         status: 'SENT',
-        providerMessageId: result !== false ? (result.messageId ?? null) : null,
+        providerMessageId: result.messageId,
         sentAt: now,
+        attachedPdf: attachment.attachedPdf,
+        pdfBytes: attachment.pdfBytes,
+        attachmentError: attachment.attachmentError,
       },
     })
 
     if (isRevision) {
       await prisma.$transaction([
-        prisma.quote.update({ where: { id: quote.id }, data: { status: 'SENT', publicToken: quote.publicToken, tokenRevokedAt: null, tokenRevokedBy: null } }),
+        prisma.quote.update({ where: { id: quote.id }, data: { status: 'SENT', publicToken: quote.publicToken, tokenRevokedAt: null, tokenRevokedBy: null, designSnapshot } }),
         prisma.quote.update({ where: { id: root.id }, data: { publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } }),
       ])
-    }
+    } else await prisma.quote.update({ where: { id: quote.id }, data: { status: 'SENT', publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null, designSnapshot } })
 
     res.json({
       delivery: {
@@ -2567,8 +3013,11 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
         recipientEmail,
         recipientName,
         status: 'SENT',
-        providerMessageId: result !== false ? (result.messageId ?? null) : null,
+        providerMessageId: result.messageId,
         sentAt: now.toISOString(),
+        attachedPdf: attachment.attachedPdf,
+        pdfBytes: attachment.pdfBytes,
+        attachmentError: attachment.attachmentError,
       },
       quote: { id: quote.id, status: 'SENT', publicToken, updated: isRevision },
       customerUpdated: syncCustomerEmail,
@@ -2577,7 +3026,7 @@ app.post('/api/quotes/:id/send', requireAuth, async (req, res) => {
     const errorMessage = error instanceof Error ? error.message : 'Email delivery failed.'
     await prisma.quoteDelivery.update({
       where: { id: delivery.id },
-      data: { status: 'FAILED', errorMessage },
+      data: { status: 'FAILED', errorMessage, attachedPdf: false, pdfBytes: null, attachmentError: attachment.attachmentError },
     })
     res.status(502).json({ message: errorMessage, deliveryId: delivery.id })
   }
@@ -2593,17 +3042,19 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
     where: { id: quoteId, organisationId: organisationId ?? '__none__' },
     include: {
       customer: { select: { id: true, name: true, email: true, phone: true } },
-      organisation: { select: { id: true, name: true, email: true, currency: true } },
+      organisation: { select: { id: true, name: true, email: true, currency: true, logoUrl: true } },
       lines: { orderBy: { position: 'asc' } },
     },
   })
   if (!quote) return res.status(404).json({ message: 'Quote not found.' })
 
-  const recipientEmail = String(req.body?.recipientEmail ?? '').trim().toLowerCase()
+  const requestedRecipientEmail = String(req.body?.recipientEmail ?? '').trim().toLowerCase()
+  const latestDelivery = requestedRecipientEmail ? null : await prisma.quoteDelivery.findFirst({ where: { quoteId: quote.id }, orderBy: { createdAt: 'desc' }, select: { recipientEmail: true, recipientName: true } })
+  const recipientEmail = requestedRecipientEmail || quote.customer.email?.toLowerCase() || latestDelivery?.recipientEmail || ''
   const recipientName = String(req.body?.recipientName ?? '').trim() || null
   const message = String(req.body?.message ?? '').trim() || null
 
-  if (!recipientEmail) return res.status(400).json({ message: 'Recipient email is required.' })
+  if (!recipientEmail) return res.status(400).json({ message: 'Add an email address before resending this quote.' })
   if (!isValidEmail(recipientEmail)) return res.status(400).json({ message: 'Enter a valid email address.' })
 
   // Drafts have no live public link (the public page returns 404 for them), so they cannot be resent.
@@ -2616,6 +3067,9 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
   if (!root) return res.status(409).json({ message: 'The original quote thread could not be found.' })
   const previousPublished = await prisma.quote.findFirst({ where: { id: root.publishedVersionId ?? root.id, organisationId: quote.organisationId }, include: { lines: { orderBy: { position: 'asc' } } } })
   const isRevision = Boolean(quote.parentQuoteId)
+  const designSnapshot = await normalizedDocumentSnapshot(quote.organisationId, quote.designSnapshot) as unknown as PrismaTypes.InputJsonValue
+  const frozenPdf = resolvePdfSnapshot(designSnapshot, pdfBusiness(quote.organisation), quote.organisation.logoUrl)
+  const attachPdfRequested = typeof req.body?.attachPdf === 'boolean' ? req.body.attachPdf : frozenPdf.design.email.attachPdf
   const publicToken = root.publicToken ?? randomBytes(24).toString('base64url')
   const now = new Date()
 
@@ -2633,7 +3087,7 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
     },
   })
 
-  if (!isRevision) await prisma.quote.update({ where: { id: quote.id }, data: { publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } })
+  if (!isRevision) await prisma.quote.update({ where: { id: quote.id }, data: { publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null, designSnapshot } })
 
   const platformUrl = process.env.PLATFORM_URL ?? 'http://localhost:5174'
   const quoteUrl = `${platformUrl}/quote/${encodeURIComponent(publicToken)}`
@@ -2644,6 +3098,14 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
     unitPrice: Number(line.unitPrice),
     total: roundMoney(Number(line.quantity) * Number(line.unitPrice)),
   }))
+
+  const attachment = await preparePdfEmailAttachment(attachPdfRequested, documentFlags().emailPdfAttach, {
+    kind: 'quote', documentNumber: quote.documentNumber, createdAt: quote.createdAt.toISOString(), validUntil: quote.validUntil?.toISOString() ?? null,
+    currency: quote.currency, subtotal: Number(quote.subtotal), taxTotal: Number(quote.taxTotal), total: Number(quote.total), notes: quote.notes,
+    terms: quote.terms, lines: quotePdfLineAmounts(quote.lines.map((line) => ({ description: line.description, quantity: Number(line.quantity), unit: line.unit, unitPrice: Number(line.unitPrice), taxRate: line.taxRate === null ? null : Number(line.taxRate) })), Number(quote.subtotal)),
+    customer: { name: quote.customer.name, email: quote.customer.email, phone: quote.customer.phone }, business: frozenPdf.business,
+    publicUrl: quoteUrl,
+  }, frozenPdf.design, frozenPdf.logoUrl, uploadsDir, pdfRenderClient())
 
   try {
     const result = await sendEmail(
@@ -2659,27 +3121,33 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
         lineItems,
         customMessage: message,
         quoteUrl,
+        pdfAttached: attachment.attachedPdf,
         revision: isRevision ? { previousDocumentNumber: previousPublished?.documentNumber ?? root.documentNumber, previousTotal: Number(previousPublished?.total ?? root.total), version: quote.version, changes: quoteLineRevisionSummary(previousPublished?.lines ?? [], quote.lines) } : null,
       }),
       `quote-delivery/${delivery.id}`,
       quote.organisationId,
-      undefined,
+      attachment.attachments,
       undefined,
       quote.organisation.email ?? undefined,
     )
+
+    if (result === false) throw new Error('Email provider is not configured. The quotation was not sent again.')
 
     await prisma.quoteDelivery.update({
       where: { id: delivery.id },
       data: {
         status: 'SENT',
-        providerMessageId: result !== false ? (result.messageId ?? null) : null,
+        providerMessageId: result.messageId,
         sentAt: now,
+        attachedPdf: attachment.attachedPdf,
+        pdfBytes: attachment.pdfBytes,
+        attachmentError: attachment.attachmentError,
       },
     })
 
     if (isRevision) {
       await prisma.$transaction([
-        prisma.quote.update({ where: { id: quote.id }, data: { publicToken: quote.publicToken, tokenRevokedAt: null, tokenRevokedBy: null } }),
+        prisma.quote.update({ where: { id: quote.id }, data: { publicToken: quote.publicToken, tokenRevokedAt: null, tokenRevokedBy: null, designSnapshot } }),
         prisma.quote.update({ where: { id: root.id }, data: { publicToken, publishedVersionId: quote.id, tokenRevokedAt: null, tokenRevokedBy: null } }),
       ])
     }
@@ -2690,8 +3158,11 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
         recipientEmail,
         recipientName,
         status: 'SENT',
-        providerMessageId: result !== false ? (result.messageId ?? null) : null,
+        providerMessageId: result.messageId,
         sentAt: now.toISOString(),
+        attachedPdf: attachment.attachedPdf,
+        pdfBytes: attachment.pdfBytes,
+        attachmentError: attachment.attachmentError,
       },
       quote: { id: quote.id, publicToken },
     })
@@ -2699,7 +3170,7 @@ app.post('/api/quotes/:id/resend', requireAuth, async (req, res) => {
     const errorMessage = error instanceof Error ? error.message : 'Email delivery failed.'
     await prisma.quoteDelivery.update({
       where: { id: delivery.id },
-      data: { status: 'FAILED', errorMessage },
+      data: { status: 'FAILED', errorMessage, attachmentError: attachment.attachmentError },
     })
     res.status(502).json({ message: errorMessage, deliveryId: delivery.id })
   }
@@ -2734,6 +3205,9 @@ app.get('/api/quotes/:id/deliveries', requireAuth, async (req, res) => {
       sentAt: d.sentAt,
       deliveredAt: d.deliveredAt,
       bouncedAt: d.bouncedAt,
+      attachedPdf: d.attachedPdf,
+      pdfBytes: d.pdfBytes,
+      attachmentError: d.attachmentError,
       createdAt: d.createdAt,
     })),
   })
@@ -2778,6 +3252,7 @@ app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
   const publicToken = String(req.params.token ?? '')
   const tokenQuote = await prisma.quote.findUnique({ where: { publicToken }, select: { id: true, organisationId: true, parentQuoteId: true, publishedVersionId: true } })
   if (!tokenQuote) return res.status(404).json({ message: 'This quote link is not available.' })
+  if (!await workspaceIsActive(tokenQuote.organisationId)) return res.status(404).json({ message: 'This quote link is not available.' })
   let rootId = tokenQuote.id
   let parentId = tokenQuote.parentQuoteId
   while (parentId) {
@@ -2836,12 +3311,49 @@ app.get('/api/public/quotes/:token', publicRateLimit, async (req, res) => {
   })
 })
 
+app.get('/api/public/quotes/:token/pdf', publicRateLimit, async (req, res) => {
+  if (!serverPdfAvailable(res)) return
+  const publicToken = String(req.params.token ?? '')
+  const tokenQuote = await prisma.quote.findUnique({ where: { publicToken }, select: { id: true, organisationId: true, parentQuoteId: true } })
+  if (!tokenQuote || !await workspaceIsActive(tokenQuote.organisationId)) return res.status(404).json({ message: 'This quote link is not available.' })
+  let rootId = tokenQuote.id
+  let parentId = tokenQuote.parentQuoteId
+  while (parentId) {
+    rootId = parentId
+    const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: tokenQuote.organisationId }, select: { parentQuoteId: true } })
+    parentId = parent?.parentQuoteId ?? null
+  }
+  const root = await prisma.quote.findFirst({ where: { id: rootId, organisationId: tokenQuote.organisationId }, select: { publishedVersionId: true, tokenRevokedAt: true } })
+  if (!root || root.tokenRevokedAt) return res.status(404).json({ message: 'This quote link is not available.' })
+  const quote = await prisma.quote.findFirst({
+    where: { id: root.publishedVersionId ?? rootId, organisationId: tokenQuote.organisationId, status: { not: 'DRAFT' } },
+    include: {
+      customer: { select: { name: true, email: true, phone: true } },
+      organisation: { select: { name: true, email: true, phone: true, country: true, website: true, logoUrl: true, address: true, kraPin: true, vatNumber: true } },
+      lines: { orderBy: { position: 'asc' } },
+    },
+  })
+  if (!quote || (quote.validUntil && quote.validUntil < new Date() && ['SENT', 'VIEWED'].includes(quote.status))) return res.status(404).json({ message: 'This quote link is not available.' })
+  const snapshot = resolvePdfSnapshot(quote.designSnapshot, pdfBusiness(quote.organisation), quote.organisation.logoUrl)
+  const design = quote.designSnapshot ? snapshot.design : await currentDocumentDesign(quote.organisationId)
+  const data: PdfData = {
+    kind: 'quote', documentNumber: quote.documentNumber, createdAt: quote.createdAt.toISOString(), validUntil: quote.validUntil?.toISOString() ?? null,
+    currency: quote.currency, subtotal: Number(quote.subtotal), taxTotal: Number(quote.taxTotal), total: Number(quote.total), notes: quote.notes, terms: quote.terms,
+    lines: quotePdfLineAmounts(quote.lines.map((line) => ({ description: line.description, quantity: Number(line.quantity), unit: line.unit, unitPrice: Number(line.unitPrice), taxRate: line.taxRate === null ? null : Number(line.taxRate) })), Number(quote.subtotal)),
+    customer: quote.customer, business: snapshot.business,
+    publicUrl: `${(process.env.PLATFORM_URL ?? 'http://localhost:5174').replace(/\/$/, '')}/quote/${encodeURIComponent(publicToken)}`,
+  }
+  try { await renderAndSendPdf(res, data, design, snapshot.logoUrl, pdfFilename(quote.documentNumber, 'quotation')) }
+  catch (error) { return res.status(503).json({ message: error instanceof Error ? error.message : 'Could not render this quotation.' }) }
+})
+
 app.post('/api/public/quotes/:token/decision', publicRateLimit, async (req, res) => {
   const decision = String(req.body?.decision ?? '').toUpperCase()
   if (!['APPROVED', 'DECLINED'].includes(decision)) return res.status(400).json({ message: 'Choose approve or decline.' })
   const publicToken = String(req.params.token ?? '')
   const tokenQuote = await prisma.quote.findUnique({ where: { publicToken }, select: { id: true, organisationId: true, parentQuoteId: true } })
   if (!tokenQuote) return res.status(404).json({ message: 'This quote link is not available.' })
+  if (!await workspaceIsActive(tokenQuote.organisationId)) return res.status(404).json({ message: 'This quote link is not available.' })
   let rootId = tokenQuote.id
   let parentId = tokenQuote.parentQuoteId
   while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: tokenQuote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
@@ -2911,6 +3423,7 @@ app.post('/api/public/quotes/:token/decision', publicRateLimit, async (req, res)
 app.get('/api/public/quotes/:token/messages', publicRateLimit, async (req, res) => {
   const quote = await prisma.quote.findUnique({ where: { publicToken: String(req.params.token ?? '') } })
   if (!quote || quote.status === 'DRAFT') return res.status(404).json({ message: 'Conversation is not available.' })
+  if (!await workspaceIsActive(quote.organisationId)) return res.status(404).json({ message: 'Conversation is not available.' })
   let rootId = quote.id
   let parentId = quote.parentQuoteId
   while (parentId) { rootId = parentId; const parent = await prisma.quote.findFirst({ where: { id: parentId, organisationId: quote.organisationId }, select: { parentQuoteId: true } }); parentId = parent?.parentQuoteId ?? null }
@@ -2925,6 +3438,7 @@ app.get('/api/public/quotes/:token/messages', publicRateLimit, async (req, res) 
 app.post('/api/public/quotes/:token/messages', publicRateLimit, async (req, res) => {
   const quote = await prisma.quote.findUnique({ where: { publicToken: String(req.params.token ?? '') }, include: { customer: { select: { name: true } } } })
   if (!quote || quote.status === 'DRAFT') return res.status(404).json({ message: 'Conversation is not available.' })
+  if (!await workspaceIsActive(quote.organisationId)) return res.status(404).json({ message: 'Conversation is not available.' })
   if (quote.status === 'EXPIRED' || (quote.validUntil && quote.validUntil < new Date() && ['SENT', 'VIEWED'].includes(quote.status))) return res.status(409).json({ message: 'This quote has expired; messaging is closed.' })
   const content = String(req.body?.content ?? '').trim()
   if (!content || content.length > 4000) return res.status(400).json({ message: 'Write a message up to 4,000 characters.' })
@@ -2965,11 +3479,23 @@ app.get('/api/business/me', requireAuth, async (req, res) => {
       paymentInstructions: true,
       terms: true,
       subdomain: true,
+      documentDesign: true,
+      kraPin: true,
+      vatNumber: true,
+      address: true,
       subscription: { select: { plan: true, status: true, trialEndsAt: true, simulated: true } },
     },
   }) : null
 
-  res.json({ organisation })
+  // The design is returned read-only so the settings screen and any document preview can render
+  // without a second request. Plan limits are applied here, so a downgraded workspace sees the
+  // template it will actually get on its next document. Null when the feature is off.
+  const flags = documentFlags()
+  const documentDesign = organisation && flags.documentDesign
+    ? documentDesignPayload(organisation.documentDesign, entitlementsFor(organisation.subscription?.plan, organisation.subscription?.status))
+    : null
+
+  res.json({ organisation, documentDesign })
 })
 
 app.post('/api/business/setup', requireAuth, async (req, res) => {
@@ -3365,6 +3891,36 @@ app.get('/api/superadmin/operations', requireSuperadmin, async (req, res) => {
   })
 })
 
+app.post('/api/superadmin/product-updates', requireSuperadmin, async (req, res) => {
+  const actor = getRequestUser(req)
+  if (!actor) return res.status(401).json({ message: 'Unauthorized.' })
+  const feature = String(req.body?.feature ?? '').trim().slice(0, 80)
+  const title = String(req.body?.title ?? '').trim().slice(0, 120)
+  const details = String(req.body?.details ?? '').trim().slice(0, 1600)
+  if (!feature || title.length < 4 || details.length < 10) return res.status(400).json({ message: 'Enter a feature area, a clear title, and at least 10 characters of detail.' })
+
+  const workspaces = await prisma.organisation.findMany({ where: { status: 'ACTIVE' }, select: { id: true, ownerId: true } })
+  const updateId = randomBytes(12).toString('hex')
+  let deliveredTo = 0
+  for (let offset = 0; offset < workspaces.length; offset += 500) {
+    const batch = workspaces.slice(offset, offset + 500)
+    const result = await prisma.notification.createMany({
+      data: batch.map((workspace) => ({
+        recipientUserId: workspace.ownerId,
+        organisationId: workspace.id,
+        type: 'PRODUCT_UPDATE',
+        title: `Feature update · ${title}`,
+        body: `${feature}\n\n${details}`,
+        sourceKey: `product-update:${updateId}:${workspace.id}`,
+      })),
+      skipDuplicates: true,
+    })
+    deliveredTo += result.count
+  }
+  await writeSuperadminAudit(req, actor, 'PRODUCT_UPDATE_PUBLISHED', 'PRODUCT_UPDATE', updateId, `Published “${title}” to ${deliveredTo} workspace owners.`, { feature, deliveredTo })
+  return res.status(201).json({ updateId, deliveredTo, message: `Update published to ${deliveredTo} business owner${deliveredTo === 1 ? '' : 's'}.` })
+})
+
 app.post('/api/superadmin/operations/webhooks/:id/reprocess', requireSuperadmin, async (req, res) => {
   const actor = getRequestUser(req)
   if (!actor) return res.status(401).json({ message: 'Unauthorized.' })
@@ -3486,16 +4042,19 @@ app.get('/api/superadmin/workspaces', requireSuperadmin, async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query?.limit ?? 50), 1), 200)
   const offset = Math.max(Number(req.query?.offset ?? 0), 0)
   const search = String(req.query?.q ?? '').trim().slice(0, 120)
-  const where = search ? {
-    OR: [
+  const statusFilter = String(req.query?.status ?? 'CURRENT').toUpperCase()
+  const statusWhere: PrismaTypes.OrganisationWhereInput = statusFilter === 'ARCHIVED' ? { status: 'ARCHIVED' } : statusFilter === 'SUSPENDED' ? { status: 'SUSPENDED' } : statusFilter === 'ALL' ? {} : { status: { in: ['ACTIVE', 'SUSPENDED'] } }
+  const where: PrismaTypes.OrganisationWhereInput = {
+    ...statusWhere,
+    ...(search ? { OR: [
       { name: { contains: search, mode: 'insensitive' as const } },
       { email: { contains: search, mode: 'insensitive' as const } },
       { country: { contains: search, mode: 'insensitive' as const } },
       { businessType: { contains: search, mode: 'insensitive' as const } },
       { owner: { is: { name: { contains: search, mode: 'insensitive' as const } } } },
       { owner: { is: { email: { contains: search, mode: 'insensitive' as const } } } },
-    ],
-  } : {}
+    ] } : {}),
+  }
 
   const [organisations, totalCount] = await Promise.all([
     prisma.organisation.findMany({
@@ -3553,7 +4112,7 @@ app.get('/api/superadmin/workspaces/:id', requireSuperadmin, async (req, res) =>
   const organisation = await prisma.organisation.findUnique({
     where: { id },
     select: {
-      id: true, name: true, email: true, phone: true, country: true, businessType: true, currency: true, website: true, status: true, suspendedAt: true, suspendedByEmail: true, suspensionReason: true, restoredAt: true, restoredByEmail: true, createdAt: true,
+      id: true, name: true, email: true, phone: true, country: true, businessType: true, currency: true, website: true, status: true, suspendedAt: true, suspendedByEmail: true, suspensionReason: true, restoredAt: true, restoredByEmail: true, archivedAt: true, archivedByEmail: true, archiveReason: true, statusBeforeArchive: true, unarchivedAt: true, unarchivedByEmail: true, createdAt: true,
       owner: { select: { id: true, name: true, email: true, createdAt: true, mfaEnabled: true } },
       subscription: { select: { plan: true, status: true, trialEndsAt: true, simulated: true, billingInterval: true } },
       members: { select: { id: true, name: true, email: true, role: true, teamRole: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
@@ -3584,6 +4143,7 @@ app.post('/api/superadmin/workspaces/:id/suspend', requireSuperadmin, async (req
   if (!reason || reason.length < 5) return res.status(400).json({ message: 'Enter a suspension reason (at least 5 characters).' })
   const existing = await prisma.organisation.findUnique({ where: { id }, select: { id: true, status: true } })
   if (!existing) return res.status(404).json({ message: 'Workspace not found.' })
+  if (existing.status === 'ARCHIVED') return res.status(409).json({ message: 'Restore this workspace from archive before changing its access state.' })
   if (existing.status === 'SUSPENDED') return res.status(409).json({ message: 'This workspace is already suspended.' })
   if (!user) return res.status(401).json({ message: 'Unauthorized' })
   const workspace = await prisma.$transaction(async (transaction) => {
@@ -3604,6 +4164,41 @@ app.post('/api/superadmin/workspaces/:id/restore', requireSuperadmin, async (req
   const workspace = await prisma.$transaction(async (transaction) => {
     const updated = await transaction.organisation.update({ where: { id }, data: { status: 'ACTIVE', restoredAt: new Date(), restoredByEmail: user.email }, select: { id: true, status: true, restoredAt: true, restoredByEmail: true } })
     await writeSuperadminAudit(req, user, 'WORKSPACE_RESTORED', 'WORKSPACE', id, `Restored workspace ${id}.`, undefined, transaction)
+    return updated
+  })
+  res.json({ workspace })
+})
+
+app.post('/api/superadmin/workspaces/:id/archive', requireSuperadmin, async (req, res) => {
+  const user = getRequestUser(req)
+  const id = String(req.params.id ?? '')
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!reason || reason.length < 5) return res.status(400).json({ message: 'Enter an archive reason (at least 5 characters).' })
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const existing = await prisma.organisation.findUnique({ where: { id }, select: { id: true, name: true, status: true } })
+  if (!existing) return res.status(404).json({ message: 'Workspace not found.' })
+  if (existing.status === 'ARCHIVED') return res.status(409).json({ message: 'This workspace is already archived.' })
+  const workspace = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.organisation.update({ where: { id }, data: { status: 'ARCHIVED', statusBeforeArchive: existing.status, archivedAt: new Date(), archivedByEmail: user.email, archiveReason: reason, unarchivedAt: null, unarchivedByEmail: null }, select: { id: true, name: true, status: true, archivedAt: true, archivedByEmail: true, archiveReason: true, statusBeforeArchive: true } })
+    const memberIds = await transaction.user.findMany({ where: { OR: [{ organisationId: id }, { ownedOrganisation: { is: { id } } }] }, select: { id: true } })
+    if (memberIds.length) await transaction.session.deleteMany({ where: { userId: { in: memberIds.map((member) => member.id) } } })
+    await writeSuperadminAudit(req, user, 'WORKSPACE_ARCHIVED', 'WORKSPACE', id, `Archived workspace ${existing.name ?? id}.`, { reason, previousStatus: existing.status }, transaction)
+    return updated
+  })
+  res.json({ workspace })
+})
+
+app.post('/api/superadmin/workspaces/:id/unarchive', requireSuperadmin, async (req, res) => {
+  const user = getRequestUser(req)
+  const id = String(req.params.id ?? '')
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const existing = await prisma.organisation.findUnique({ where: { id }, select: { id: true, name: true, status: true, statusBeforeArchive: true } })
+  if (!existing) return res.status(404).json({ message: 'Workspace not found.' })
+  if (existing.status !== 'ARCHIVED') return res.status(409).json({ message: 'This workspace is not archived.' })
+  const restoredStatus = existing.statusBeforeArchive === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE'
+  const workspace = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.organisation.update({ where: { id }, data: { status: restoredStatus, unarchivedAt: new Date(), unarchivedByEmail: user.email, statusBeforeArchive: null }, select: { id: true, name: true, status: true, unarchivedAt: true, unarchivedByEmail: true } })
+    await writeSuperadminAudit(req, user, 'WORKSPACE_UNARCHIVED', 'WORKSPACE', id, `Restored archived workspace ${existing.name ?? id}.`, { restoredStatus }, transaction)
     return updated
   })
   res.json({ workspace })
@@ -3764,24 +4359,42 @@ async function applyResendWebhookEvent(webhookEventId: string, payload: ResendWe
   try {
     const emailId = payload.data?.email_id
     if (emailId) {
-      const delivery = await prisma.quoteDelivery.findFirst({ where: { providerMessageId: emailId } })
-      if (delivery) {
-        const now = new Date()
+      const [quoteDelivery, invoiceDelivery, receiptDelivery] = await Promise.all([
+        prisma.quoteDelivery.findFirst({ where: { providerMessageId: emailId }, select: { id: true, status: true, sentAt: true } }),
+        prisma.invoiceDelivery.findFirst({ where: { providerMessageId: emailId }, select: { id: true, status: true, sentAt: true } }),
+        prisma.receiptDelivery.findFirst({ where: { providerMessageId: emailId }, select: { id: true, status: true, sentAt: true } }),
+      ])
+      const now = new Date()
+      const updates: Promise<unknown>[] = []
+      for (const delivery of [quoteDelivery, invoiceDelivery, receiptDelivery]) {
+        if (!delivery) continue
         switch (payload.type) {
           case 'email.sent':
-            if (delivery.status === 'PENDING') await prisma.quoteDelivery.update({ where: { id: delivery.id }, data: { status: 'SENT', sentAt: delivery.sentAt ?? now } })
+            if (delivery.status === 'PENDING') updates.push(delivery === quoteDelivery
+              ? prisma.quoteDelivery.update({ where: { id: delivery.id }, data: { status: 'SENT', sentAt: delivery.sentAt ?? now } })
+              : delivery === invoiceDelivery
+                ? prisma.invoiceDelivery.update({ where: { id: delivery.id }, data: { status: 'SENT', sentAt: delivery.sentAt ?? now } })
+                : prisma.receiptDelivery.update({ where: { id: delivery.id }, data: { status: 'SENT', sentAt: delivery.sentAt ?? now } }))
             break
           case 'email.delivered':
-            await prisma.quoteDelivery.update({ where: { id: delivery.id }, data: { status: 'DELIVERED', deliveredAt: now } })
+            updates.push(delivery === quoteDelivery
+              ? prisma.quoteDelivery.update({ where: { id: delivery.id }, data: { status: 'DELIVERED', deliveredAt: now } })
+              : delivery === invoiceDelivery
+                ? prisma.invoiceDelivery.update({ where: { id: delivery.id }, data: { status: 'DELIVERED', deliveredAt: now } })
+                : prisma.receiptDelivery.update({ where: { id: delivery.id }, data: { status: 'DELIVERED', deliveredAt: now } }))
             break
           case 'email.bounced':
-            await prisma.quoteDelivery.update({ where: { id: delivery.id }, data: { status: 'BOUNCED', bouncedAt: now, errorMessage: 'Email bounced.' } })
+            updates.push(delivery === quoteDelivery
+              ? prisma.quoteDelivery.update({ where: { id: delivery.id }, data: { status: 'BOUNCED', bouncedAt: now, errorMessage: 'Email bounced.' } })
+              : delivery === invoiceDelivery
+                ? prisma.invoiceDelivery.update({ where: { id: delivery.id }, data: { status: 'BOUNCED', bouncedAt: now, errorMessage: 'Email bounced.' } })
+                : prisma.receiptDelivery.update({ where: { id: delivery.id }, data: { status: 'BOUNCED', errorMessage: 'Email bounced.' } }))
             break
-          case 'email.complained':
           default:
             break
         }
       }
+      await Promise.all(updates)
     }
     await prisma.webhookEvent.update({ where: { id: webhookEventId }, data: { processingStatus: 'PROCESSED', processingError: null, processedAt: new Date() } })
     return { ok: true as const }
@@ -3923,7 +4536,7 @@ app.get('/api/public/jobs/:token', publicRateLimit, async (req, res) => {
   const job = await prisma.job.findUnique({
     where: { progressTokenHash: hashToken(token) },
     select: {
-      title: true, status: true, updatedAt: true,
+      title: true, status: true, updatedAt: true, organisationId: true,
       organisation: { select: { name: true } },
       milestones: { where: { customerVisible: true }, orderBy: { position: 'asc' }, select: { id: true, title: true, dueDate: true, completedAt: true } },
       quote: { select: { id: true, documentNumber: true, status: true, publicToken: true } },
@@ -3931,14 +4544,16 @@ app.get('/api/public/jobs/:token', publicRateLimit, async (req, res) => {
     },
   })
   if (!job) return res.status(404).json({ message: 'Progress page not found.' })
+  if (!await workspaceIsActive(job.organisationId)) return res.status(404).json({ message: 'Progress page not found.' })
   return res.json({ job: { ...job, quote: job.quote ? { documentNumber: job.quote.documentNumber } : null, quoteStatus: job.quote?.status ?? null, conversationAvailable: Boolean(job.quote), invoice: serializePublicInvoice(job.invoices[0]) } })
 })
 
 app.get('/api/public/jobs/:token/messages', publicRateLimit, async (req, res) => {
   const token = String(req.params.token ?? '')
   if (token.length < 32 || token.length > 128) return res.status(404).json({ message: 'Conversation is not available.' })
-  const job = await prisma.job.findUnique({ where: { progressTokenHash: hashToken(token) }, select: { quoteId: true } })
+  const job = await prisma.job.findUnique({ where: { progressTokenHash: hashToken(token) }, select: { quoteId: true, organisationId: true } })
   if (!job?.quoteId) return res.status(404).json({ message: 'Conversation is not available.' })
+  if (!await workspaceIsActive(job.organisationId)) return res.status(404).json({ message: 'Conversation is not available.' })
   const messages = await prisma.quoteMessage.findMany({ where: { quoteId: job.quoteId }, orderBy: { createdAt: 'asc' }, take: 100 })
   return res.json({ messages })
 })
@@ -3950,6 +4565,7 @@ app.post('/api/public/jobs/:token/messages', publicRateLimit, async (req, res) =
   if (!content || content.length > 4000) return res.status(400).json({ message: 'Write a message up to 4,000 characters.' })
   const job = await prisma.job.findUnique({ where: { progressTokenHash: hashToken(token) }, select: { quoteId: true, organisationId: true, customer: { select: { name: true } } } })
   if (!job?.quoteId) return res.status(404).json({ message: 'Conversation is not available.' })
+  if (!await workspaceIsActive(job.organisationId)) return res.status(404).json({ message: 'Conversation is not available.' })
   const quote = await prisma.quote.findFirst({ where: { id: job.quoteId, organisationId: job.organisationId }, select: { id: true, ownerId: true, status: true } })
   if (!quote) return res.status(404).json({ message: 'Conversation is not available.' })
   if (quote.status === 'EXPIRED') return res.status(409).json({ message: 'This conversation is read-only because the quote has expired.' })
@@ -4665,6 +5281,7 @@ app.get('/api/invoices/:id', requireAuth, async (req, res) => {
       job: { select: { id: true, title: true } },
       sourceQuote: { select: { id: true, documentNumber: true } },
       reconciliations: { orderBy: { createdAt: 'desc' }, take: 50 },
+      deliveries: { orderBy: { createdAt: 'desc' }, take: 50 },
     },
   })
   if (!invoice) return res.status(404).json({ message: 'Invoice not found.' })
@@ -4745,7 +5362,7 @@ app.post('/api/invoices/:id/send', requireTeamRole('OWNER', 'ADMIN'), async (req
     where: { id: String(req.params.id ?? ''), organisationId },
     include: {
       customer: { select: { id: true, name: true, email: true } },
-      organisation: { select: { id: true, name: true } },
+      organisation: { select: { id: true, name: true, email: true, phone: true, country: true, website: true, logoUrl: true, address: true, kraPin: true, vatNumber: true } },
       sourceQuote: { select: { id: true, documentNumber: true, status: true, publicToken: true } },
     },
   })
@@ -4755,13 +5372,27 @@ app.post('/api/invoices/:id/send', requireTeamRole('OWNER', 'ADMIN'), async (req
 
   const recipientEmail = String(req.body?.recipientEmail ?? invoice.customer.email ?? '').trim().toLowerCase()
   if (!recipientEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) return res.status(400).json({ message: 'Enter a valid customer email address before sending this invoice.' })
+  const emailLimit = await dailyEmailLimitReached(organisationId)
+  if (emailLimit !== null) return res.status(403).json({ message: limitReachedMessage('emails', emailLimit), code: PLAN_LIMIT_CODE })
+
+  const delivery = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${invoice.id} AND "organisationId" = ${organisationId} FOR UPDATE`
+    const pending = await tx.invoiceDelivery.findFirst({ where: { invoiceId: invoice.id, status: 'PENDING', createdAt: { gte: new Date(Date.now() - 60_000) } }, select: { id: true } })
+    if (pending) return null
+    return tx.invoiceDelivery.create({ data: { invoiceId: invoice.id, organisationId, recipientEmail, recipientName: invoice.customer.name, status: 'PENDING' } })
+  })
+  if (!delivery) return res.status(409).json({ message: 'An invoice email is already being sent. Wait a moment and refresh.' })
 
   const publicToken = invoice.sourceQuote.publicToken ?? randomBytes(24).toString('base64url')
+  const designSnapshot = await normalizedDocumentSnapshot(organisationId, invoice.designSnapshot) as unknown as PrismaTypes.InputJsonValue
+  const frozenPdf = resolvePdfSnapshot(designSnapshot, pdfBusiness(invoice.organisation), invoice.organisation.logoUrl)
+  const attachPdfRequested = typeof req.body?.attachPdf === 'boolean' ? req.body.attachPdf : frozenPdf.design.email.attachPdf
   if (!invoice.sourceQuote.publicToken) {
     await prisma.quote.update({ where: { id: invoice.sourceQuote.id }, data: { publicToken, tokenRevokedAt: null, tokenRevokedBy: null } })
   }
   const platformUrl = (process.env.PLATFORM_URL ?? 'http://localhost:5174').replace(/\/$/, '')
   const invoiceUrl = `${platformUrl}/quote/${encodeURIComponent(publicToken)}`
+  const attachment = await preparePdfEmailAttachment(attachPdfRequested, documentFlags().emailPdfAttach, invoicePdfData(invoice, frozenPdf, invoiceUrl), frozenPdf.design, frozenPdf.logoUrl, uploadsDir, pdfRenderClient())
   const invoiceLines = Array.isArray(invoice.lineItems) ? invoice.lineItems as Array<Record<string, unknown>> : []
   const lineItems = invoiceLines.map((line) => {
     const quantity = Number(line.quantity ?? 0)
@@ -4775,7 +5406,6 @@ app.post('/api/invoices/:id/send', requireTeamRole('OWNER', 'ADMIN'), async (req
     }
   })
   const formatEmailDate = (date: Date | null) => date ? new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium' }).format(date) : null
-
   try {
     const result = await sendEmail(
       recipientEmail,
@@ -4794,24 +5424,28 @@ app.post('/api/invoices/:id/send', requireTeamRole('OWNER', 'ADMIN'), async (req
         lineItems,
         notes: invoice.notes,
         invoiceUrl,
+        pdfAttached: attachment.attachedPdf,
       }),
-      `invoice-delivery/${invoice.id}/${encodeURIComponent(recipientEmail)}`,
+      `invoice-delivery/${delivery.id}`,
       organisationId,
+      attachment.attachments,
     )
-    if (!result) return res.status(503).json({ message: 'Email provider is not configured. Set RESEND_API_KEY and a verified sender address before sending invoices.' })
+    if (!result) throw new Error('Email provider is not configured. The invoice was not marked as sent.')
 
     const sentAt = new Date()
+    await prisma.invoiceDelivery.update({ where: { id: delivery.id }, data: { status: 'SENT', providerMessageId: result.messageId, sentAt, attachedPdf: attachment.attachedPdf, pdfBytes: attachment.pdfBytes, attachmentError: attachment.attachmentError } })
     const sentStatus = Number(invoice.balanceDue) <= 0.001 ? 'PAID' : Number(invoice.amountPaid) > 0 ? 'PARTIALLY_PAID' : 'SENT'
-    const updatedCount = await prisma.invoice.updateMany({ where: { id: invoice.id, organisationId, status: 'DRAFT' }, data: { status: sentStatus, sentAt } })
+    const updatedCount = await prisma.invoice.updateMany({ where: { id: invoice.id, organisationId, status: 'DRAFT' }, data: { status: sentStatus, sentAt, designSnapshot } })
     if (!updatedCount.count) return res.status(409).json({ message: 'The invoice was sent, but its status changed at the same time. Refresh the invoice before continuing.' })
-    const updated = await prisma.invoice.findFirst({ where: { id: invoice.id, organisationId }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } } } })
+    const updated = await prisma.invoice.findFirst({ where: { id: invoice.id, organisationId }, include: { customer: { select: { id: true, name: true, phone: true, email: true } }, job: { select: { id: true, title: true } }, sourceQuote: { select: { id: true, documentNumber: true } }, deliveries: { orderBy: { createdAt: 'desc' }, take: 50 } } })
     if (!updated) return res.status(404).json({ message: 'The invoice was sent, but it could not be reloaded.' })
     return res.json({
-      delivery: { recipientEmail, providerMessageId: result.messageId, sentAt: sentAt.toISOString() },
+      delivery: { id: delivery.id, recipientEmail, providerMessageId: result.messageId, sentAt: sentAt.toISOString(), attachedPdf: attachment.attachedPdf, pdfBytes: attachment.pdfBytes, attachmentError: attachment.attachmentError },
       invoice: { ...updated, subtotal: Number(updated.subtotal), taxTotal: Number(updated.taxTotal), total: Number(updated.total), amountPaid: Number(updated.amountPaid), balanceDue: Number(updated.balanceDue), depositRequired: updated.depositRequired ? Number(updated.depositRequired) : null, depositPaid: Number(updated.depositPaid) },
     })
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Invoice email delivery failed.'
+    await prisma.invoiceDelivery.update({ where: { id: delivery.id }, data: { status: 'FAILED', errorMessage, attachedPdf: false, pdfBytes: null, attachmentError: attachment.attachmentError } })
     return res.status(502).json({ message: errorMessage })
   }
 })
@@ -4916,6 +5550,7 @@ app.post('/api/invoices/:id/payments', requireTeamRole('OWNER', 'ADMIN'), async 
     if (existingPayment.organisationId !== organisationId || existingPayment.invoiceId !== invoice.id || Number(existingPayment.amount) !== roundMoney(amount) || existingPayment.method !== method || existingPayment.reference !== reference) return res.status(409).json({ message: 'This idempotency key has already been used for a different payment.' })
     return res.json({ payment: { ...existingPayment, amount: Number(existingPayment.amount) }, replayed: true })
   }
+  const frozenReceiptDesign = await normalizedDocumentSnapshot(organisationId, invoice.designSnapshot) as unknown as PrismaTypes.InputJsonValue
 
   // Lock the invoice row so concurrent payment posts cannot overwrite each other's totals.
   const result = await prisma.$transaction(async (tx) => {
@@ -4946,6 +5581,7 @@ app.post('/api/invoices/:id/payments', requireTeamRole('OWNER', 'ADMIN'), async 
         method,
         reference,
         isDeposit,
+        designSnapshot: frozenReceiptDesign,
         paymentDate: paymentDate && !Number.isNaN(paymentDate.getTime()) ? paymentDate : new Date(),
         receivedBy: user.id,
       },
@@ -4981,6 +5617,8 @@ app.post('/api/invoices/:id/payments', requireTeamRole('OWNER', 'ADMIN'), async 
         ...depositUpdate,
       },
     })
+
+    await tx.payment.update({ where: { id: payment.id }, data: { designSnapshot: freezeReceiptBalance(frozenReceiptDesign, balanceDue) as unknown as PrismaTypes.InputJsonValue } })
 
     return { payment, replayed: false as const }
   })
@@ -5133,14 +5771,24 @@ async function applyCustomerMpesaPayment(attemptId: string, providerReference: s
       return { ok: false as const, message: 'Payment needs manual review because the invoice balance changed.' }
     }
     const paymentId = `pay_${randomBytes(12).toString('hex')}`
+    const [organisation, subscription] = await Promise.all([
+      tx.organisation.findUnique({ where: { id: attempt.organisationId }, select: { documentDesign: true, name: true, email: true, phone: true, country: true, website: true, logoUrl: true, address: true, kraPin: true, vatNumber: true } }),
+      tx.subscription.findUnique({ where: { organisationId: attempt.organisationId }, select: { plan: true, status: true } }),
+    ])
+    if (!organisation) return { ok: false as const, message: 'Business workspace was not found.' }
+    const currentSnapshot = freezePdfSnapshot(resolveEffectiveDesign(organisation.documentDesign, subscription?.plan, subscription?.status), pdfBusiness(organisation), organisation.logoUrl)
+    const resolvedSnapshot = resolvePdfSnapshot(invoice.designSnapshot ?? currentSnapshot, currentSnapshot.business, currentSnapshot.business.logoUrl)
+    const paymentDesign = freezePdfSnapshot(resolvedSnapshot.design, resolvedSnapshot.business, resolvedSnapshot.logoUrl)
     await tx.payment.create({ data: {
       id: paymentId, receiptNumber: `RCP-${paymentId.toUpperCase()}`,
       invoiceId: invoice.id, organisationId: attempt.organisationId, idempotencyKey: `ncba-stk:${attempt.id}`,
       amount, currency: attempt.currency, method: 'MOBILE_MONEY', reference: providerReference || attempt.transactionId,
+      designSnapshot: paymentDesign as unknown as PrismaTypes.InputJsonValue,
       paymentDate: new Date(), receivedBy: attempt.requestedBy,
     } })
     await tx.paymentAllocation.create({ data: { organisationId: attempt.organisationId, invoiceId: invoice.id, paymentId, eventType: 'ALLOCATE', amount, currency: attempt.currency, idempotencyKey: `opening-mpesa:${attempt.id}`, reason: 'NCBA M-Pesa payment applied to invoice', actorId: attempt.requestedBy, actorName: 'M-Pesa settlement' } })
     const balanceDue = roundMoney(invoiceTotal - totalPaid)
+    await tx.payment.update({ where: { id: paymentId }, data: { designSnapshot: freezeReceiptBalance(paymentDesign, balanceDue) as unknown as PrismaTypes.InputJsonValue } })
     await tx.invoice.update({ where: { id: invoice.id }, data: { amountPaid: totalPaid, balanceDue, status: balanceDue <= 0 ? 'PAID' : 'PARTIALLY_PAID' } })
     await tx.invoicePaymentAttempt.update({ where: { id: attempt.id }, data: { status: 'PAID', statusDescription: 'Payment confirmed by NCBA.', providerReference: providerReference || attempt.providerReference, completedAt: new Date() } })
     return { ok: true as const, replayed: false }
@@ -5285,25 +5933,37 @@ app.post('/api/payments/:paymentId/send-receipt', requireTeamRole('OWNER', 'ADMI
   if (!recipientEmail) return res.status(400).json({ message: 'Recipient email is required.' })
   if (!isValidEmail(recipientEmail)) return res.status(400).json({ message: 'Enter a valid email address.' })
 
+  const emailLimit = await dailyEmailLimitReached(organisationId)
+  if (emailLimit !== null) return res.status(403).json({ message: limitReachedMessage('emails', emailLimit), code: PLAN_LIMIT_CODE })
   const payment = await prisma.payment.findFirst({
     where: { id: paymentId, organisationId },
     include: {
-      invoice: { select: { invoiceNumber: true, customer: { select: { id: true, name: true, email: true, phone: true } } } },
-      organisation: { select: { id: true, name: true, currency: true } },
+      invoice: { select: { invoiceNumber: true, balanceDue: true, designSnapshot: true, customer: { select: { id: true, name: true, email: true, phone: true } } } },
+      organisation: { select: { id: true, name: true, currency: true, email: true, phone: true, country: true, website: true, logoUrl: true, address: true, kraPin: true, vatNumber: true } },
     },
   })
   if (!payment) return res.status(404).json({ message: 'Payment not found.' })
 
-  // Create delivery record
-  const delivery = await prisma.receiptDelivery.create({
-    data: {
-      paymentId: payment.id,
-      organisationId,
-      recipientEmail,
-      recipientName,
-      status: 'PENDING',
-    },
+  const delivery = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} AND "organisationId" = ${organisationId} FOR UPDATE`
+    const recent = await tx.receiptDelivery.findFirst({ where: { paymentId, recipientEmail, status: { not: 'FAILED' }, createdAt: { gte: new Date(Date.now() - 5 * 60_000) } }, select: { id: true } })
+    if (recent) return null
+    return tx.receiptDelivery.create({ data: { paymentId: payment.id, organisationId, recipientEmail, recipientName, status: 'PENDING' } })
   })
+  if (!delivery) return res.status(409).json({ message: 'A receipt email was recently sent to this recipient. Wait 5 minutes before sending it again.' })
+
+  const fallbackBusiness = pdfBusiness(payment.organisation)
+  const sourceSnapshot = payment.designSnapshot ?? payment.invoice.designSnapshot
+  const frozenPdf = resolvePdfSnapshot(sourceSnapshot, fallbackBusiness, payment.organisation.logoUrl)
+  const attachPdfRequested = typeof req.body?.attachPdf === 'boolean' ? req.body.attachPdf : frozenPdf.design.email.attachPdf
+  const receiptData: PdfData = {
+    kind: 'receipt', documentNumber: payment.receiptNumber, invoiceNumber: payment.invoice.invoiceNumber,
+    paymentDate: payment.paymentDate.toISOString(), currency: payment.currency, amount: Number(payment.amount),
+    balanceDue: readReceiptBalance(payment.designSnapshot, Number(payment.invoice.balanceDue)), method: payment.method, reference: payment.reference,
+    customer: { name: payment.invoice.customer.name, email: payment.invoice.customer.email, phone: payment.invoice.customer.phone },
+    business: frozenPdf.business,
+  }
+  const attachment = await preparePdfEmailAttachment(attachPdfRequested, documentFlags().emailPdfAttach, receiptData, frozenPdf.design, frozenPdf.logoUrl, uploadsDir, pdfRenderClient())
 
   try {
     const result = await sendEmail(
@@ -5320,9 +5980,11 @@ app.post('/api/payments/:paymentId/send-receipt', requireTeamRole('OWNER', 'ADMI
         reference: payment.reference,
         paymentDate: payment.paymentDate.toISOString(),
         customMessage,
+        pdfAttached: attachment.attachedPdf,
       }),
       `receipt-delivery/${delivery.id}`,
       payment.organisationId,
+      attachment.attachments,
     )
 
     const now = new Date()
@@ -5333,6 +5995,9 @@ app.post('/api/payments/:paymentId/send-receipt', requireTeamRole('OWNER', 'ADMI
         providerMessageId: result !== false ? (result.messageId ?? null) : null,
         sentAt: result !== false ? now : null,
         errorMessage: result === false ? 'Email provider is not configured. Set RESEND_API_KEY and a verified sender address.' : null,
+        attachedPdf: result !== false && attachment.attachedPdf,
+        pdfBytes: result !== false ? attachment.pdfBytes : null,
+        attachmentError: attachment.attachmentError,
       },
     })
 
@@ -5348,13 +6013,16 @@ app.post('/api/payments/:paymentId/send-receipt', requireTeamRole('OWNER', 'ADMI
         status: 'SENT',
         providerMessageId: result.messageId ?? null,
         sentAt: now.toISOString(),
+        attachedPdf: attachment.attachedPdf,
+        pdfBytes: attachment.pdfBytes,
+        attachmentError: attachment.attachmentError,
       },
     })
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Receipt delivery failed.'
     await prisma.receiptDelivery.update({
       where: { id: delivery.id },
-      data: { status: 'FAILED', errorMessage },
+      data: { status: 'FAILED', errorMessage, attachedPdf: false, pdfBytes: null, attachmentError: attachment.attachmentError },
     })
     res.status(502).json({ message: errorMessage, deliveryId: delivery.id })
   }
@@ -5373,7 +6041,7 @@ app.get('/api/payments/:paymentId/deliveries', requireAuth, async (req, res) => 
   const deliveries = await prisma.receiptDelivery.findMany({
     where: { paymentId },
     orderBy: { createdAt: 'desc' },
-    select: { id: true, recipientEmail: true, recipientName: true, status: true, providerMessageId: true, errorMessage: true, sentAt: true, createdAt: true },
+    select: { id: true, recipientEmail: true, recipientName: true, status: true, providerMessageId: true, errorMessage: true, attachedPdf: true, pdfBytes: true, attachmentError: true, sentAt: true, createdAt: true },
   })
   res.json({ deliveries })
 })
@@ -5390,7 +6058,7 @@ app.get('/api/export/workspace.json', requireTeamRole('OWNER', 'ADMIN'), async (
     prisma.customer.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, phone: true, email: true, archivedAt: true, createdAt: true, updatedAt: true } }),
     prisma.quote.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, documentNumber: true, status: true, currency: true, validUntil: true, notes: true, terms: true, subtotal: true, taxTotal: true, total: true, viewedAt: true, decisionComment: true, decidedAt: true, tokenRevokedAt: true, version: true, parentQuoteId: true, createdAt: true, updatedAt: true, customerId: true, lines: { orderBy: { position: 'asc' }, select: { id: true, description: true, quantity: true, unit: true, unitPrice: true, taxRate: true, position: true } } } }),
     prisma.job.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, quoteId: true, ownerId: true, owner: { select: { id: true, name: true, email: true } }, customerId: true, title: true, description: true, status: true, currency: true, startDate: true, endDate: true, acceptedQuoteSnapshot: true, createdAt: true, updatedAt: true, milestones: { orderBy: { position: 'asc' }, select: { id: true, title: true, description: true, dueDate: true, completedAt: true, position: true, customerVisible: true, createdAt: true } }, costs: { orderBy: { incurredAt: 'asc' }, select: { id: true, category: true, description: true, amount: true, currency: true, incurredBy: true, incurredAt: true, createdAt: true } }, activities: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, action: true, details: true, createdAt: true } }, attachments: { orderBy: { createdAt: 'asc' }, select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true, uploadedBy: true, uploaderName: true, createdAt: true } } } }),
-    prisma.invoice.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, jobId: true, sourceQuoteId: true, lineItems: true, customerId: true, invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, depositRequired: true, depositPaid: true, sentAt: true, issueDate: true, dueDate: true, notes: true, createdAt: true, updatedAt: true, payments: { orderBy: { paymentDate: 'asc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, isDeposit: true, paymentDate: true, receivedBy: true, createdAt: true, refunds: { select: { id: true, amount: true, currency: true, method: true, reference: true, reason: true, refundedAt: true, recordedByName: true, createdAt: true } }, receiptDeliveries: { orderBy: { createdAt: 'asc' }, select: { id: true, recipientEmail: true, recipientName: true, status: true, providerMessageId: true, errorMessage: true, sentAt: true, createdAt: true } } } }, paymentAllocations: { orderBy: { createdAt: 'asc' }, select: { id: true, paymentId: true, eventType: true, amount: true, currency: true, idempotencyKey: true, reason: true, actorId: true, actorName: true, createdAt: true } }, reconciliations: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, reason: true, previousAmountPaid: true, previousBalanceDue: true, correctedAmountPaid: true, correctedBalanceDue: true, createdAt: true } } } }),
+    prisma.invoice.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, jobId: true, sourceQuoteId: true, lineItems: true, customerId: true, invoiceNumber: true, status: true, currency: true, subtotal: true, taxTotal: true, total: true, amountPaid: true, balanceDue: true, depositRequired: true, depositPaid: true, sentAt: true, issueDate: true, dueDate: true, notes: true, createdAt: true, updatedAt: true, deliveries: { orderBy: { createdAt: 'asc' }, select: { id: true, recipientEmail: true, recipientName: true, providerMessageId: true, status: true, errorMessage: true, attachedPdf: true, pdfBytes: true, attachmentError: true, sentAt: true, deliveredAt: true, bouncedAt: true, createdAt: true } }, payments: { orderBy: { paymentDate: 'asc' }, select: { id: true, amount: true, currency: true, method: true, reference: true, isDeposit: true, paymentDate: true, receivedBy: true, createdAt: true, refunds: { select: { id: true, amount: true, currency: true, method: true, reference: true, reason: true, refundedAt: true, recordedByName: true, createdAt: true } }, receiptDeliveries: { orderBy: { createdAt: 'asc' }, select: { id: true, recipientEmail: true, recipientName: true, status: true, providerMessageId: true, errorMessage: true, attachedPdf: true, pdfBytes: true, attachmentError: true, sentAt: true, createdAt: true } } } }, paymentAllocations: { orderBy: { createdAt: 'asc' }, select: { id: true, paymentId: true, eventType: true, amount: true, currency: true, idempotencyKey: true, reason: true, actorId: true, actorName: true, createdAt: true } }, reconciliations: { orderBy: { createdAt: 'asc' }, select: { id: true, actorId: true, actorName: true, reason: true, previousAmountPaid: true, previousBalanceDue: true, correctedAmountPaid: true, correctedBalanceDue: true, createdAt: true } } } }),
     prisma.invoicePaymentAttempt.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, invoiceId: true, requestedBy: true, provider: true, merchantType: true, merchantCode: true, invoiceNumber: true, transactionId: true, providerReference: true, phone: true, amount: true, currency: true, status: true, statusDescription: true, createdAt: true, updatedAt: true, completedAt: true } }),
     prisma.serviceItem.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, category: true, kind: true, description: true, unit: true, defaultPrice: true, defaultTaxRate: true, active: true, isStarter: true, createdAt: true, updatedAt: true } }),
     prisma.quoteTemplate.findMany({ where: { organisationId }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, description: true, workflow: true, lineItems: true, defaultNotes: true, defaultTerms: true, isStarter: true, version: true, createdAt: true, updatedAt: true } }),
@@ -5433,6 +6101,7 @@ app.delete('/api/export/workspace.json', requireTeamRole('OWNER'), async (req, r
     await tx.paymentAllocation.deleteMany({ where: { organisationId } })
     await tx.paymentRefund.deleteMany({ where: { organisationId } })
     await tx.receiptDelivery.deleteMany({ where: { organisationId } })
+    await tx.invoiceDelivery.deleteMany({ where: { organisationId } })
     await tx.invoiceReconciliation.deleteMany({ where: { organisationId } })
     await tx.invoicePaymentAttempt.deleteMany({ where: { organisationId } })
     // Payments reference invoices, invoices reference jobs/customers
