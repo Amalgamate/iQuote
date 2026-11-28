@@ -378,6 +378,9 @@ describe('Stage 8 — Security & Tenant Isolation', { skip: !TEST_DB && 'No DATA
       // In non-production (test) mode, missing Origin is allowed
       // So this should still work (status 200 or 401 depending on creds)
       expect([200, 401, 400]).toContain(res.status)
+      // A successful sign-in replaces Tenant A's previous session for this device category, so
+      // re-point the shared fixture cookie at the session this call just created.
+      if (res.status === 200) tenantA.cookie = authCookie(res)
     })
   })
 

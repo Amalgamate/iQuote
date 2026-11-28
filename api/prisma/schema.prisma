@@ -261,9 +261,15 @@ model Session {
   userId        String
   user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   token         String    @unique
+  deviceType    String    @default("DESKTOP")
+  deviceLabel   String?
+  ipAddress     String?
+  lastSeenAt    DateTime  @default(now())
   createdAt     DateTime  @default(now())
   expiresAt     DateTime
   mfaVerifiedAt DateTime?
+
+  @@index([userId, deviceType, expiresAt])
 }
 
 model Customer {

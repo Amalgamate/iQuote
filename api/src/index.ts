@@ -9,7 +9,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { generateSecret, generateURI, verifySync } from 'otplib'
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
-import { join, extname } from 'node:path'
+import { basename, join, extname, resolve, sep } from 'node:path'
 import sizeOf from 'image-size'
 import { getIndustryPack } from './industry-packs.js'
 import { initiateNcbaStkPush, ncbaPlanPrice, ncbaStkConfigured, normalizeKenyanPhone, queryNcbaStkPush, setPlatformNcbaConfig } from './ncba-client.js'
@@ -302,13 +302,33 @@ function hashToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex')
 }
 
-async function issueSession(userId: string, mfaVerified = false): Promise<string> {
+type SessionRequest = Pick<Request, 'headers' | 'ip'>
+
+function identifyDevice(request?: SessionRequest) {
+  const agent = String(request?.headers['user-agent'] ?? '')
+  const mobile = /android|iphone|ipod|ipad|mobile|tablet|windows phone/i.test(agent)
+  const deviceType = mobile ? 'MOBILE' : 'DESKTOP'
+  const deviceLabel = /iphone/i.test(agent) ? 'iPhone' : /ipad/i.test(agent) ? 'iPad' : /android/i.test(agent) ? 'Android device' : /windows/i.test(agent) ? 'Windows desktop' : /macintosh|mac os/i.test(agent) ? 'Mac desktop' : /cros/i.test(agent) ? 'Chromebook' : mobile ? 'Mobile device' : 'Desktop device'
+  return { deviceType, deviceLabel, ipAddress: request?.ip?.slice(0, 64) ?? null }
+}
+
+async function issueSession(userId: string, mfaVerified = false, request?: SessionRequest): Promise<string> {
   const rawToken = randomBytes(32).toString('hex')
   const tokenHash = hashToken(rawToken)
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  const device = identifyDevice(request)
 
-  await prisma.session.create({
-    data: { token: tokenHash, userId, expiresAt, ...(mfaVerified ? { mfaVerifiedAt: new Date() } : {}) },
+  await prisma.$transaction(async (transaction) => {
+    // Serialize sign-ins per user and replace the previous same-category session. This keeps one
+    // mobile and one desktop slot active without silently evicting the other device category.
+    // The lock returns PostgreSQL `void`, which Prisma cannot deserialize, so cast it to text.
+    await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))::text AS locked`
+    await transaction.session.deleteMany({ where: { userId, deviceType: device.deviceType } })
+    const remainingSessions = await transaction.session.findMany({ where: { userId, expiresAt: { gt: new Date() } }, orderBy: { lastSeenAt: 'desc' }, select: { id: true } })
+    if (remainingSessions.length > 1) await transaction.session.deleteMany({ where: { id: { in: remainingSessions.slice(1).map((session) => session.id) } } })
+    await transaction.session.create({
+      data: { token: tokenHash, userId, expiresAt, ...device, lastSeenAt: new Date(), ...(mfaVerified ? { mfaVerifiedAt: new Date() } : {}) },
+    })
   })
 
   return rawToken
@@ -662,6 +682,9 @@ async function loadUserFromToken(token: string) {
     const tokenHash = hashToken(token)
     const session = await prisma.session.findFirst({ where: { token: tokenHash, expiresAt: { gt: new Date() } } })
     if (!session) return null
+    if (Date.now() - session.lastSeenAt.getTime() > 5 * 60 * 1000) {
+      void prisma.session.updateMany({ where: { id: session.id }, data: { lastSeenAt: new Date() } }).catch(() => undefined)
+    }
     const user = await prisma.user.findUnique({
       where: { id: session.userId },
       select: { id: true, name: true, email: true, role: true, teamRole: true },
@@ -1194,7 +1217,7 @@ app.post('/api/auth/register', async (req, res) => {
     user.organisationId,
   ).catch(() => false)
 
-  const token = await issueSession(user.id)
+  const token = await issueSession(user.id, false, req)
   await prisma.signupVerification.deleteMany({ where: { email } })
   sendSessionCookie(res, token)
 
@@ -1797,7 +1820,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 
   await clearLoginAttempts(rateLimitKey)
-  const token = await issueSession(user.id, user.role !== 'SUPERADMIN')
+  const token = await issueSession(user.id, user.role !== 'SUPERADMIN', req)
   sendSessionCookie(res, token)
 
   res.json({ user: toPublicUser(user), mfaRequired: user.role === 'SUPERADMIN' && user.mfaEnabled, mfaSetupRequired: user.role === 'SUPERADMIN' && !user.mfaEnabled })
@@ -3938,6 +3961,51 @@ app.post('/api/superadmin/operations/webhooks/:id/reprocess', requireSuperadmin,
   return res.json({ message: 'Webhook reprocessed.' })
 })
 
+app.get('/api/superadmin/revenue', requireSuperadmin, async (req, res) => {
+  const requestedRange = String(req.query?.range ?? '30d')
+  const range = ['7d', '30d', '90d', '365d'].includes(requestedRange) ? requestedRange : '30d'
+  const days = Number(range.slice(0, -1))
+  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+  const now = new Date()
+  const realSubscriberPayment = { organisation: { is: { subscription: { is: { simulated: false } } } } }
+  const [paymentsByCurrency, paymentStates, subscriptionsByStatus, activeUserIds, deviceCounts, failedWebhooks, deliveryIssues, recentPayments] = await Promise.all([
+    prisma.billingPayment.groupBy({ by: ['currency'], where: { ...realSubscriberPayment, status: 'PAID', paidAt: { gte: from } }, _sum: { amount: true }, _count: { _all: true } }),
+    prisma.billingPayment.groupBy({ by: ['status'], where: { ...realSubscriberPayment, createdAt: { gte: from } }, _count: { _all: true } }),
+    prisma.subscription.groupBy({ by: ['status'], where: { simulated: false }, _count: { _all: true } }),
+    prisma.session.groupBy({ by: ['userId'], where: { expiresAt: { gt: now } }, _count: { _all: true } }),
+    prisma.session.groupBy({ by: ['deviceType'], where: { expiresAt: { gt: now } }, _count: { _all: true } }),
+    prisma.webhookEvent.count({ where: { processingStatus: 'FAILED', receivedAt: { gte: from } } }),
+    prisma.quoteDelivery.count({
+      where: {
+        status: { in: ['FAILED', 'BOUNCED'] },
+        createdAt: { gte: from },
+        quote: { is: { organisation: { is: { subscription: { is: { status: 'ACTIVE', simulated: false } } } } } },
+      },
+    }),
+    prisma.billingPayment.findMany({ where: { ...realSubscriberPayment, status: 'PAID', paidAt: { gte: from } }, orderBy: { paidAt: 'desc' }, take: 30, select: { id: true, plan: true, amount: true, currency: true, paidAt: true, providerReference: true, organisation: { select: { id: true, name: true, owner: { select: { name: true, email: true } } } } } }),
+  ])
+  const reconciliationIssues = await prisma.$queryRaw<Array<{ count: number }>>`
+    SELECT COUNT(*)::int AS count FROM "Invoice" i
+    JOIN "Subscription" s ON s."organisationId" = i."organisationId" AND s."status" = 'ACTIVE' AND s."simulated" = false
+    LEFT JOIN (SELECT "invoiceId", SUM("amount") AS paid FROM "Payment" GROUP BY "invoiceId") p ON p."invoiceId" = i."id"
+    WHERE ABS(i."amountPaid" - COALESCE(p.paid, 0)) > 0.01
+       OR ABS(i."balanceDue" - (i."total" - COALESCE(p.paid, 0))) > 0.01
+  `
+  const actor = getRequestUser(req)
+  if (actor) await writeSuperadminAudit(req, actor, 'PLATFORM_REVENUE_VIEWED', 'PLATFORM', null, `Viewed collected platform subscription revenue for ${range}.`, { range })
+  res.json({
+    range, from, to: now,
+    collected: paymentsByCurrency.map((row) => ({ currency: row.currency, amount: Number(row._sum.amount ?? 0), payments: row._count._all })),
+    paymentStates: paymentStates.map((row) => ({ status: row.status, count: row._count._all })),
+    subscriptions: subscriptionsByStatus.map((row) => ({ status: row.status, count: row._count._all })),
+    activeUsers: activeUserIds.length,
+    activeSessions: activeUserIds.reduce((sum, row) => sum + row._count._all, 0),
+    devices: deviceCounts.map((row) => ({ type: row.deviceType, count: row._count._all })),
+    issues: { failedWebhooks, deliveryIssues, subscriberInvoiceReconciliation: reconciliationIssues[0]?.count ?? 0 },
+    recentPayments: recentPayments.map((row) => ({ ...row, amount: Number(row.amount) })),
+  })
+})
+
 app.get('/api/superadmin/reports', requireSuperadmin, async (req, res) => {
   const requestedRange = String(req.query?.range ?? '30d')
   const range = ['7d', '30d', '90d', '365d'].includes(requestedRange) ? requestedRange : '30d'
@@ -3946,27 +4014,30 @@ app.get('/api/superadmin/reports', requireSuperadmin, async (req, res) => {
   const grain = range === '365d' ? 'month' : range === '90d' ? 'week' : 'day'
   const [quoteRows, invoiceRows, paymentRows, reconciliationCount, reconciliationRows] = await Promise.all([
     prisma.$queryRaw<Array<{ bucket: Date; currency: string; count: number; amount: string }>>`
-      SELECT date_trunc(${grain}, "createdAt") AS bucket, "currency", COUNT(*)::int AS count,
-        COALESCE(SUM("total"), 0)::text AS amount
-      FROM "Quote" WHERE "createdAt" >= ${from}
+      SELECT date_trunc(${grain}, q."createdAt") AS bucket, q."currency", COUNT(*)::int AS count,
+        COALESCE(SUM(q."total"), 0)::text AS amount
+      FROM "Quote" q JOIN "Subscription" s ON s."organisationId" = q."organisationId"
+      WHERE q."createdAt" >= ${from} AND s."status" = 'ACTIVE' AND s."simulated" = false
       GROUP BY 1, 2 ORDER BY 1, 2
     `,
     prisma.$queryRaw<Array<{ bucket: Date; currency: string; count: number; invoiced: string; paid: string; due: string }>>`
-      SELECT date_trunc(${grain}, "createdAt") AS bucket, "currency", COUNT(*)::int AS count,
-        COALESCE(SUM("total"), 0)::text AS invoiced, COALESCE(SUM("amountPaid"), 0)::text AS paid,
-        COALESCE(SUM("balanceDue"), 0)::text AS due
-      FROM "Invoice" WHERE "createdAt" >= ${from}
+      SELECT date_trunc(${grain}, i."createdAt") AS bucket, i."currency", COUNT(*)::int AS count,
+        COALESCE(SUM(i."total"), 0)::text AS invoiced, COALESCE(SUM(i."amountPaid"), 0)::text AS paid,
+        COALESCE(SUM(i."balanceDue"), 0)::text AS due
+      FROM "Invoice" i JOIN "Subscription" s ON s."organisationId" = i."organisationId"
+      WHERE i."createdAt" >= ${from} AND s."status" = 'ACTIVE' AND s."simulated" = false
       GROUP BY 1, 2 ORDER BY 1, 2
     `,
     prisma.$queryRaw<Array<{ bucket: Date; currency: string; count: number; amount: string }>>`
-      SELECT date_trunc(${grain}, "paymentDate") AS bucket, "currency", COUNT(*)::int AS count,
-        COALESCE(SUM("amount"), 0)::text AS amount
-      FROM "Payment" WHERE "paymentDate" >= ${from}
+      SELECT date_trunc(${grain}, p."paymentDate") AS bucket, p."currency", COUNT(*)::int AS count,
+        COALESCE(SUM(p."amount"), 0)::text AS amount
+      FROM "Payment" p JOIN "Subscription" s ON s."organisationId" = p."organisationId"
+      WHERE p."paymentDate" >= ${from} AND s."status" = 'ACTIVE' AND s."simulated" = false
       GROUP BY 1, 2 ORDER BY 1, 2
     `,
     prisma.$queryRaw<Array<{ count: number }>>`
       SELECT COUNT(*)::int AS count
-      FROM "Invoice" i
+      FROM "Invoice" i JOIN "Subscription" s ON s."organisationId" = i."organisationId" AND s."status" = 'ACTIVE' AND s."simulated" = false
       LEFT JOIN (SELECT "invoiceId", SUM("amount") AS paid FROM "Payment" GROUP BY "invoiceId") p ON p."invoiceId" = i."id"
       WHERE ABS(i."amountPaid" - COALESCE(p.paid, 0)) > 0.01
          OR ABS(i."balanceDue" - (i."total" - COALESCE(p.paid, 0))) > 0.01
@@ -3976,6 +4047,7 @@ app.get('/api/superadmin/reports', requireSuperadmin, async (req, res) => {
         i."amountPaid"::text AS "invoicePaid", COALESCE(p.paid, 0)::text AS "paymentEvents", i."balanceDue"::text AS "balanceDue", i."updatedAt"
       FROM "Invoice" i
       JOIN "Organisation" o ON o."id" = i."organisationId"
+      JOIN "Subscription" s ON s."organisationId" = i."organisationId" AND s."status" = 'ACTIVE' AND s."simulated" = false
       LEFT JOIN (SELECT "invoiceId", SUM("amount") AS paid FROM "Payment" GROUP BY "invoiceId") p ON p."invoiceId" = i."id"
       WHERE ABS(i."amountPaid" - COALESCE(p.paid, 0)) > 0.01
          OR ABS(i."balanceDue" - (i."total" - COALESCE(p.paid, 0))) > 0.01
@@ -4043,7 +4115,7 @@ app.get('/api/superadmin/workspaces', requireSuperadmin, async (req, res) => {
   const offset = Math.max(Number(req.query?.offset ?? 0), 0)
   const search = String(req.query?.q ?? '').trim().slice(0, 120)
   const statusFilter = String(req.query?.status ?? 'CURRENT').toUpperCase()
-  const statusWhere: PrismaTypes.OrganisationWhereInput = statusFilter === 'ARCHIVED' ? { status: 'ARCHIVED' } : statusFilter === 'SUSPENDED' ? { status: 'SUSPENDED' } : statusFilter === 'ALL' ? {} : { status: { in: ['ACTIVE', 'SUSPENDED'] } }
+  const statusWhere: PrismaTypes.OrganisationWhereInput = statusFilter === 'ARCHIVED' ? { status: 'ARCHIVED' } : statusFilter === 'SUSPENDED' ? { status: 'SUSPENDED' } : statusFilter === 'PENDING' ? { status: 'PENDING' } : statusFilter === 'ALL' ? {} : { status: { in: ['ACTIVE', 'SUSPENDED', 'PENDING'] } }
   const where: PrismaTypes.OrganisationWhereInput = {
     ...statusWhere,
     ...(search ? { OR: [
@@ -4136,6 +4208,27 @@ app.get('/api/superadmin/workspaces/:id', requireSuperadmin, async (req, res) =>
   })
 })
 
+app.post('/api/superadmin/workspaces/:id/plan', requireSuperadmin, async (req, res) => {
+  const user = getRequestUser(req)
+  const id = String(req.params.id ?? '')
+  const plan = String(req.body?.plan ?? '').trim().toUpperCase()
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!['STARTER', 'GROWTH', 'TEAM'].includes(plan)) return res.status(400).json({ message: 'Choose a valid subscription package.' })
+  if (reason.length < 5) return res.status(400).json({ message: 'Enter a reason for the package change (at least 5 characters).' })
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  const existing = await prisma.organisation.findUnique({ where: { id }, select: { id: true, name: true, status: true, subscription: { select: { id: true, plan: true, status: true } } } })
+  if (!existing) return res.status(404).json({ message: 'Workspace not found.' })
+  if (existing.status === 'ARCHIVED') return res.status(409).json({ message: 'Restore this workspace from archive before changing its package.' })
+  if (!existing.subscription) return res.status(409).json({ message: 'This workspace has no subscription record. Create or restore its subscription through the billing workflow first.' })
+  if (existing.subscription.plan === plan) return res.status(409).json({ message: 'This workspace is already on that package.' })
+  const subscription = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.subscription.update({ where: { id: existing.subscription!.id }, data: { plan } })
+    await writeSuperadminAudit(req, user, 'WORKSPACE_PLAN_CHANGED', 'WORKSPACE', id, `Applied a super-admin package override for ${existing.name ?? 'workspace'}: ${existing.subscription!.plan} to ${plan}.`, { previousPlan: existing.subscription!.plan, plan, reason, billingChanged: false }, transaction)
+    return updated
+  })
+  res.json({ subscription: { plan: subscription.plan, status: subscription.status, updatedAt: subscription.updatedAt } })
+})
+
 app.post('/api/superadmin/workspaces/:id/suspend', requireSuperadmin, async (req, res) => {
   const user = getRequestUser(req)
   const id = String(req.params.id ?? '')
@@ -4149,6 +4242,23 @@ app.post('/api/superadmin/workspaces/:id/suspend', requireSuperadmin, async (req
   const workspace = await prisma.$transaction(async (transaction) => {
     const updated = await transaction.organisation.update({ where: { id }, data: { status: 'SUSPENDED', suspendedAt: new Date(), suspendedByEmail: user.email, suspensionReason: reason, restoredAt: null, restoredByEmail: null }, select: { id: true, status: true, suspendedAt: true, suspendedByEmail: true, suspensionReason: true } })
     await writeSuperadminAudit(req, user, 'WORKSPACE_SUSPENDED', 'WORKSPACE', id, `Suspended workspace ${id}.`, { reason }, transaction)
+    return updated
+  })
+  res.json({ workspace })
+})
+
+app.post('/api/superadmin/workspaces/:id/approve', requireSuperadmin, async (req, res) => {
+  const actor = getRequestUser(req)
+  const id = String(req.params.id ?? '')
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!actor) return res.status(401).json({ message: 'Unauthorized' })
+  if (reason.length < 5) return res.status(400).json({ message: 'Enter an approval reason (at least 5 characters).' })
+  const existing = await prisma.organisation.findUnique({ where: { id }, select: { id: true, name: true, status: true } })
+  if (!existing) return res.status(404).json({ message: 'Workspace not found.' })
+  if (existing.status !== 'PENDING') return res.status(409).json({ message: 'Only workspaces awaiting approval can be approved.' })
+  const workspace = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.organisation.update({ where: { id }, data: { status: 'ACTIVE' }, select: { id: true, name: true, status: true } })
+    await writeSuperadminAudit(req, actor, 'WORKSPACE_APPROVED', 'WORKSPACE', id, `Approved workspace ${existing.name ?? id}.`, { reason }, transaction)
     return updated
   })
   res.json({ workspace })
@@ -4202,6 +4312,76 @@ app.post('/api/superadmin/workspaces/:id/unarchive', requireSuperadmin, async (r
     return updated
   })
   res.json({ workspace })
+})
+
+app.post('/api/superadmin/workspaces/:id/permanent-delete', requireSuperadmin, async (req, res) => {
+  const user = getRequestUser(req)
+  const id = String(req.params.id ?? '')
+  const confirmName = String(req.body?.confirmName ?? '')
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 500)
+  if (!user) return res.status(401).json({ message: 'Unauthorized' })
+  if (reason.length < 10) return res.status(400).json({ message: 'Enter a deletion reason (at least 10 characters).' })
+
+  const organisation = await prisma.organisation.findUnique({
+    where: { id },
+    select: {
+      id: true, name: true, status: true, ownerId: true, logoUrl: true,
+      members: { select: { id: true } },
+      jobs: { select: { attachments: { select: { storageKey: true } } } },
+    },
+  })
+  if (!organisation) return res.status(404).json({ message: 'Workspace not found.' })
+  if (organisation.status !== 'ARCHIVED') return res.status(409).json({ message: 'Archive this workspace before permanently deleting it.' })
+  const expectedName = organisation.name ?? 'Unnamed workspace'
+  if (confirmName !== expectedName) return res.status(400).json({ message: 'The typed workspace name does not match exactly.' })
+
+  const affectedUserIds = [...new Set([organisation.ownerId, ...organisation.members.map((member) => member.id)])]
+  const attachmentKeys = organisation.jobs.flatMap((job) => job.attachments.map((attachment) => attachment.storageKey))
+  const deletedCounts = await prisma.$transaction(async (transaction) => {
+    const [quotes, invoices, payments, jobs, customers] = await Promise.all([
+      transaction.quote.count({ where: { organisationId: id } }),
+      transaction.invoice.count({ where: { organisationId: id } }),
+      transaction.payment.count({ where: { organisationId: id } }),
+      transaction.job.count({ where: { organisationId: id } }),
+      transaction.customer.count({ where: { organisationId: id } }),
+    ])
+
+    // Remove workspace membership and revoke sessions, while retaining user accounts so a team
+    // member who also owns another workspace is not accidentally deleted.
+    await transaction.user.updateMany({ where: { id: { in: affectedUserIds }, organisationId: id }, data: { organisationId: null } })
+    await transaction.session.deleteMany({ where: { userId: { in: affectedUserIds } } })
+
+    // Delete restricted dependents before customers. Cascades remove their lines, delivery rows,
+    // payment attempts, refunds, allocations, and reconciliation history.
+    await transaction.invoice.deleteMany({ where: { organisationId: id } })
+    await transaction.quote.deleteMany({ where: { organisationId: id } })
+    await transaction.job.deleteMany({ where: { organisationId: id } })
+    await transaction.customer.deleteMany({ where: { organisationId: id } })
+
+    await writeSuperadminAudit(req, user, 'WORKSPACE_PERMANENTLY_DELETED', 'WORKSPACE', id, `Permanently deleted archived workspace ${expectedName}.`, { reason, confirmName, ownerId: organisation.ownerId, quotes, invoices, payments, jobs, customers }, transaction)
+    await transaction.organisation.delete({ where: { id } })
+    return { quotes, invoices, payments, jobs, customers }
+  })
+
+  // Remove locally stored logo and job files only when each resolved path remains inside UPLOADS_DIR.
+  const uploadsRoot = resolve(uploadsDir)
+  const storedPaths: string[] = []
+  if (organisation.logoUrl?.startsWith('/uploads/')) {
+    const logoPath = resolve(uploadsRoot, organisation.logoUrl.slice('/uploads/'.length))
+    if (logoPath.startsWith(`${uploadsRoot}${sep}`)) storedPaths.push(logoPath)
+  }
+  for (const key of attachmentKeys) {
+    if (basename(key) !== key || key.includes('..')) continue
+    const attachmentPath = resolve(uploadsRoot, 'job-attachments', key)
+    if (attachmentPath.startsWith(`${uploadsRoot}${sep}`)) storedPaths.push(attachmentPath)
+  }
+  const cleanupResults = await Promise.allSettled(storedPaths.map((path) => unlink(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error
+  })))
+  const storageCleanupPending = cleanupResults.filter((result) => result.status === 'rejected').length
+  if (storageCleanupPending > 0) console.error(JSON.stringify({ event: 'workspace_delete_storage_cleanup_incomplete', organisationId: id, failures: storageCleanupPending }))
+
+  res.json({ deleted: true, deletedCounts, storageCleanupPending })
 })
 
 app.get('/api/superadmin/quotes', requireSuperadmin, async (req, res) => {
@@ -4292,7 +4472,7 @@ app.get('/api/superadmin/users/:id/sessions', requireSuperadmin, async (req, res
   const id = String(req.params.id ?? '')
   const target = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, email: true } })
   if (!target) return res.status(404).json({ message: 'User not found.' })
-  const sessions = await prisma.session.findMany({ where: { userId: id, expiresAt: { gt: new Date() } }, orderBy: { createdAt: 'desc' }, select: { id: true, createdAt: true, expiresAt: true } })
+  const sessions = await prisma.session.findMany({ where: { userId: id, expiresAt: { gt: new Date() } }, orderBy: { lastSeenAt: 'desc' }, select: { id: true, createdAt: true, expiresAt: true, deviceType: true, deviceLabel: true, ipAddress: true, lastSeenAt: true, mfaVerifiedAt: true } })
   const actor = getRequestUser(req)
   if (actor) await writeSuperadminAudit(req, actor, 'USER_SESSIONS_VIEWED', 'USER', id, `Viewed active sessions for ${target.email}.`)
   res.json({ user: target, sessions })

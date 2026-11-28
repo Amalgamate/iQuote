@@ -3,18 +3,6 @@ import { apiRequest, formatMoney } from './api'
 import PwaControls from './PwaControls'
 import './Workspace.css'
 
-type SuperadminStats = {
-  totalUsers: number
-  totalOrganisations: number
-  totalQuotes: number
-  approvedQuotes: number
-  totalQuotedValue: number
-  totalQuoteCount: number
-  activeTrials: number
-  currencyBreakdown: Array<{ currency: string; total: number; count: number }>
-  recentSignups: Array<{ id: string; name: string; email: string; role: string; createdAt: string; organisationName: string | null }>
-}
-
 type WorkspaceRow = {
   id: string
   status: string
@@ -36,7 +24,6 @@ type WorkspaceRow = {
   totalQuotedValue: number
   customerCount: number
 }
-
 type WorkspaceDetailData = {
   workspace: WorkspaceRow & {
     phone: string | null
@@ -56,17 +43,6 @@ type WorkspaceDetailData = {
   recentInvoices: Array<{ id: string; invoiceNumber: string; status: string; currency: string; total: number; amountPaid: number; balanceDue: number; updatedAt: string }>
 }
 
-type RecentQuote = {
-  id: string
-  documentNumber: string
-  status: string
-  currency: string
-  total: number
-  createdAt: string
-  organisation: { id: string; name: string }
-  customer: { name: string }
-}
-
 type AuditEvent = {
   id: string
   actorEmail: string
@@ -81,7 +57,7 @@ type AuditEvent = {
 }
 type PaginatedAudit = { events: AuditEvent[]; totalCount: number; hasMore: boolean }
 type AdminAccount = { id: string; name: string; email: string; role: string; mfaEnabled: boolean; createdAt: string; workspace: { id: string; name: string | null; status: string } | null; activeSessionCount: number }
-type AdminSession = { id: string; createdAt: string; expiresAt: string }
+type AdminSession = { id: string; createdAt: string; expiresAt: string; deviceType: string; deviceLabel: string | null; ipAddress: string | null; lastSeenAt: string; mfaVerifiedAt: string | null }
 type PaginatedUsers = { users: AdminAccount[]; totalCount: number; hasMore: boolean }
 type OperationsSnapshot = {
   checkedAt: string
@@ -106,15 +82,28 @@ type PlatformReport = {
   periods: Array<{ bucket: string; currency: string; quoteCount: number; quoted: number; invoiceCount: number; invoiced: number; paymentCount: number; paymentsRecorded: number }>
   reconciliation: { issueCount: number; invoices: Array<{ id: string; organisation: string; invoiceNumber: string; currency: string; invoiceTotal: number; invoicePaid: number; paymentEvents: number; balanceDue: number; updatedAt: string }> }
 }
+type PlatformRevenue = {
+  range: string
+  from: string
+  to: string
+  collected: Array<{ currency: string; amount: number; payments: number }>
+  paymentStates: Array<{ status: string; count: number }>
+  subscriptions: Array<{ status: string; count: number }>
+  activeUsers: number
+  activeSessions: number
+  devices: Array<{ type: string; count: number }>
+  issues: { failedWebhooks: number; deliveryIssues: number; subscriberInvoiceReconciliation: number }
+  recentPayments: Array<{ id: string; plan: string; amount: number; currency: string; paidAt: string | null; providerReference: string | null; organisation: { id: string; name: string | null; owner: { name: string; email: string } } }>
+}
 
 type PlatformPlanPrice = { plan: string; amount: number | null; currency: string; source: 'ADMIN' | 'ENVIRONMENT' | 'UNSET' }
 
 type User = { id: string; name: string; email: string; role: string }
 
-type SuperadminPage = 'overview' | 'workspaces' | 'quotes' | 'signups' | 'security' | 'activity' | 'accounts' | 'operations' | 'reports' | 'pricing'
+type SuperadminPage = 'revenue' | 'workspaces' | 'accounts' | 'settings' | 'reports'
+type PlatformSettingsSection = 'operations' | 'billing' | 'system'
 
 type PaginatedWorkspaces = { workspaces: WorkspaceRow[]; totalCount: number; hasMore: boolean }
-type PaginatedQuotes = { quotes: RecentQuote[]; totalCount: number; hasMore: boolean }
 
 const BILLING_PLAN_NAMES = ['STARTER', 'GROWTH', 'TEAM'] as const
 
@@ -139,18 +128,32 @@ function trialStatus(org: WorkspaceRow): string {
 }
 
 export default function SuperadminDashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
-  const [page, setPage] = useState<SuperadminPage>('overview')
-  const [stats, setStats] = useState<SuperadminStats | null>(null)
+  const [page, setPage] = useState<SuperadminPage>('revenue')
+  const [settingsSection, setSettingsSection] = useState<PlatformSettingsSection>('operations')
   const [workspaces, setWorkspaces] = useState<WorkspaceRow[]>([])
   const [workspacesHasMore, setWorkspacesHasMore] = useState(false)
   const [workspacesTotal, setWorkspacesTotal] = useState(0)
   const [workspaceDetail, setWorkspaceDetail] = useState<WorkspaceDetailData | null>(null)
   const [workspaceDetailLoading, setWorkspaceDetailLoading] = useState(false)
+  const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false)
+  useEffect(() => {
+    if (!workspaceDrawerOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setWorkspaceDrawerOpen(false)
+        setWorkspaceDetail(null)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [workspaceDrawerOpen])
   const [workspaceSearchLoading, setWorkspaceSearchLoading] = useState(false)
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
-  const [recentQuotes, setRecentQuotes] = useState<RecentQuote[]>([])
-  const [quotesHasMore, setQuotesHasMore] = useState(false)
-  const [quotesTotal, setQuotesTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -183,6 +186,9 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   const [platformReport, setPlatformReport] = useState<PlatformReport | null>(null)
   const [platformReportRange, setPlatformReportRange] = useState('30d')
   const [platformReportLoading, setPlatformReportLoading] = useState(false)
+  const [platformRevenue, setPlatformRevenue] = useState<PlatformRevenue | null>(null)
+  const [platformRevenueRange, setPlatformRevenueRange] = useState('30d')
+  const [platformRevenueLoading, setPlatformRevenueLoading] = useState(false)
   const [planPrices, setPlanPrices] = useState<PlatformPlanPrice[]>([])
   const [priceInputs, setPriceInputs] = useState<Record<string, string>>({ STARTER: '', GROWTH: '', TEAM: '' })
   const [priceReason, setPriceReason] = useState('')
@@ -195,21 +201,18 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   const [updateBusy, setUpdateBusy] = useState(false)
 
   const WORKSPACE_PAGE_SIZE = 50
-  const QUOTE_PAGE_SIZE = 50
-
   const loadAll = async () => {
-    const [statsRes, wsRes, quotesRes] = await Promise.all([
-      apiRequest<SuperadminStats>('/api/superadmin/stats'),
-      apiRequest<PaginatedWorkspaces>(`/api/superadmin/workspaces?limit=${WORKSPACE_PAGE_SIZE}&status=${encodeURIComponent(workspaceStatusFilter)}`),
-      apiRequest<PaginatedQuotes>(`/api/superadmin/quotes?limit=${QUOTE_PAGE_SIZE}`),
-    ])
-    setStats(statsRes)
+    const wsRes = await apiRequest<PaginatedWorkspaces>(`/api/superadmin/workspaces?limit=${WORKSPACE_PAGE_SIZE}&status=${encodeURIComponent(workspaceStatusFilter)}`)
     setWorkspaces(wsRes.workspaces)
     setWorkspacesHasMore(wsRes.hasMore)
     setWorkspacesTotal(wsRes.totalCount)
-    setRecentQuotes(quotesRes.quotes)
-    setQuotesHasMore(quotesRes.hasMore)
-    setQuotesTotal(quotesRes.totalCount)
+  }
+
+  const loadPlatformRevenue = async (range = platformRevenueRange) => {
+    setPlatformRevenueLoading(true)
+    try { setPlatformRevenue(await apiRequest<PlatformRevenue>(`/api/superadmin/revenue?range=${encodeURIComponent(range)}`)) }
+    catch (err) { setError(err instanceof Error ? err.message : 'Could not load platform revenue.') }
+    finally { setPlatformRevenueLoading(false) }
   }
 
   const loadOperations = async () => {
@@ -328,8 +331,9 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     setError('')
     try {
       await loadAll()
-      if (page === 'operations') await loadOperations()
+      if (page === 'settings' && settingsSection === 'operations') await loadOperations()
       if (page === 'reports') await loadPlatformReport()
+      if (page === 'revenue') await loadPlatformRevenue()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to refresh data.')
     } finally {
@@ -363,20 +367,8 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     }
   }
 
-  const loadMoreQuotes = async () => {
-    setLoadingMore(true)
-    try {
-      const res = await apiRequest<PaginatedQuotes>(`/api/superadmin/quotes?limit=${QUOTE_PAGE_SIZE}&offset=${recentQuotes.length}`)
-      setRecentQuotes((current) => [...current, ...res.quotes])
-      setQuotesHasMore(res.hasMore)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load more quotes.')
-    } finally {
-      setLoadingMore(false)
-    }
-  }
-
-  const openWorkspace = async (id: string) => {
+  const openWorkspace = async (id: string, inDrawer = false) => {
+    setWorkspaceDrawerOpen(inDrawer)
     setWorkspaceDetailLoading(true)
     setWorkspaceDetail(null)
     setError('')
@@ -393,14 +385,52 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
     try {
       await apiRequest(`/api/superadmin/workspaces/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify(['suspend', 'archive'].includes(action) ? { reason } : {}) })
       await loadAll()
-      await openWorkspace(id)
+      await openWorkspace(id, workspaceDrawerOpen)
     } catch (err) {
       setError(err instanceof Error ? err.message : `Could not ${action} workspace.`)
     } finally { setWorkspaceActionBusy(false) }
   }
 
+  const updateWorkspacePlan = async (id: string, plan: string, reason: string) => {
+    setWorkspaceActionBusy(true)
+    setError('')
+    try {
+      await apiRequest(`/api/superadmin/workspaces/${encodeURIComponent(id)}/plan`, { method: 'POST', body: JSON.stringify({ plan, reason }) })
+      await loadAll()
+      await openWorkspace(id, true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update the workspace plan.')
+    } finally { setWorkspaceActionBusy(false) }
+  }
+
+  const approveWorkspace = async (id: string, reason: string) => {
+    setWorkspaceActionBusy(true)
+    setError('')
+    try {
+      await apiRequest(`/api/superadmin/workspaces/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify({ reason }) })
+      await loadAll()
+      await openWorkspace(id, workspaceDrawerOpen)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not approve workspace.')
+    } finally { setWorkspaceActionBusy(false) }
+  }
+
+  const permanentlyDeleteWorkspace = async (id: string, confirmName: string, reason: string) => {
+    setWorkspaceActionBusy(true)
+    setError('')
+    try {
+      const result = await apiRequest<{ storageCleanupPending: number }>(`/api/superadmin/workspaces/${encodeURIComponent(id)}/permanent-delete`, { method: 'POST', body: JSON.stringify({ confirmName, reason }) })
+      setWorkspaceDrawerOpen(false)
+      setWorkspaceDetail(null)
+      await loadAll()
+      if (result.storageCleanupPending > 0) setError(`Workspace data was deleted, but ${result.storageCleanupPending} uploaded file(s) need storage cleanup. Check the API logs.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not permanently delete the workspace.')
+    } finally { setWorkspaceActionBusy(false) }
+  }
+
   useEffect(() => {
-    if (page !== 'workspaces' || workspaceDetail) return
+    if (page !== 'workspaces' || (workspaceDetail && !workspaceDrawerOpen)) return
     const timer = window.setTimeout(async () => {
       setWorkspaceSearchLoading(true)
       try {
@@ -414,10 +444,10 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
       } finally { setWorkspaceSearchLoading(false) }
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [page, search, workspaceStatusFilter, workspaceDetail])
+  }, [page, search, workspaceStatusFilter, workspaceDetail, workspaceDrawerOpen])
 
   useEffect(() => {
-    if (page !== 'activity') return
+    if (page !== 'settings' || settingsSection !== 'system') return
     const timer = window.setTimeout(async () => {
       setAuditLoading(true)
       try {
@@ -431,7 +461,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
       } finally { setAuditLoading(false) }
     }, 200)
     return () => window.clearTimeout(timer)
-  }, [page, auditSearch])
+  }, [page, settingsSection, auditSearch])
 
   const loadMoreAudit = async () => {
     setAuditLoading(true)
@@ -491,23 +521,28 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   }, [page, accountSearch, selectedAccount])
 
   useEffect(() => {
-    if (page === 'operations') { void loadOperations(); void loadNcbaConfig() }
-  }, [page])
+    if (page === 'settings' && settingsSection === 'operations') { void loadOperations(); void loadNcbaConfig() }
+  }, [page, settingsSection])
 
   useEffect(() => {
     if (page === 'reports') void loadPlatformReport(platformReportRange)
   }, [page, platformReportRange])
 
   useEffect(() => {
-    if (page === 'pricing') void loadPlanPrices()
-  }, [page])
+    if (page === 'revenue') void loadPlatformRevenue(platformRevenueRange)
+  }, [page, platformRevenueRange])
+
+  useEffect(() => {
+    if (page === 'settings' && settingsSection === 'billing') void loadPlanPrices()
+  }, [page, settingsSection])
 
   const filteredWorkspaces = workspaces
 
-  const heading = page === 'overview' ? 'Platform Overview' : page === 'workspaces' ? 'Client Workspaces' : page === 'quotes' ? 'Platform Quotes' : page === 'security' ? 'Security' : page === 'activity' ? 'Admin Activity' : page === 'accounts' ? 'User Accounts' : page === 'operations' ? 'Operations' : page === 'reports' ? 'Platform Reports' : page === 'pricing' ? 'Plan Pricing' : 'Recent Signups'
+  const heading = page === 'revenue' ? 'Revenue' : page === 'workspaces' ? 'Workspace Management' : page === 'accounts' ? 'Users & devices' : page === 'settings' ? 'Platform Settings' : 'Subscriber Reports'
 
   const openSecurity = async () => {
-    setPage('security')
+    setPage('settings')
+    setSettingsSection('system')
     setMfaMessage('')
     try {
       const result = await apiRequest<{ secret?: string; mfaEnabled?: boolean }>('/api/superadmin/mfa/setup')
@@ -541,13 +576,13 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   return (
     <div className="workspace-root superadmin-root">
       <aside className="app-sidebar">
-        <a className="brand brand-workspace" href="#overview" onClick={(e) => { e.preventDefault(); setPage('overview') }}>
+        <a className="brand brand-workspace" href="#revenue" onClick={(e) => { e.preventDefault(); setPage('revenue') }}>
           <span className="brand-mark">iQ</span><span className="brand-word">i<span className="brand-q">Q</span>uote<span className="brand-period">.</span> Admin</span>
         </a>
         <div className="sidebar-caption">Superadmin</div>
         <nav className="app-navigation" aria-label="Superadmin navigation">
-          {([['overview', 'Overview', '⌂'], ['workspaces', 'Workspaces', '▦'], ['accounts', 'Users & sessions', '♙'], ['operations', 'Operations', '◉'], ['reports', 'Reports', '▥'], ['pricing', 'Plan pricing', '₭'], ['quotes', 'Quotes', '▤'], ['signups', 'Signups', '✦'], ['activity', 'Activity log', '≋'], ['security', 'Security', '⚙']] as const).map(([key, label, glyph]) => (
-            <button key={key} type="button" className={`app-nav-item ${page === key ? 'active' : ''}`} onClick={() => { setWorkspaceDetail(null); if (key === 'security') void openSecurity(); else { setPage(key); if (key !== 'accounts') setSelectedAccount(null) } }}>
+          {([['revenue', 'Revenue', '₭'], ['workspaces', 'Workspaces', '▦'], ['accounts', 'Users & devices', '♙'], ['reports', 'Subscriber reports', '▥'], ['settings', 'Platform settings', '⚙']] as const).map(([key, label, glyph]) => (
+            <button key={key} type="button" className={`app-nav-item ${page === key ? 'active' : ''}`} onClick={() => { setWorkspaceDetail(null); setPage(key); if (key === 'settings') setSettingsSection('operations'); if (key !== 'accounts') setSelectedAccount(null) }}>
               <span className="nav-glyph" aria-hidden="true">{glyph}</span>
               <span>{label}</span>
             </button>
@@ -580,9 +615,35 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
           </div>
         )}
 
-        {page === 'overview' && stats && <AdminOverview user={user} stats={stats} workspaces={workspaces} quotes={recentQuotes} onWorkspaces={() => setPage('workspaces')} onQuotes={() => setPage('quotes')} onSignups={() => setPage('signups')} />}
+        {page === 'revenue' && <section className="workspace-content admin-revenue-page">
+          <div className="list-toolbar"><div><p className="workspace-eyebrow">Platform subscriptions</p><h2>Collected revenue</h2><p>Confirmed NCBA subscription payments only. Tenant invoice collections are reported separately.</p></div><label className="workspace-eyebrow">Period <select className="input-control" value={platformRevenueRange} onChange={(event) => setPlatformRevenueRange(event.target.value)}><option value="7d">7 days</option><option value="30d">30 days</option><option value="90d">90 days</option><option value="365d">1 year</option></select></label></div>
+          {platformRevenueLoading && !platformRevenue ? <div className="workspace-loading">Loading revenue and platform health…</div> : platformRevenue && <>
+            <div className="admin-dashboard-metrics">
+              <article className="workspace-panel"><span>Active subscribers</span><strong>{platformRevenue.subscriptions.find((item) => item.status === 'ACTIVE')?.count ?? 0}</strong><small>Real, non-simulated plans</small></article>
+              <article className="workspace-panel"><span>Active users</span><strong>{platformRevenue.activeUsers}</strong><small>{platformRevenue.activeSessions} active sessions · maximum 2 per user</small></article>
+              <article className="workspace-panel"><span>Platform issues</span><strong>{platformRevenue.issues.failedWebhooks + platformRevenue.issues.deliveryIssues + platformRevenue.issues.subscriberInvoiceReconciliation}</strong><small>Webhook, email, and subscriber reconciliation</small></article>
+              <article className="workspace-panel"><span>Payment attempts</span><strong>{platformRevenue.paymentStates.reduce((sum, item) => sum + item.count, 0)}</strong><small>Subscription checkout activity in this period</small></article>
+            </div>
+            <div className="admin-revenue-grid">
+              <section className="workspace-panel quote-list-panel"><div className="list-toolbar"><div><h3>Subscription revenue by currency</h3><p>Successful payment records grouped without mixing currencies.</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Currency</th><th>Collected</th><th>Payments</th></tr></thead><tbody>{platformRevenue.collected.map((row) => <tr key={row.currency}><td><strong>{row.currency}</strong></td><td>{formatMoney(row.amount, row.currency)}</td><td>{row.payments}</td></tr>)}</tbody></table></div>{!platformRevenue.collected.length && <div className="panel-empty">No confirmed subscription payments in this period.</div>}</section>
+              <section className="workspace-panel" style={{ padding: 20 }}><h3>Subscriptions and checkout</h3><div className="admin-revenue-status-grid">{platformRevenue.subscriptions.map((row) => <p key={row.status}>{row.status.replaceAll('_', ' ')} <strong>{row.count}</strong></p>)}</div><hr />{platformRevenue.paymentStates.map((row) => <p key={row.status}>{row.status.replaceAll('_', ' ')} <strong>{row.count}</strong></p>)}</section>
+              <section className="workspace-panel" style={{ padding: 20 }}><h3>Issues to review</h3><p>Failed webhooks <strong>{platformRevenue.issues.failedWebhooks}</strong></p><p>Failed or bounced quote emails <strong>{platformRevenue.issues.deliveryIssues}</strong></p><p>Subscriber invoice mismatches <strong>{platformRevenue.issues.subscriberInvoiceReconciliation}</strong></p><button type="button" className="dashboard-text-link" onClick={() => { setPage('settings'); setSettingsSection('operations') }}>Open system operations →</button></section>
+              <section className="workspace-panel" style={{ padding: 20 }}><h3>Sessions and gadgets</h3><p>Mobile devices <strong>{platformRevenue.devices.find((device) => device.type === 'MOBILE')?.count ?? 0}</strong></p><p>Desktop devices <strong>{platformRevenue.devices.find((device) => device.type === 'DESKTOP')?.count ?? 0}</strong></p><p>Each account can keep one phone and one desktop session active.</p><button type="button" className="dashboard-text-link" onClick={() => setPage('accounts')}>Manage users and devices →</button></section>
+            </div>
+            <section className="workspace-panel quote-list-panel"><div className="list-toolbar"><div><h3>Recent subscription payments</h3><p>Confirmed platform collections, not tenant invoice payments.</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Paid</th><th>Workspace</th><th>Owner</th><th>Package</th><th>Amount</th><th>Provider reference</th></tr></thead><tbody>{platformRevenue.recentPayments.map((payment) => <tr key={payment.id}><td>{payment.paidAt ? new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(payment.paidAt)) : '—'}</td><td>{payment.organisation.name ?? 'Unnamed workspace'}</td><td>{payment.organisation.owner.name}<small>{payment.organisation.owner.email}</small></td><td>{payment.plan}</td><td>{formatMoney(payment.amount, payment.currency)}</td><td>{payment.providerReference ?? '—'}</td></tr>)}</tbody></table></div>{!platformRevenue.recentPayments.length && <div className="panel-empty">No confirmed subscription payments in this period.</div>}</section>
+          </>}
+        </section>}
 
-        {page === 'pricing' && <section className="workspace-content">
+        {page === 'settings' && <section className="workspace-content">
+          <div className="list-toolbar"><div><p className="workspace-eyebrow">Platform configuration</p><h2>Settings</h2><p>Manage platform services, payment configuration, and subscription pricing.</p></div></div>
+          <div className="admin-settings-nav" role="tablist" aria-label="Platform settings sections">
+            <button type="button" role="tab" aria-selected={settingsSection === 'operations'} className={`app-nav-item ${settingsSection === 'operations' ? 'active' : ''}`} onClick={() => setSettingsSection('operations')}>Operations</button>
+            <button type="button" role="tab" aria-selected={settingsSection === 'billing'} className={`app-nav-item ${settingsSection === 'billing' ? 'active' : ''}`} onClick={() => setSettingsSection('billing')}>Billing &amp; plans</button>
+            <button type="button" role="tab" aria-selected={settingsSection === 'system'} className={`app-nav-item ${settingsSection === 'system' ? 'active' : ''}`} onClick={() => void openSecurity()}>System management</button>
+          </div>
+        </section>}
+
+        {page === 'settings' && settingsSection === 'billing' && <section className="workspace-content">
           <div className="list-toolbar"><div><p className="workspace-eyebrow">Commercial settings</p><h2>Subscription plan prices</h2><p>Set the monthly KES price for each package. Saved prices appear in the customer renewal screen.</p></div></div>
           <form className="admin-pricing-form" onSubmit={(event) => void savePlanPrices(event)}>
             <div className="admin-price-grid">
@@ -603,31 +664,33 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
         </section>}
 
         {page === 'workspaces' && (
-          workspaceDetailLoading ? <main className="workspace-loading">Loading workspace details…</main> : workspaceDetail ? <WorkspaceDetailView data={workspaceDetail} actionBusy={workspaceActionBusy} onSuspend={(reason) => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'suspend', reason)} onRestore={() => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'restore')} onArchive={(reason) => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'archive', reason)} onUnarchive={() => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'unarchive')} onBack={() => setWorkspaceDetail(null)} /> : <section className="workspace-content">
+          <>
+          <section className="workspace-content">
             <div className="list-toolbar">
               <div><p className="workspace-eyebrow">Platform</p><h2>All client workspaces</h2></div>
             </div>
             <div className="filter-row">
               <input className="input-control search-control" type="search" placeholder="Search business, owner, email, country, or type" value={search} onChange={(e) => setSearch(e.target.value)} />
-              <select className="input-control" value={workspaceStatusFilter} onChange={(event) => setWorkspaceStatusFilter(event.target.value)} aria-label="Filter workspaces by lifecycle status"><option value="CURRENT">Active and suspended</option><option value="ARCHIVED">Archived</option><option value="ALL">All workspaces</option></select>
+              <select className="input-control" value={workspaceStatusFilter} onChange={(event) => setWorkspaceStatusFilter(event.target.value)} aria-label="Filter workspaces by lifecycle status"><option value="CURRENT">Current and pending</option><option value="PENDING">Pending approval</option><option value="SUSPENDED">Suspended</option><option value="ARCHIVED">Archived</option><option value="ALL">All workspaces</option></select>
               <span className="workspace-eyebrow" aria-live="polite">{workspaceSearchLoading ? 'Searching…' : `${workspacesTotal} workspaces`}</span>
             </div>
             <section className="workspace-panel quote-list-panel">
               <div className="table-scroll">
                 <table className="data-table">
-                  <thead><tr><th>Business</th><th>Owner</th><th>Country</th><th>Workspace</th><th>Plan</th><th>Quotes</th><th>Value quoted</th><th>Customers</th><th>Joined</th></tr></thead>
+                  <thead><tr><th>Business</th><th>Owner</th><th>Country</th><th>Workspace</th><th>Plan</th><th>Quotes</th><th>Value quoted</th><th>Customers</th><th>Joined</th><th>Actions</th></tr></thead>
                   <tbody>
                     {filteredWorkspaces.map((ws) => (
                       <tr key={ws.id}>
-                        <td><button type="button" className="dashboard-text-link" onClick={() => void openWorkspace(ws.id)}>{ws.name} →</button><small>{ws.businessType ?? 'General'}</small></td>
+                        <td><button type="button" className="dashboard-text-link" onClick={() => void openWorkspace(ws.id, true)}>{ws.name} →</button><small>{ws.businessType ?? 'General'}</small></td>
                         <td>{ws.owner.name}<small>{ws.owner.email}</small></td>
                         <td>{ws.country ?? '—'}</td>
-                        <td><span className={`workspace-state ${ws.status === 'SUSPENDED' ? 'suspended' : ws.status === 'ARCHIVED' ? 'archived' : 'active'}`}>{ws.status === 'SUSPENDED' ? 'Suspended' : ws.status === 'ARCHIVED' ? 'Archived' : 'Active'}</span></td>
+                        <td><span className={`workspace-state ${ws.status === 'SUSPENDED' ? 'suspended' : ws.status === 'ARCHIVED' ? 'archived' : ws.status === 'PENDING' ? 'pending' : 'active'}`}>{ws.status === 'SUSPENDED' ? 'Suspended' : ws.status === 'ARCHIVED' ? 'Archived' : ws.status === 'PENDING' ? 'Pending approval' : 'Active'}</span></td>
                         <td><span className={planBadgeClass(ws.subscription?.status ?? '')}>{ws.subscription?.plan ?? 'FREE'}<small>{trialStatus(ws)}</small></span></td>
                         <td>{ws.quoteCount}</td>
                         <td>{formatMoney(ws.totalQuotedValue, ws.currency)}</td>
                         <td>{ws.customerCount}</td>
                         <td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(ws.createdAt))}</td>
+                        <td><button type="button" className="workspace-row-menu" aria-label={`Open controls for ${ws.name}`} title="Workspace controls" onClick={() => void openWorkspace(ws.id, true)}>⋮</button></td>
                       </tr>
                     ))}
                   </tbody>
@@ -643,62 +706,13 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
               )}
             </section>
           </section>
-        )}
-
-        {page === 'quotes' && (
-          <section className="workspace-content">
-            <div className="list-toolbar"><div><p className="workspace-eyebrow">Platform</p><h2>All quotes</h2></div></div>
-            <section className="workspace-panel quote-list-panel">
-              <div className="table-scroll">
-                <table className="data-table">
-                  <thead><tr><th>Quote</th><th>Workspace</th><th>Customer</th><th>Total</th><th>Status</th><th>Created</th></tr></thead>
-                  <tbody>
-                    {recentQuotes.map((q) => (
-                      <tr key={q.id}>
-                        <td><strong>{q.documentNumber}</strong></td>
-                        <td>{q.organisation.name}</td>
-                        <td>{q.customer.name}</td>
-                        <td>{formatMoney(q.total, q.currency)}</td>
-                        <td><span className={`quote-status status-${q.status.toLowerCase()}`}>{q.status.charAt(0) + q.status.slice(1).toLowerCase()}</span></td>
-                        <td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(q.createdAt))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-            {quotesHasMore && (
-              <div className="load-more-row">
-                <button type="button" className="quiet-button" onClick={() => void loadMoreQuotes()} disabled={loadingMore}>
-                  {loadingMore ? 'Loading…' : `Load more (${recentQuotes.length} of ${quotesTotal})`}
-                </button>
-              </div>
-            )}
-          </section>
-        )}
-
-        {page === 'signups' && stats && (
-          <section className="workspace-content">
-            <div className="list-toolbar"><div><p className="workspace-eyebrow">Platform</p><h2>Recent signups</h2></div></div>
-            <section className="workspace-panel quote-list-panel">
-              <div className="table-scroll">
-                <table className="data-table">
-                  <thead><tr><th>Name</th><th>Email</th><th>Workspace</th><th>Role</th><th>Joined</th></tr></thead>
-                  <tbody>
-                    {stats.recentSignups.map((u) => (
-                      <tr key={u.id}>
-                        <td><strong>{u.name}</strong></td>
-                        <td>{u.email}</td>
-                        <td>{u.organisationName ?? '—'}</td>
-                        <td>{u.role === 'SUPERADMIN' ? <span className="plan-badge plan-active">Superadmin</span> : 'User'}</td>
-                        <td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(u.createdAt))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </section>
+          {workspaceDrawerOpen && <div className="workspace-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setWorkspaceDrawerOpen(false); setWorkspaceDetail(null) } }}>
+            <aside className="workspace-drawer" role="dialog" aria-modal="true" aria-label={workspaceDetail ? `${workspaceDetail.workspace.name} workspace controls` : 'Workspace controls'}>
+              <button type="button" className="workspace-drawer-close" aria-label="Close workspace controls" onClick={() => { setWorkspaceDrawerOpen(false); setWorkspaceDetail(null) }}>×</button>
+              {workspaceDetailLoading || !workspaceDetail ? <div className="workspace-loading">Loading workspace controls…</div> : <WorkspaceDetailView data={workspaceDetail} actionBusy={workspaceActionBusy} onApprove={(reason) => approveWorkspace(workspaceDetail.workspace.id, reason)} onSuspend={(reason) => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'suspend', reason)} onRestore={() => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'restore')} onArchive={(reason) => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'archive', reason)} onUnarchive={() => updateWorkspaceLifecycle(workspaceDetail.workspace.id, 'unarchive')} onChangePlan={(plan, reason) => updateWorkspacePlan(workspaceDetail.workspace.id, plan, reason)} onDelete={(confirmName, reason) => permanentlyDeleteWorkspace(workspaceDetail.workspace.id, confirmName, reason)} onBack={() => { setWorkspaceDrawerOpen(false); setWorkspaceDetail(null) }} />}
+            </aside>
+          </div>}
+          </>
         )}
 
         {page === 'accounts' && (
@@ -706,8 +720,8 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
             {selectedAccount ? <>
               <div className="list-toolbar"><div><button className="dashboard-text-link" type="button" onClick={() => setSelectedAccount(null)}>← All users</button><p className="workspace-eyebrow" style={{ marginTop: 12 }}>Account support</p><h2>{selectedAccount.name}</h2><p>{selectedAccount.email} · {selectedAccount.role === 'SUPERADMIN' ? 'Super-admin' : 'User'}</p></div><button type="button" className="quiet-button danger-button" disabled={accountsLoading || selectedAccount.id === user.id || accountSessions.length === 0} onClick={() => void revokeAccountSession(selectedAccount)}>{accountsLoading ? 'Updating…' : `Revoke all sessions (${accountSessions.length})`}</button></div>
               <section className="workspace-panel" style={{ padding: 20 }}><div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}><p>MFA: <strong>{selectedAccount.mfaEnabled ? 'Enabled' : 'Not enabled'}</strong></p><p>Joined: <strong>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(selectedAccount.createdAt))}</strong></p><p>Active sessions: <strong>{accountSessions.length}</strong></p><p>Workspace: <strong>{selectedAccount.workspace?.name ?? 'None'}</strong>{selectedAccount.workspace?.status === 'SUSPENDED' ? ' · Suspended' : ''}</p></div>{selectedAccount.id === user.id && <p className="workspace-eyebrow">Your current admin session is protected from this control.</p>}</section>
-              <section className="workspace-panel quote-list-panel"><div className="list-toolbar" style={{ padding: '18px 18px 8px' }}><div><h3>Active sessions</h3><p>Only active sessions are shown. Session tokens are never exposed.</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Started</th><th>Expires</th><th>Session</th><th>Action</th></tr></thead><tbody>
-                {accountSessions.map((session) => <tr key={session.id}><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(session.createdAt))}</td><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(session.expiresAt))}</td><td><code>{session.id.slice(0, 10)}</code></td><td><button type="button" className="dashboard-text-link danger-text" disabled={accountsLoading || selectedAccount.id === user.id} onClick={() => void revokeAccountSession(selectedAccount, session.id)}>Revoke</button></td></tr>)}
+              <section className="workspace-panel quote-list-panel"><div className="list-toolbar" style={{ padding: '18px 18px 8px' }}><div><h3>Active sessions and devices</h3><p>Each account has one mobile and one desktop slot. Signing in again replaces the earlier session in that device category.</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Device</th><th>IP</th><th>Last active</th><th>Started</th><th>Expires</th><th>MFA</th><th>Action</th></tr></thead><tbody>
+                {accountSessions.map((session) => <tr key={session.id}><td><strong>{session.deviceLabel ?? (session.deviceType === 'MOBILE' ? 'Mobile device' : 'Desktop device')}</strong><small>{session.deviceType === 'MOBILE' ? 'Phone / tablet' : 'Desktop'} · <code>{session.id.slice(0, 8)}</code></small></td><td>{session.ipAddress ?? '—'}</td><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(session.lastSeenAt))}</td><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(session.createdAt))}</td><td>{new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(session.expiresAt))}</td><td>{session.mfaVerifiedAt ? 'Verified' : 'No'}</td><td><button type="button" className="dashboard-text-link danger-text" disabled={accountsLoading || selectedAccount.id === user.id} onClick={() => void revokeAccountSession(selectedAccount, session.id)}>Revoke</button></td></tr>)}
               </tbody></table></div>{!accountSessions.length && <div className="panel-empty">No active sessions.</div>}</section>
             </> : <>
               <div className="list-toolbar"><div><p className="workspace-eyebrow">Account support</p><h2>Users and sessions</h2><p>Find an account, review its active sessions, and revoke access when needed.</p></div><span className="workspace-eyebrow">{accountsTotal} users</span></div>
@@ -719,7 +733,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
           </section>
         )}
 
-        {page === 'operations' && (
+        {page === 'settings' && settingsSection === 'operations' && (
           <section className="workspace-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Service signals</p><h2>Platform operations</h2><p>Configuration, live Resend API connectivity, and recent operational records.</p></div><span className="workspace-eyebrow" aria-live="polite">{operationsLoading ? 'Refreshing…' : operations ? `Checked ${new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(operations.checkedAt))}` : 'No snapshot loaded'}</span></div>
             <section className="workspace-panel admin-ncba-config" style={{ padding: 20 }}>
@@ -769,7 +783,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
 
         {page === 'reports' && (
           <section className="workspace-content">
-            <div className="list-toolbar"><div><p className="workspace-eyebrow">Financial activity</p><h2>Platform totals by currency</h2><p>Quotes are pipeline value; invoices and recorded payments are separate financial measures. Currencies are never combined.</p></div><label className="workspace-eyebrow">Period <select className="input-control" value={platformReportRange} onChange={(event) => setPlatformReportRange(event.target.value)}><option value="7d">7 days</option><option value="30d">30 days</option><option value="90d">90 days</option><option value="365d">1 year</option></select></label></div>
+            <div className="list-toolbar"><div><p className="workspace-eyebrow">Paying customers</p><h2>Subscriber business reports</h2><p>Only active, non-simulated subscriber workspaces are included. Quotes, invoices, payments, and balances stay separate and currency-specific.</p></div><label className="workspace-eyebrow">Period <select className="input-control" value={platformReportRange} onChange={(event) => setPlatformReportRange(event.target.value)}><option value="7d">7 days</option><option value="30d">30 days</option><option value="90d">90 days</option><option value="365d">1 year</option></select></label></div>
             {platformReportLoading && !platformReport ? <main className="workspace-loading">Loading platform report…</main> : platformReport && <>
               <p className="workspace-eyebrow" aria-live="polite">{platformReportLoading ? 'Updating…' : `${new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(platformReport.from))} – ${new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(platformReport.to))}`}</p>
               <section className="workspace-panel quote-list-panel"><div className="table-scroll"><table className="data-table"><thead><tr><th>Currency</th><th>Quoted value</th><th>Invoiced</th><th>Invoice paid amount</th><th>Receivables</th><th>Recorded payments</th></tr></thead><tbody>
@@ -783,7 +797,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
           </section>
         )}
 
-        {page === 'activity' && (
+        {page === 'settings' && settingsSection === 'system' && (
           <section className="workspace-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Governance</p><h2>Super-admin activity</h2><p>Security and workspace lifecycle actions are recorded here.</p></div><span className="workspace-eyebrow">{auditTotal} events</span></div>
             <div className="filter-row"><input className="input-control search-control" type="search" placeholder="Search admin, action, workspace, or reason" value={auditSearch} onChange={(event) => setAuditSearch(event.target.value)} /><span className="workspace-eyebrow" aria-live="polite">{auditLoading ? 'Loading…' : 'Newest first'}</span></div>
@@ -796,7 +810,7 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
           </section>
         )}
 
-        {page === 'security' && (
+        {page === 'settings' && settingsSection === 'system' && (
           <section className="workspace-content">
             <div className="list-toolbar"><div><p className="workspace-eyebrow">Account protection</p><h2>Super-admin security</h2></div></div>
             <section className="workspace-panel" style={{ maxWidth: 720, padding: 28 }}>
@@ -817,12 +831,17 @@ export default function SuperadminDashboard({ user, onLogout }: { user: User; on
   )
 }
 
-function WorkspaceDetailView({ data, actionBusy, onSuspend, onRestore, onArchive, onUnarchive, onBack }: { data: WorkspaceDetailData; actionBusy: boolean; onSuspend: (reason: string) => void; onRestore: () => void; onArchive: (reason: string) => void; onUnarchive: () => void; onBack: () => void }) {
+function WorkspaceDetailView({ data, actionBusy, onApprove, onSuspend, onRestore, onArchive, onUnarchive, onChangePlan, onDelete, onBack }: { data: WorkspaceDetailData; actionBusy: boolean; onApprove: (reason: string) => void; onSuspend: (reason: string) => void; onRestore: () => void; onArchive: (reason: string) => void; onUnarchive: () => void; onChangePlan: (plan: string, reason: string) => void; onDelete: (confirmName: string, reason: string) => void; onBack: () => void }) {
   const [suspensionReason, setSuspensionReason] = useState('')
   const [archiveReason, setArchiveReason] = useState('')
+  const [approvalReason, setApprovalReason] = useState('')
+  const [selectedPlan, setSelectedPlan] = useState(data.workspace.subscription?.plan ?? 'STARTER')
+  const [planReason, setPlanReason] = useState('')
+  const [deleteName, setDeleteName] = useState('')
+  const [deleteReason, setDeleteReason] = useState('')
   const { workspace, recentQuotes, recentJobs, recentInvoices } = data
   const joined = new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(workspace.createdAt))
-  return <section className="workspace-content">
+  return <section className="workspace-content workspace-detail-page workspace-drawer-content">
     <div className="list-toolbar">
       <div><button className="dashboard-text-link" type="button" onClick={onBack}>← All workspaces</button><p className="workspace-eyebrow" style={{ marginTop: 12 }}>Workspace profile · Joined {joined}</p><h2>{workspace.name}</h2><p>{workspace.businessType ?? 'General business'}{workspace.country ? ` · ${workspace.country}` : ''}</p></div>
       <span className={planBadgeClass(workspace.subscription?.status ?? '')}>{workspace.subscription?.plan ?? 'FREE'}<small>{trialStatus(workspace)}</small></span>
@@ -833,9 +852,33 @@ function WorkspaceDetailView({ data, actionBusy, onSuspend, onRestore, onArchive
       {workspace.suspendedAt && <div style={{ marginTop: 14 }}><p><strong>Last suspension reason:</strong> {workspace.suspensionReason}</p><small>Suspended {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(workspace.suspendedAt))} by {workspace.suspendedByEmail ?? 'super-admin'}.</small>{workspace.restoredAt && <p><small>Restored {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(workspace.restoredAt))} by {workspace.restoredByEmail ?? 'super-admin'}.</small></p>}</div>}
       {workspace.archivedAt && <div style={{ marginTop: 14 }}><p><strong>Archive reason:</strong> {workspace.archiveReason}</p><small>Archived {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(workspace.archivedAt))} by {workspace.archivedByEmail ?? 'super-admin'}. Workspace data is retained; customer links are unavailable until restored.</small>{workspace.unarchivedAt && <p><small>Last restored from archive {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(workspace.unarchivedAt))} by {workspace.unarchivedByEmail ?? 'super-admin'}.</small></p>}</div>}
       {workspace.status === 'ARCHIVED' ? <div style={{ marginTop: 14 }}><button type="button" className="quiet-button" disabled={actionBusy} onClick={() => { if (window.confirm(`Restore ${workspace.name} from archive? This restores its previous ${workspace.statusBeforeArchive === 'SUSPENDED' ? 'suspended' : 'active'} state.`)) onUnarchive() }}>{actionBusy ? 'Restoring…' : 'Restore from archive'}</button></div> : <>
-        {workspace.status === 'SUSPENDED' ? <div style={{ marginTop: 14 }}><button type="button" className="quiet-button" disabled={actionBusy} onClick={() => { if (window.confirm(`Restore access to ${workspace.name}?`)) onRestore() }}>{actionBusy ? 'Restoring…' : 'Restore access'}</button></div> : <form className="workspace-suspend-form" onSubmit={(event) => { event.preventDefault(); if (window.confirm(`Suspend ${workspace.name}? The workspace owner and team will lose dashboard access until restored.`)) onSuspend(suspensionReason) }}><label htmlFor="workspace-suspension-reason">Reason required</label><input id="workspace-suspension-reason" className="input-control" minLength={5} maxLength={500} value={suspensionReason} onChange={(event) => setSuspensionReason(event.target.value)} placeholder="For example: billing issue or policy review" required /><button type="submit" className="quiet-button danger-button" disabled={actionBusy || suspensionReason.trim().length < 5}>{actionBusy ? 'Suspending…' : 'Suspend workspace'}</button></form>}
+        {workspace.status === 'PENDING' ? <form className="workspace-suspend-form" onSubmit={(event) => { event.preventDefault(); if (window.confirm(`Approve ${workspace.name} and allow workspace access?`)) onApprove(approvalReason) }}><label htmlFor="workspace-approval-reason">Approval reason required</label><input id="workspace-approval-reason" className="input-control" minLength={5} maxLength={500} value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} placeholder="For example: business verification completed" required /><button type="submit" className="quiet-button" disabled={actionBusy || approvalReason.trim().length < 5}>{actionBusy ? 'Approving…' : 'Approve workspace'}</button></form> : workspace.status === 'SUSPENDED' ? <div style={{ marginTop: 14 }}><button type="button" className="quiet-button" disabled={actionBusy} onClick={() => { if (window.confirm(`Restore access to ${workspace.name}?`)) onRestore() }}>{actionBusy ? 'Restoring…' : 'Restore access'}</button></div> : <form className="workspace-suspend-form" onSubmit={(event) => { event.preventDefault(); if (window.confirm(`Suspend ${workspace.name}? The workspace owner and team will lose dashboard access until restored.`)) onSuspend(suspensionReason) }}><label htmlFor="workspace-suspension-reason">Reason required</label><input id="workspace-suspension-reason" className="input-control" minLength={5} maxLength={500} value={suspensionReason} onChange={(event) => setSuspensionReason(event.target.value)} placeholder="For example: billing issue or policy review" required /><button type="submit" className="quiet-button danger-button" disabled={actionBusy || suspensionReason.trim().length < 5}>{actionBusy ? 'Suspending…' : 'Suspend workspace'}</button></form>}
         <form className="workspace-suspend-form workspace-archive-form" onSubmit={(event) => { event.preventDefault(); if (window.confirm(`Archive ${workspace.name}? Dashboard access and public quote/project links will be disabled. All workspace data will be retained and can be restored.`)) onArchive(archiveReason) }}><label htmlFor="workspace-archive-reason">Archive reason required</label><input id="workspace-archive-reason" className="input-control" minLength={5} maxLength={500} value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} placeholder="For example: customer requested closure" required /><button type="submit" className="quiet-button danger-button" disabled={actionBusy || archiveReason.trim().length < 5}>{actionBusy ? 'Archiving…' : 'Archive workspace'}</button></form>
       </>}
+    </section>
+
+    <section className="workspace-panel workspace-plan-control">
+      <h3>Subscription package</h3>
+      <p>This is an admin override: package access changes immediately, but it does not charge the customer or record a payment. Billing status and payment history stay unchanged. Archived workspaces must be restored first.</p>
+      <form className="workspace-suspend-form" onSubmit={(event) => { event.preventDefault(); onChangePlan(selectedPlan, planReason) }}>
+        <label htmlFor="workspace-plan-select">Package</label>
+        <select id="workspace-plan-select" className="input-control" value={selectedPlan} onChange={(event) => setSelectedPlan(event.target.value)}><option value="STARTER">Starter</option><option value="GROWTH">Growth</option><option value="TEAM">Team</option></select>
+        <label htmlFor="workspace-plan-reason">Reason required</label>
+        <input id="workspace-plan-reason" className="input-control" minLength={5} maxLength={500} required value={planReason} onChange={(event) => setPlanReason(event.target.value)} placeholder="For example: approved package change" />
+        <button type="submit" className="quiet-button" disabled={actionBusy || data.workspace.status === 'ARCHIVED' || selectedPlan === data.workspace.subscription?.plan || planReason.trim().length < 5}>{actionBusy ? 'Updating…' : 'Apply package'}</button>
+      </form>
+    </section>
+
+    <section className="workspace-panel workspace-permanent-delete-note">
+      <h3>Permanent deletion</h3>
+      <p>This permanently deletes this workspace, its quotes, invoices, payments, jobs, customer records, and uploaded job files. Linked users lose this workspace membership and their active sessions are revoked; their login accounts remain. This cannot be undone. Archive the workspace first and download any records you need.</p>
+      {workspace.status !== 'ARCHIVED' ? <p><strong>Archive this workspace before permanent deletion is enabled.</strong></p> : <form className="workspace-suspend-form" onSubmit={(event) => { event.preventDefault(); if (window.confirm(`Permanently delete ${workspace.name || 'Unnamed workspace'} and all of its data? This cannot be undone.`)) onDelete(deleteName, deleteReason) }}>
+        <label htmlFor="workspace-delete-name">Type the workspace name exactly: <strong>{workspace.name || 'Unnamed workspace'}</strong></label>
+        <input id="workspace-delete-name" className="input-control" required autoComplete="off" value={deleteName} onChange={(event) => setDeleteName(event.target.value)} />
+        <label htmlFor="workspace-delete-reason">Reason required</label>
+        <input id="workspace-delete-reason" className="input-control" minLength={10} maxLength={500} required value={deleteReason} onChange={(event) => setDeleteReason(event.target.value)} placeholder="Explain the approved deletion request" />
+        <button type="submit" className="quiet-button danger-button" disabled={actionBusy || deleteName !== (workspace.name || 'Unnamed workspace') || deleteReason.trim().length < 10}>{actionBusy ? 'Deleting workspace…' : 'Permanently delete workspace'}</button>
+      </form>}
     </section>
 
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
@@ -872,81 +915,4 @@ function WorkspaceDetailView({ data, actionBusy, onSuspend, onRestore, onArchive
       <section className="workspace-panel quote-list-panel"><div className="list-toolbar" style={{ padding: '18px 18px 8px' }}><div><h3>Recent invoices</h3></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Invoice</th><th>Status</th><th>Total</th><th>Balance</th></tr></thead><tbody>{recentInvoices.map(invoice => <tr key={invoice.id}><td><strong>{invoice.invoiceNumber}</strong></td><td>{invoice.status.replaceAll('_', ' ')}</td><td>{formatMoney(invoice.total, invoice.currency)}</td><td>{formatMoney(invoice.balanceDue, invoice.currency)}</td></tr>)}</tbody></table></div>{!recentInvoices.length && <div className="panel-empty">No invoices yet.</div>}</section>
     </div>
   </section>
-}
-
-function AdminOverview({ user, stats, workspaces, quotes, onWorkspaces, onQuotes, onSignups }: {
-  user: User
-  stats: SuperadminStats
-  workspaces: WorkspaceRow[]
-  quotes: RecentQuote[]
-  onWorkspaces: () => void
-  onQuotes: () => void
-  onSignups: () => void
-}) {
-  const monthNames = Array.from({ length: 6 }, (_, index) => {
-    const date = new Date()
-    date.setDate(1)
-    date.setMonth(date.getMonth() - (5 - index))
-    return { key: `${date.getFullYear()}-${date.getMonth()}`, label: date.toLocaleDateString('en', { month: 'short' }), year: date.getFullYear(), month: date.getMonth() }
-  })
-  const growthValues = monthNames.map((month) => ({
-    ...month,
-    businesses: workspaces.filter((item) => { const date = new Date(item.createdAt); return date.getFullYear() === month.year && date.getMonth() === month.month }).length,
-    users: stats.recentSignups.filter((item) => { const date = new Date(item.createdAt); return date.getFullYear() === month.year && date.getMonth() === month.month }).length,
-  }))
-  const maxGrowth = Math.max(1, ...growthValues.flatMap((item) => [item.businesses, item.users]))
-  const counts = {
-    approved: quotes.filter((item) => item.status === 'APPROVED').length,
-    awaiting: quotes.filter((item) => ['SENT', 'VIEWED'].includes(item.status)).length,
-    draft: quotes.filter((item) => item.status === 'DRAFT').length,
-    other: quotes.filter((item) => ['DECLINED', 'EXPIRED'].includes(item.status)).length,
-  }
-  const totalStatus = Math.max(1, quotes.length)
-  const recentBusinesses = [...workspaces].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 5)
-  const activity = [
-    ...quotes.slice(0, 5).map((item) => ({ id: `quote-${item.id}`, date: item.createdAt, title: item.documentNumber, detail: `${item.organisation.name} · ${item.status.toLowerCase()} · ${formatMoney(item.total, item.currency)}`, kind: 'Quote activity' })),
-    ...stats.recentSignups.slice(0, 5).map((item) => ({ id: `user-${item.id}`, date: item.createdAt, title: item.name, detail: item.organisationName ?? item.email, kind: 'New signup' })),
-  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 5)
-  const donutStyle = { background: `conic-gradient(#237b56 0 ${counts.approved / totalStatus * 100}%, #e2b75d ${counts.approved / totalStatus * 100}% ${(counts.approved + counts.awaiting) / totalStatus * 100}%, #7897ba ${(counts.approved + counts.awaiting) / totalStatus * 100}% ${(counts.approved + counts.awaiting + counts.draft) / totalStatus * 100}%, #e7ece8 ${(counts.approved + counts.awaiting + counts.draft) / totalStatus * 100}% 100%)` }
-
-  return (
-    <section className="workspace-content admin-dashboard-page">
-      <div className="admin-dashboard-heading"><div><p className="dashboard-date-label">PLATFORM ADMINISTRATION</p><h2>Good morning, <em>{user.name.split(/\s+/)[0] || 'Admin'}</em>.</h2><p>Here’s what’s happening across the iQuote platform.</p></div><span className="admin-live-indicator"><i/>Platform data is live</span></div>
-
-      <div className="admin-dashboard-metrics">
-        <article><small>Businesses</small><strong>{stats.totalOrganisations.toLocaleString()}</strong><span>Registered workspaces</span></article>
-        <article><small>Users</small><strong>{stats.totalUsers.toLocaleString()}</strong><span>Across all workspaces</span></article>
-        <article><small>Quotes created</small><strong>{stats.totalQuotes.toLocaleString()}</strong><span>{stats.approvedQuotes.toLocaleString()} approved</span></article>
-        <article className="admin-currency-breakdown"><small>Value quoted</small>{stats.currencyBreakdown.length > 0 ? stats.currencyBreakdown.map((row) => <strong key={row.currency}>{formatMoney(row.total, row.currency)}</strong>) : <strong>{formatMoney(0, 'KES')}</strong>}<span>{stats.totalQuoteCount ?? stats.totalQuotes} quotes across currencies</span></article>
-        <article><small>Active trials</small><strong>{stats.activeTrials.toLocaleString()}</strong><span>On a 14-day trial</span></article>
-      </div>
-
-      <div className="admin-dashboard-grid">
-        <section className="admin-dashboard-panel admin-growth-panel">
-          <div className="admin-panel-heading"><div><h3>Workspace growth</h3><p>Businesses and user accounts in recent records</p></div><button className="dashboard-text-link" type="button" onClick={onSignups}>View signups →</button></div>
-          <div className="admin-growth-legend"><span><i className="admin-growth-business"/>Businesses</span><span><i className="admin-growth-user"/>Users</span></div>
-          <div className="admin-growth-chart">{growthValues.map((item) => <div className="admin-growth-month" key={item.key}><div className="admin-growth-bars"><i title={`${item.businesses} businesses`} style={{ height: `${Math.max(5, item.businesses / maxGrowth * 100)}%` }}/><i title={`${item.users} users`} style={{ height: `${Math.max(5, item.users / maxGrowth * 100)}%` }}/></div><small>{item.label}</small></div>)}</div>
-          <div className="admin-growth-caption">Based on the workspace page and latest signup records currently loaded.</div>
-        </section>
-
-        <section className="admin-dashboard-panel admin-status-panel">
-          <div className="admin-panel-heading"><div><h3>Quote activity</h3><p>Current lifecycle in recent quotes</p></div><button className="dashboard-text-link" type="button" onClick={onQuotes}>View quotes →</button></div>
-          <div className="admin-status-layout"><div className="dashboard-donut" style={donutStyle}><div><strong>{stats.totalQuotes.toLocaleString()}</strong><small>all quotes</small></div></div><div className="dashboard-pipeline-legend"><span><i className="pipeline-approved"/>Approved<b>{counts.approved}</b></span><span><i className="pipeline-awaiting"/>Awaiting reply<b>{counts.awaiting}</b></span><span><i className="pipeline-draft"/>Draft<b>{counts.draft}</b></span><span><i className="pipeline-other"/>Other<b>{counts.other}</b></span></div></div>
-          <small className="admin-growth-caption">Lifecycle counts reflect the latest {quotes.length} loaded quotes.</small>
-        </section>
-      </div>
-
-      <div className="admin-dashboard-lower">
-        <section className="admin-dashboard-panel admin-business-panel">
-          <div className="admin-panel-heading"><div><h3>Recently active businesses</h3><p>Workspace onboarding and trial state</p></div><button className="dashboard-text-link" type="button" onClick={onWorkspaces}>All businesses →</button></div>
-          <div className="table-scroll"><table className="data-table admin-dashboard-table"><thead><tr><th>Business</th><th>Owner</th><th>Plan</th><th>Quotes</th><th>Trial status</th></tr></thead><tbody>{recentBusinesses.map((item) => <tr key={item.id}><td><strong>{item.name}</strong><small>{item.country ?? 'Location not set'}</small></td><td>{item.owner.name}<small>{item.owner.email}</small></td><td>{item.subscription?.plan ?? '—'}</td><td>{item.quoteCount}</td><td><span className={planBadgeClass(item.subscription?.status ?? '')}>{trialStatus(item)}</span></td></tr>)}</tbody></table></div>
-          {!recentBusinesses.length && <div className="customer-dashboard-empty compact">New workspaces will appear here.</div>}
-        </section>
-        <section className="admin-dashboard-panel admin-platform-activity">
-          <div className="admin-panel-heading"><div><h3>Platform activity</h3><p>Recent account and quote events</p></div></div>
-          {activity.length ? <div className="dashboard-activity-list">{activity.map((item) => <div className="dashboard-activity-item admin-activity-row" key={item.id}><span className="dashboard-activity-icon">{item.kind === 'New signup' ? '＋' : '↗'}</span><span><strong>{item.title}</strong><small>{item.kind} · {item.detail}</small></span></div>)}</div> : <div className="customer-dashboard-empty compact">Platform events will appear here.</div>}
-        </section>
-      </div>
-    </section>
-  )
 }
