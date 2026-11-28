@@ -36,10 +36,15 @@ ENV_FILE=".env.prod"
 COMPOSE_CMD="docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE}"
 
 BACKUP_DIR="/srv/iquote-backups"
-DB_CONTAINER="iquote-db"
+# `docker compose exec` takes the SERVICE name, not the container name. Using
+# "iquote-db" here made every pg_dump fail; the container happens to be named
+# iquote-db, but the compose service is "db".
+DB_SERVICE="${DB_SERVICE:-db}"
+# Uploads live in the compose-prefixed volume (project "iquote"). The bare
+# "iquote_uploads" name exists but is empty, so backing it up stored no files.
+UPLOADS_VOLUME="${UPLOADS_VOLUME:-iquote_iquote_uploads}"
 DB_USER="${POSTGRES_USER:-iquote}"
 DB_NAME="${POSTGRES_DB:-iquote}"
-UPLOADS_VOLUME="iquote_uploads"
 
 # Retention thresholds (days)
 RETENTION_DAILY=7
@@ -57,7 +62,9 @@ log() {
 }
 
 err() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2 | tee -a "${LOG_FILE}"
+    # Redirect stdout to stderr first, then tee, otherwise tee's stdin is empty
+    # and errors never landed in the log file.
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" | tee -a "${LOG_FILE}" >&2
 }
 
 die() {
@@ -85,16 +92,30 @@ do_backup() {
 
     log "Starting backup: ${backup_name}"
 
-    # 1. pg_dump the PostgreSQL database
+    # 1. pg_dump the PostgreSQL database.
+    # Stream straight to the host — no in-container temp file, so no compose cp step to fail.
+    # stderr is captured to a file rather than discarded, so failures are diagnosable.
     log "Dumping PostgreSQL database '${DB_NAME}'..."
-    if ! ${COMPOSE_CMD} exec -T "${DB_CONTAINER}" \
-        pg_dump -U "${DB_USER}" -d "${DB_NAME}" --format=custom --file=/tmp/db.dump 2>/dev/null; then
+    local dump_err="${work_dir}/pg_dump.err"
+    if ! ${COMPOSE_CMD} exec -T "${DB_SERVICE}" \
+        pg_dump -U "${DB_USER}" -d "${DB_NAME}" --format=custom > "${work_dir}/db.dump" 2>"${dump_err}"; then
+        err "pg_dump failed: $(tr '\n' ' ' < "${dump_err}" | head -c 500)"
+        rm -rf "${work_dir}"
         die "pg_dump failed"
     fi
 
-    # Copy the dump out of the container
-    ${COMPOSE_CMD} cp "${DB_CONTAINER}:/tmp/db.dump" "${work_dir}/db.dump"
-    ${COMPOSE_CMD} exec -T "${DB_CONTAINER}" rm -f /tmp/db.dump
+    # A zero-byte or tiny dump means the dump silently produced nothing; treat it as failure.
+    local dump_bytes
+    dump_bytes="$(wc -c < "${work_dir}/db.dump")"
+    if [[ ${dump_bytes} -lt 1024 ]]; then
+        rm -rf "${work_dir}"
+        die "pg_dump produced an implausibly small dump (${dump_bytes} bytes)"
+    fi
+    # Verify it is a real pg_dump custom-format archive before trusting it.
+    if ! head -c 5 "${work_dir}/db.dump" | grep -q "PGDMP"; then
+        rm -rf "${work_dir}"
+        die "pg_dump output is not a valid PostgreSQL custom-format archive"
+    fi
     log "Database dump complete ($(du -h "${work_dir}/db.dump" | cut -f1))"
 
     # 2. Copy uploads volume contents
@@ -103,9 +124,18 @@ do_backup() {
     mkdir -p "${uploads_dir}"
 
     # Use a temporary container to access the named volume
-    docker run --rm -v "${UPLOADS_VOLUME}:/source:ro" -v "${uploads_dir}:/dest" \
-        alpine sh -c "cp -a /source/. /dest/"
-    log "Uploads copy complete ($(du -sh "${uploads_dir}" | cut -f1))"
+    if ! docker run --rm -v "${UPLOADS_VOLUME}:/source:ro" -v "${uploads_dir}:/dest" \
+        alpine sh -c "cp -a /source/. /dest/"; then
+        rm -rf "${work_dir}"
+        die "uploads copy failed (volume '${UPLOADS_VOLUME}' missing or unreadable)"
+    fi
+    local upload_count
+    upload_count="$(find "${uploads_dir}" -type f | wc -l)"
+    log "Uploads copy complete (${upload_count} files, $(du -sh "${uploads_dir}" | cut -f1))"
+    if [[ ${upload_count} -eq 0 ]]; then
+        # Not fatal, but this is exactly the silent failure that hid the wrong volume name.
+        err "WARNING: uploads volume '${UPLOADS_VOLUME}' is empty — verify UPLOADS_VOLUME is correct"
+    fi
 
     # 3. Bundle into a single tar.gz
     local archive="${BACKUP_DIR}/${backup_name}.tar.gz"
@@ -193,22 +223,19 @@ do_restore() {
     # 3. Restore PostgreSQL
     log "Restoring PostgreSQL database '${DB_NAME}'..."
 
-    # Copy dump into the DB container
-    ${COMPOSE_CMD} cp "${work_dir}/db.dump" "${DB_CONTAINER}:/tmp/db.dump"
-
-    # Drop and recreate the database to ensure a clean restore
-    ${COMPOSE_CMD} exec -T "${DB_CONTAINER}" psql -U "${DB_USER}" -d postgres <<'SQL'
-SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'iquote' AND pid <> pg_backend_pid();
-DROP DATABASE IF EXISTS iquote;
-CREATE DATABASE iquote;
+    # Drop and recreate the database to ensure a clean restore.
+    # DB_NAME is interpolated so this does not hardcode "iquote".
+    ${COMPOSE_CMD} exec -T "${DB_SERVICE}" psql -U "${DB_USER}" -d postgres <<SQL
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${DB_NAME}' AND pid <> pg_backend_pid();
+DROP DATABASE IF EXISTS "${DB_NAME}";
+CREATE DATABASE "${DB_NAME}";
 SQL
 
-    # Restore using pg_restore
-    if ! ${COMPOSE_CMD} exec -T "${DB_CONTAINER}" \
-        pg_restore -U "${DB_USER}" -d "${DB_NAME}" --no-owner --clean --if-exists /tmp/db.dump; then
+    # Restore using pg_restore, streaming the dump in from the host.
+    if ! ${COMPOSE_CMD} exec -T "${DB_SERVICE}" \
+        pg_restore -U "${DB_USER}" -d "${DB_NAME}" --no-owner --clean --if-exists < "${work_dir}/db.dump"; then
         log "WARNING: pg_restore reported errors (this may be normal for clean restores)"
     fi
-    ${COMPOSE_CMD} exec -T "${DB_CONTAINER}" rm -f /tmp/db.dump
     log "PostgreSQL restore complete"
 
     # 4. Restore uploads volume
