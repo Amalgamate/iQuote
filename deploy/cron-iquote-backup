@@ -1,0 +1,19 @@
+# iQuote nightly database + uploads backup.
+#
+# Install:  sudo cp deploy/cron-iquote-backup /etc/cron.d/iquote-backup
+#           sudo chmod 644 /etc/cron.d/iquote-backup
+#
+# Runs at 02:20 to match the RPO documented in deploy/backup-restore.sh
+# ("daily backup at 2 AM") and to avoid colliding with trendscore-backup (01:15)
+# and guardian-marketplace-files-backup (02:20) on this shared host. The extra
+# minute offset keeps the two 02:xx jobs from contending for disk.
+#
+# The script is idempotent and self-pruning: `backup` writes a new archive and
+# `.meta` sidecar, then `prune` enforces retention (7d daily / 28d weekly /
+# 90d monthly). Both run in one invocation so a failed backup never leaves
+# un-pruned growth behind silently.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# m   h   dom mon dow   user  command
+  21  2   *   *   *     root  cd /srv/iquote && bash deploy/backup-restore.sh backup >> /var/log/iquote-backup-cron.log 2>&1 && bash deploy/backup-restore.sh prune >> /var/log/iquote-backup-cron.log 2>&1

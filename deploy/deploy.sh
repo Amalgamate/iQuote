@@ -99,14 +99,36 @@ echo "[3/7] Building Docker images..."
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
 echo "  Images built."
 
-# ---- 4. Run database migrations against the running API container ----
+# ---- 4. Run database migrations using the NEW image ----
 echo ""
 echo "[4/7] Running database migrations (prisma migrate deploy)..."
-# The migrations run inside the *current* container, which is still serving the
-# previous release. Prisma's migrate client is version-independent of the
-# running app, so this is safe even though the container image is about to be
-# replaced in step 5.
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T api npx prisma migrate deploy
+# Migrations must come from the image we just built, not the running one: the
+# Dockerfile bakes ./prisma into the image, so the old container only contains
+# old migration folders and `exec` would silently apply nothing while printing
+# "migrations applied".
+#
+# A one-off container from the new image is the correct tool here: it has the
+# new prisma/ directory, it runs before any new code serves traffic, and it
+# exits when done. It needs only the DB to be healthy, so `--no-deps` is safe
+# for the api service's other dependencies.
+MIGRATE_OUTPUT="$(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
+    run --rm --no-deps -T api npx prisma migrate deploy 2>&1)"
+MIGRATE_STATUS=$?
+echo "$MIGRATE_OUTPUT"
+
+if [ "$MIGRATE_STATUS" -ne 0 ]; then
+    echo "  FATAL: prisma migrate deploy failed (exit $MIGRATE_STATUS)."
+    echo "  The new containers have NOT been started; the old release is still serving."
+    echo "  Inspect the output above before retrying."
+    exit 1
+fi
+
+# Fail loudly if a migration was reported pending but not applied. This is the
+# exact silent-failure mode that previously let a release ship without its schema.
+if echo "$MIGRATE_OUTPUT" | grep -qiE "migration[s]? (have|has) not yet been applied|following migration"; then
+    echo "  FATAL: pending migrations remain after migrate deploy."
+    exit 1
+fi
 echo "  Database migrations applied."
 
 # ---- 5. Start the new containers and wait for health ----
