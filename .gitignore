@@ -83,6 +83,22 @@ uploads/
 
 # WorkBuddy AI workspace data (local only)
 .workbuddy-ai/
+.workbuddy/
+*.genie
+
+# AI agent scratch output (plans, review dumps, diffs) — local only
+.agents/tasks/plan.md
+.agents/tasks/logo-*
+.agents/tasks/*-review.*
+
+# Staging area for document-tier icons (published copies live in web/public/)
+stage-icons/
+
+# Prisma schema-drift preview. Destructive and stale — never run in place.
+api/migration_preview.sql
+
+# Ad-hoc perf benchmark, not part of the test suite
+api/_recycle-test.tsx
 
 # Prisma generated client (regenerated on install)
 api/node_modules/.prisma/
